@@ -1,3 +1,15 @@
+<a name="0.2.3"></a>
+# [0.2.3](https://github.com/Snuffy2/hass-opnsense/releases/tag/0.2.3) - 06 Sep 2024
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+
+
+**Full Changelog**: https://github.com/Snuffy2/hass-opnsense/compare/0.2.2...0.2.3
+
+[Changes][0.2.3]
+
+
 <a name="0.2.2"></a>
 # [0.2.2](https://github.com/Snuffy2/hass-opnsense/releases/tag/0.2.2) - 06 Sep 2024
 
@@ -43,6 +55,7 @@
 [Changes][v0.2.0]
 
 
+[0.2.3]: https://github.com/Snuffy2/hass-opnsense/compare/0.2.2...0.2.3
 [0.2.2]: https://github.com/Snuffy2/hass-opnsense/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/Snuffy2/hass-opnsense/compare/v0.2.0...0.2.1
 [v0.2.0]: https://github.com/Snuffy2/hass-opnsense/tree/v0.2.0
