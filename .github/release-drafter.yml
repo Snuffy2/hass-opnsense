@@ -47,7 +47,6 @@ categories:
     labels:
       - "code-quality"
 template: |
-  [![Downloads for this release](https://img.shields.io/github/downloads/travisghansen/hass-opnsense/$RESOLVED_VERSION/total.svg)](https://github.com/travisghansen/hass-opnsense/releases/$RESOLVED_VERSION)
+  ## Changes
+
   $CHANGES
-  ## Links
-  - [Submit bugs/feature requests](https://github.com/travisghansen/hass-opnsense/issues)
