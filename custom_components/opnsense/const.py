@@ -14,7 +14,7 @@ from homeassistant.const import (
     UnitOfTime,
 )
 
-VERSION = "0.1.0"
+VERSION = "0.2.1"
 DEFAULT_USERNAME = ""
 DOMAIN = "opnsense"
 
