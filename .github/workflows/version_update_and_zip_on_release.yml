@@ -30,7 +30,8 @@ jobs:
         uses: rhysd/changelog-from-release/action@v3
         with:
           file: CHANGELOG.md
-          github_token: ${{ secrets.GITHUB_TOKEN }}          
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          commit: false        
       - name: Commit & Push Version Changes
         if: ${{ github.event.release.prerelease == false  }}
         uses: actions-js/push@master
