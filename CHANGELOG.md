@@ -1,137 +1,90 @@
-# v0.1.21
+<a name="v0.2.5"></a>
+# [v0.2.5](https://github.com/Snuffy2/hass-opnsense/releases/tag/v0.2.5) - 06 Sep 2024
 
-Released 2024-03-18
+<!-- Release notes generated using configuration in .github/release.yml at main -->
 
-- increase timeout
-- better logic for needs reboot on the firmware updater
+## What's Changed
+* Fix GitHub Actions and Auto Update Changelog by [@Snuffy2](https://github.com/Snuffy2) in https://github.com/Snuffy2/hass-opnsense/pull/12
 
-# v0.1.20
 
-Released 2024-02-17
+**Full Changelog**: https://github.com/Snuffy2/hass-opnsense/commits/v0.2.5
 
-- fix for disabled interfaces
+[Changes][v0.2.5]
 
-# v0.1.19
 
-Released 2024-02-17
+<a name="0.2.4"></a>
+# [0.2.4](https://github.com/Snuffy2/hass-opnsense/releases/tag/0.2.4) - 06 Sep 2024
 
-- fix services (see #123)
+## Changes
 
-# v0.1.18
+- Update version_update_and_zip_on_release.yml [@Snuffy2](https://github.com/Snuffy2) ([#11](https://github.com/Snuffy2/hass-opnsense/issues/11))
 
-Released 2024-02-15
 
-- handle missing ipaddr property
+[Changes][0.2.4]
 
-# v0.1.17
 
-Released 2024-02-11
+<a name="0.2.3"></a>
+# [0.2.3](https://github.com/Snuffy2/hass-opnsense/releases/tag/0.2.3) - 06 Sep 2024
 
-- remove deprecated constants
-- fix issue with interface stats in 24.1+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
 
-# v0.1.16
 
-Released 2023-04-30
 
-- minor fixes
-- support for hass 2023.5
+**Full Changelog**: https://github.com/Snuffy2/hass-opnsense/compare/0.2.2...0.2.3
 
-# v0.1.15
+[Changes][0.2.3]
 
-Released 2023-03-21
 
-- temporary workaround for removal of `openvpn_get_active_servers()` in `23.1.4`
+<a name="0.2.2"></a>
+# [0.2.2](https://github.com/Snuffy2/hass-opnsense/releases/tag/0.2.2) - 06 Sep 2024
 
-# v0.1.14
+## Changes
 
-Released 2023-02-19
+## :wrench: Maintenance :wrench:
 
-- update deprecated syntax (`exec_command()` replaced by `shell_safe()` in `23.1.1`)
+- Add Release Drafter and Changelog GitHub Actions [@Snuffy2](https://github.com/Snuffy2) ([#10](https://github.com/Snuffy2/hass-opnsense/issues/10))
 
-# v0.1.13
 
-Released 2023-01-30
+[Changes][0.2.2]
 
-- update deprecated syntax
 
-# v0.1.12
+<a name="0.2.1"></a>
+# [0.2.1](https://github.com/Snuffy2/hass-opnsense/releases/tag/0.2.1) - 06 Sep 2024
 
-Released 2023-01-29
+[![Downloads for this release](https://img.shields.io/github/downloads/travisghansen/hass-opnsense/0.2.1/total.svg)](https://github.com/travisghansen/hass-opnsense/releases/0.2.1)
+- Add Release Drafter and Update Changelog [@Snuffy2](https://github.com/Snuffy2) ([#9](https://github.com/Snuffy2/hass-opnsense/issues/9))
+## Links
+- [Submit bugs/feature requests](https://github.com/travisghansen/hass-opnsense/issues)
 
-- better unavailable logic
 
-# v0.1.11
+[Changes][0.2.1]
 
-Released 2023-01-29
 
-- proper data type
+<a name="v0.2.0"></a>
+# [Test release (v0.2.0)](https://github.com/Snuffy2/hass-opnsense/releases/tag/v0.2.0) - 06 Sep 2024
 
-# v0.1.10
+[![Downloads for this release](https://img.shields.io/github/downloads/travisghansen/hass-opnsense/0.1.0/total.svg)](https://github.com/travisghansen/hass-opnsense/releases/0.1.0)
+- Gracefully handle permission errors [@Snuffy2](https://github.com/Snuffy2) ([#2](https://github.com/Snuffy2/hass-opnsense/issues/2))
+- Revert instance naming [@Snuffy2](https://github.com/Snuffy2) ([#1](https://github.com/Snuffy2/hass-opnsense/issues/1))
+- Update GitHub Actions [@Snuffy2](https://github.com/Snuffy2) ([#3](https://github.com/Snuffy2/hass-opnsense/issues/3))
+- Update GitHub Actions [@Snuffy2](https://github.com/Snuffy2) ([#5](https://github.com/Snuffy2/hass-opnsense/issues/5))
 
-Released 2023-01-29
+## :wrench: Maintenance :wrench:
 
-- update deprecated syntax
-- minor updates/fixes
-- better logging of api calls
+- Update GitHub actions 2 [@Snuffy2](https://github.com/Snuffy2) ([#7](https://github.com/Snuffy2/hass-opnsense/issues/7))
+- Add Release Drafter and Update Changelog [@Snuffy2](https://github.com/Snuffy2) ([#8](https://github.com/Snuffy2/hass-opnsense/issues/8))
+## Links
+- [Submit bugs/feature requests](https://github.com/travisghansen/hass-opnsense/issues)
 
-# v0.1.9
 
-Released 2023-01-22
+[Changes][v0.2.0]
 
-- more robust handling of vip data structures
 
-# v0.1.8
+[v0.2.5]: https://github.com/Snuffy2/hass-opnsense/compare/0.2.4...v0.2.5
+[0.2.4]: https://github.com/Snuffy2/hass-opnsense/compare/0.2.3...0.2.4
+[0.2.3]: https://github.com/Snuffy2/hass-opnsense/compare/0.2.2...0.2.3
+[0.2.2]: https://github.com/Snuffy2/hass-opnsense/compare/0.2.1...0.2.2
+[0.2.1]: https://github.com/Snuffy2/hass-opnsense/compare/v0.2.0...0.2.1
+[v0.2.0]: https://github.com/Snuffy2/hass-opnsense/tree/v0.2.0
 
-Released 2023-01-17
-
-- more robust handling of vip data structures
-
-# v0.1.7
-
-Released 2023-01-16
-
-- properly use `verify_ssl` data for REST client
-
-# v0.1.6
-
-Released 2023-01-16
-
-- fix issue with update entity failing when opnsense date is not in UTC (#25 #54)
-
-# v0.1.5
-
-Released 2022-08-18
-
-- refactor notice functionality due to breakage with 22.7.2
-
-# v0.1.4
-
-Released 2022-08-17
-
-- remove notice functionality due to breakage with 22.7.2
-
-# v0.1.3
-
-Released 2022-08-17
-
-- properly name the load average entities and remove unit of measure
-- explicitly include `notices.inc` file
-
-# v0.1.2
-
-Released 2022-08-01
-
-- better firmware update logic to support major `upgrades`
-
-# v0.1.1
-
-Released 2022-07-11
-
-- ensure `state` data is reset each interval
-
-# v0.1.0
-
-Released 2022-07-09
-
-- initial release
+<!-- Generated by https://github.com/rhysd/changelog-from-release v3.7.2 -->
