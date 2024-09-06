@@ -6,7 +6,7 @@ on:
 
 jobs:
   update_version:
-    if: ${{ github.event_name == 'release' && github.event.release.prerelease == false && github.event.release.draft == false }}
+    if: ${{ github.event_name == 'release' && github.event.release.draft == false }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,7 +25,15 @@ jobs:
       - name: Update Version in const.py
         run: |
           sed -i 's/VERSION \= \".*\"/VERSION \= \"${{ github.ref_name }}\"/' ./custom_components/opnsense/const.py
+      - name: Update Changelog 
+        if: ${{ github.event.release.prerelease == false  }}
+        uses: rhysd/changelog-from-release/action@v3
+        with:
+          file: CHANGELOG.md
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          commit: false        
       - name: Commit & Push Version Changes
+        if: ${{ github.event.release.prerelease == false  }}
         uses: actions-js/push@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
