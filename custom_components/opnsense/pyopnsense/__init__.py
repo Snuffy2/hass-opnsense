@@ -600,9 +600,6 @@ $toreturn = [
 
     @_log_errors
     async def get_services(self) -> list:
-        response = await self._loop.run_in_executor(
-            None, self._get_proxy().opnsense.list_services
-        )
         response: Mapping[str, Any] | list = await self._get("/api/core/service/search")
         if response is None or not isinstance(response, Mapping):
             _LOGGER.error("Invalid data returned from get_services")
@@ -615,56 +612,49 @@ $toreturn = [
         return services
 
     @_log_errors
-    async def get_service_is_running(self, service) -> bool:
+    async def get_service_is_running(self, service: str) -> bool:
         services: list = await self.get_services()
         if services is None or not isinstance(services, list):
             return False
-        for service in services:
+        for svc in services:
             if (
-                service.get("name", None) == service
-                or service.get("id", None) == service
-            ) and service.get("status", False):
+                svc.get("name", None) == service or svc.get("id", None) == service
+            ) and svc.get("status", False):
                 return True
         return False
 
     @_log_errors
-    async def start_service(self, service) -> bool:
-        api_addr: str = f"/api/core/service/start/{service}"
+    async def start_service(self, service: str) -> bool:
+        api_addr: str = f"/api/core/service/start/{quote_plus(service)}"
         response: Mapping[str, Any] | list = await self._post(api_addr)
-        if (
+        return not (
             response is None
             or not isinstance(response, Mapping)
             or response.get("result", "failed") != "ok"
-        ):
-            return False
-        return True
+        )
 
     @_log_errors
-    async def stop_service(self, service) -> bool:
-        api_addr: str = f"/api/core/service/stop/{service}"
+    async def stop_service(self, service: str) -> bool:
+        api_addr: str = f"/api/core/service/stop/{quote_plus(service)}"
         response: Mapping[str, Any] | list = await self._post(api_addr)
-        if (
+        return not (
             response is None
             or not isinstance(response, Mapping)
             or response.get("result", "failed") != "ok"
-        ):
-            return False
-        return True
+        )
 
     @_log_errors
-    async def restart_service(self, service) -> bool:
-        api_addr: str = f"/api/core/service/restart/{service}"
+    async def restart_service(self, service: str) -> bool:
+        api_addr: str = f"/api/core/service/restart/{quote_plus(service)}"
         response: Mapping[str, Any] | list = await self._post(api_addr)
-        if (
+        return not (
             response is None
             or not isinstance(response, Mapping)
             or response.get("result", "failed") != "ok"
-        ):
-            return False
-        return True
+        )
 
     @_log_errors
-    async def restart_service_if_running(self, service) -> bool:
+    async def restart_service_if_running(self, service: str) -> bool:
         if await self.get_service_is_running(service):
             return await self.restart_service(service)
         return True
