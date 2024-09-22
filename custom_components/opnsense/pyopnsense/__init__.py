@@ -17,6 +17,20 @@ import zoneinfo
 import aiohttp
 import awesomeversion
 from dateutil.parser import parse
+from homeassistant.const import ATTR_DOMAIN, ATTR_ID, ATTR_NAME
+
+from .const import (
+    ATTR_DATA,
+    ATTR_FILESYSTEMS,
+    ATTR_HOSTNAME,
+    ATTR_INTERFACE,
+    ATTR_INTERFACES,
+    ATTR_MAC,
+    ATTR_MEMORY,
+    ATTR_STATUS,
+    ATTR_SYSTEM,
+    ATTR_VERIFY_SSL,
+)
 
 # value to set as the socket timeout
 DEFAULT_TIMEOUT = 60
@@ -59,7 +73,7 @@ class OPNsenseClient(ABC):
         self._password: str = password
 
         self._opts: Mapping[str, Any] = opts or {}
-        self._verify_ssl: bool = self._opts.get("verify_ssl", True)
+        self._verify_ssl: bool = self._opts.get(ATTR_VERIFY_SSL, True)
         parts = urlparse(url.rstrip("/"))
         self._url: str = f"{parts.scheme}://{parts.netloc}"
         self._xmlrpc_url: str = (
@@ -118,7 +132,6 @@ class OPNsenseClient(ABC):
         )
         return proxy
 
-    # @_xmlrpc_timeout
     async def _get_config_section(self, section) -> Mapping[str, Any]:
         config: Mapping[str, Any] = await self.get_config()
         if config is None or not isinstance(config, Mapping):
@@ -321,7 +334,7 @@ $toreturn = [
         if response is None or not isinstance(response, Mapping):
             _LOGGER.error("Invalid data returned from get_device_id")
             return {}
-        return response.get("data", None)
+        return response.get(ATTR_DATA, None)
 
     @_log_errors
     async def get_system_info(self) -> Mapping[str, Any]:
@@ -340,7 +353,7 @@ $toreturn = [
         response: Mapping[str, Any] | list = await self._get(
             "/api/diagnostics/system/systemInformation"
         )
-        system_info["name"] = response.get("name", None)
+        system_info[ATTR_NAME] = response.get(ATTR_NAME, None)
         return system_info
 
     @_log_errors
@@ -365,7 +378,9 @@ $toreturn = [
 ];
 """
         response: Mapping[str, Any] = await self._exec_php(script)
-        response["name"] = f"{response.pop('hostname','')}.{response.pop('domain','')}"
+        response[ATTR_NAME] = (
+            f"{response.pop(ATTR_HOSTNAME,'')}.{response.pop(ATTR_DOMAIN,'')}"
+        )
         return response
 
     @_log_errors
@@ -385,7 +400,7 @@ $toreturn = [
         # {'status_msg': 'Firmware status check was aborted internally. Please try again.', 'status': 'error'}
         # error could be because data has not been refreshed at all OR an upgrade is currently in progress
         if (
-            status["status"] == "error"
+            status[ATTR_STATUS] == "error"
             or "last_check" not in status.keys()
             or not isinstance(dict_get(status, "product.product_check"), dict)
             or dict_get(status, "product.product_check") is None
@@ -411,10 +426,10 @@ $toreturn = [
             if stale:
                 upgradestatus = await self._get("/api/core/firmware/upgradestatus")
                 # print(upgradestatus)
-                if "status" in upgradestatus.keys():
+                if ATTR_STATUS in upgradestatus.keys():
                     # status = running (package refresh in progress OR upgrade in progress)
                     # status = done (refresh/upgrade done)
-                    if upgradestatus["status"] == "done":
+                    if upgradestatus[ATTR_STATUS] == "done":
                         # tigger repo update
                         # should this be /api/core/firmware/upgrade
                         check = await self._post("/api/core/firmware/check")
@@ -463,7 +478,7 @@ $toreturn = [
         response: Mapping[str, Any] = await self._exec_php(script)
         if response is None or not isinstance(response, Mapping):
             return {}
-        return response.get("data", {})
+        return response.get(ATTR_DATA, {})
 
     @_log_errors
     async def get_interfaces(self) -> Mapping[str, Any]:
@@ -607,7 +622,7 @@ $toreturn = [
         # _LOGGER.debug(f"[get_services] response: {response}")
         services: list = response.get("rows", [])
         for service in services:
-            service["status"] = service.get("running", 0) == 1
+            service[ATTR_STATUS] = service.get("running", 0) == 1
         _LOGGER.debug(f"[get_services] services: {services}")
         return services
 
@@ -618,8 +633,8 @@ $toreturn = [
             return False
         for svc in services:
             if (
-                svc.get("name", None) == service or svc.get("id", None) == service
-            ) and svc.get("status", False):
+                svc.get(ATTR_NAME, None) == service or svc.get(ATTR_ID, None) == service
+            ) and svc.get(ATTR_STATUS, False):
                 return True
         return False
 
@@ -669,11 +684,11 @@ $toreturn = [
         if (
             response is None
             or not isinstance(response, Mapping)
-            or not isinstance(response.get("data", None), Mapping)
+            or not isinstance(response.get(ATTR_DATA, None), Mapping)
         ):
             _LOGGER.error("Invalid data returned from get_dhcp_leases")
             return []
-        return response.get("data", {}).get("lease", [])
+        return response.get(ATTR_DATA, {}).get("lease", [])
 
     @_log_errors
     async def get_carp_status(self) -> Mapping[str, Any]:
@@ -695,7 +710,7 @@ $toreturn = [
         if response is None or not isinstance(response, Mapping):
             _LOGGER.error("Invalid data returned from get_carp_status")
             return {}
-        return response.get("data", {})
+        return response.get(ATTR_DATA, {})
 
     @_log_errors
     async def get_carp_interfaces(self) -> Mapping[str, Any]:
@@ -733,7 +748,7 @@ $toreturn = [
         if response is None or not isinstance(response, Mapping):
             _LOGGER.error("Invalid data returned from get_carp_interfaces")
             return {}
-        return response.get("data", {})
+        return response.get(ATTR_DATA, {})
 
     @_log_errors
     async def delete_arp_entry(self, ip) -> None:
@@ -761,7 +776,7 @@ $toreturn = [
     async def system_reboot(self) -> bool:
         response: Mapping[str, Any] | list = await self._post("/api/core/system/reboot")
         _LOGGER.debug(f"[system_reboot] response: {response}")
-        if isinstance(response, Mapping) and response.get("status", "") == "ok":
+        if isinstance(response, Mapping) and response.get(ATTR_STATUS, "") == "ok":
             return True
         return False
 
@@ -769,7 +784,7 @@ $toreturn = [
     async def system_halt(self) -> None:
         response: Mapping[str, Any] | list = await self._post("/api/core/system/halt")
         _LOGGER.debug(f"[system_halt] response: {response}")
-        if isinstance(response, Mapping) and response.get("status", "") == "ok":
+        if isinstance(response, Mapping) and response.get(ATTR_STATUS, "") == "ok":
             return True
         return False
 
@@ -778,11 +793,13 @@ $toreturn = [
         """
         interface should be wan, lan, opt1, opt2 etc, not the description
         """
-        payload: Mapping[str, Any] = {"wake": {"interface": interface, "mac": mac}}
+        payload: Mapping[str, Any] = {
+            "wake": {ATTR_INTERFACE: interface, ATTR_MAC: mac}
+        }
         _LOGGER.debug(f"[send_wol] payload: {payload}")
         response = await self._post("/api/wol/wol/set", payload)
         _LOGGER.debug(f"[send_wol] response: {response}")
-        if isinstance(response, Mapping) and response.get("status", "") == "ok":
+        if isinstance(response, Mapping) and response.get(ATTR_STATUS, "") == "ok":
             return True
         return False
 
@@ -810,13 +827,13 @@ $toreturn = [
         except awesomeversion.exceptions.AwesomeVersionCompareException:
             pass
         telemetry: Mapping[str, Any] = {}
-        telemetry["interfaces"] = await self._get_telemetry_interfaces()
+        telemetry[ATTR_INTERFACES] = await self._get_telemetry_interfaces()
         telemetry["mbuf"] = await self._get_telemetry_mbuf()
         telemetry["pfstate"] = await self._get_telemetry_pfstate()
-        telemetry["memory"] = await self._get_telemetry_memory()
-        telemetry["system"] = await self._get_telemetry_system()
+        telemetry[ATTR_MEMORY] = await self._get_telemetry_memory()
+        telemetry[ATTR_SYSTEM] = await self._get_telemetry_system()
         telemetry["cpu"] = await self._get_telemetry_cpu()
-        telemetry["filesystems"] = await self._get_telemetry_filesystems()
+        telemetry[ATTR_FILESYSTEMS] = await self._get_telemetry_filesystems()
         telemetry["openvpn"] = await self._get_telemetry_openvpn()
         telemetry["gateways"] = await self._get_telemetry_gateways()
         telemetry["temps"] = await self._get_telemetry_temps()
@@ -868,12 +885,12 @@ $toreturn = [
                 ifinfo.get("statistics", {}).get("collisions", None)
             )
             interface["descr"] = ifinfo.get("identifier", "")
-            interface["name"] = ifinfo.get("description", "")
-            interface["status"] = ""
-            if ifinfo.get("status", "") in ("down", "no carrier", "up"):
-                interface["status"] = ifinfo.get("status", "")
-            elif ifinfo.get("status", "") in ("associated"):
-                interface["status"] = "up"
+            interface[ATTR_NAME] = ifinfo.get("description", "")
+            interface[ATTR_STATUS] = ""
+            if ifinfo.get(ATTR_STATUS, "") in ("down", "no carrier", "up"):
+                interface[ATTR_STATUS] = ifinfo.get(ATTR_STATUS, "")
+            elif ifinfo.get(ATTR_STATUS, "") in ("associated"):
+                interface[ATTR_STATUS] = "up"
             interface["ipaddr"] = ifinfo.get("addr4", "")
             interface["media"] = ifinfo.get("media", "")
             interfaces[ifinfo.get("identifier", "")] = interface
@@ -936,10 +953,10 @@ $toreturn = [
             return {}
         memory: Mapping[str, Any] = {}
         memory["physmem"] = self._try_to_int(
-            memory_info.get("memory", {}).get("total", None)
+            memory_info.get(ATTR_MEMORY, {}).get("total", None)
         )
         memory["used"] = self._try_to_int(
-            memory_info.get("memory", {}).get("used", None)
+            memory_info.get(ATTR_MEMORY, {}).get("used", None)
         )
         memory["used_percent"] = (
             round(memory["used"] / memory["physmem"] * 100)
@@ -1079,11 +1096,11 @@ $toreturn = [
         for vpnid, vpn_info in openvpn_info.items():
             vpn: Mapping[str, Any] = {}
             vpn["vpnid"] = vpn_info.get("vpnid", "")
-            vpn["name"] = vpn_info.get("name", "")
+            vpn[ATTR_NAME] = vpn_info.get(ATTR_NAME, "")
             total_bytes_recv = 0
             total_bytes_sent = 0
             for connect in connection_info.get("rows", {}):
-                if connect.get("id", None) and connect.get("id", None) == vpn.get(
+                if connect.get(ATTR_ID, None) and connect.get(ATTR_ID, None) == vpn.get(
                     "vpnid", None
                 ):
                     total_bytes_recv += self._try_to_int(
@@ -1110,11 +1127,11 @@ $toreturn = [
             return {}
         gateways: Mapping[str, Any] = {}
         for gw_info in gateways_info.get("items", []):
-            if isinstance(gw_info, Mapping) and "name" in gw_info:
-                gateways[gw_info["name"]] = gw_info
+            if isinstance(gw_info, Mapping) and ATTR_NAME in gw_info:
+                gateways[gw_info[ATTR_NAME]] = gw_info
         for gateway in gateways.values():
-            gateway["status"] = gateway.pop(
-                "status_translated", gateway.get("status", "")
+            gateway[ATTR_STATUS] = gateway.pop(
+                "status_translated", gateway.get(ATTR_STATUS, "")
             ).lower()
         _LOGGER.debug(f"[get_telemetry_gateways] gateways: {gateways}")
         return gateways
@@ -1131,7 +1148,7 @@ $toreturn = [
         for i, temp_info in enumerate(temps_info):
             temp: Mapping[str, Any] = {}
             temp["temperature"] = self._try_to_float(temp_info.get("temperature", 0), 0)
-            temp["name"] = (
+            temp[ATTR_NAME] = (
                 f"{temp_info.get('type_translated', 'Num')} {temp_info.get('device_seq', i)}"
             )
             temp["device_id"] = temp_info.get("device", str(i))
@@ -1346,7 +1363,7 @@ foreach ($ovpn_servers as $server) {
                 pending_notices_present = True
                 real_notice: Mapping[str, Any] = {}
                 real_notice["notice"] = notice.get("message", None)
-                real_notice["id"] = key
+                real_notice[ATTR_ID] = key
                 real_notice["created_at"] = notice.get("timestamp", None)
                 pending_notices.append(real_notice)
 
@@ -1378,7 +1395,7 @@ foreach ($ovpn_servers as $server) {
                     _LOGGER.debug(f"[close_notice] id: {key}, dismiss: {dismiss}")
                     if (
                         not isinstance(dismiss, Mapping)
-                        or dismiss.get("status", "failed") != "ok"
+                        or dismiss.get(ATTR_STATUS, "failed") != "ok"
                     ):
                         success = False
         else:
@@ -1388,7 +1405,7 @@ foreach ($ovpn_servers as $server) {
             _LOGGER.debug(f"[close_notice] id: {id}, dismiss: {dismiss}")
             if (
                 not isinstance(dismiss, Mapping)
-                or dismiss.get("status", "failed") != "ok"
+                or dismiss.get(ATTR_STATUS, "failed") != "ok"
             ):
                 success = False
         _LOGGER.debug(f"[close_notice] success: {success}")

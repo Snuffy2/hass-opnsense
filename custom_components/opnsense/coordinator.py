@@ -7,6 +7,14 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .const import (
+    ATTR_CONFIG,
+    ATTR_INTERFACES,
+    ATTR_PREVIOUS_STATE,
+    ATTR_SERVICES,
+    ATTR_SYSTEM_INFO,
+    ATTR_TELEMETRY,
+)
 from .helpers import dict_get
 from .pyopnsense import OPNsenseClient
 
@@ -114,15 +122,15 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
         current_time: float = time.time()
 
         previous_state: Mapping[str, Any] = copy.deepcopy(self._state)
-        if "previous_state" in previous_state.keys():
-            del previous_state["previous_state"]
+        if ATTR_PREVIOUS_STATE in previous_state.keys():
+            del previous_state[ATTR_PREVIOUS_STATE]
 
         # ensure clean state each interval
         self._state = {}
         self._state["update_time"] = current_time
-        self._state["previous_state"] = previous_state
+        self._state[ATTR_PREVIOUS_STATE] = previous_state
 
-        self._state["system_info"] = await self._get_system_info()
+        self._state[ATTR_SYSTEM_INFO] = await self._get_system_info()
         self._state["host_firmware_version"] = await self._get_host_firmware_version()
 
         if self._device_tracker_coordinator:
@@ -134,10 +142,10 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 )
         else:
             self._state["firmware_update_info"] = await self._get_firmware_update_info()
-            self._state["telemetry"] = await self._get_telemetry()
-            self._state["config"] = await self._get_config()
-            self._state["interfaces"] = await self._get_interfaces()
-            self._state["services"] = await self._get_services()
+            self._state[ATTR_TELEMETRY] = await self._get_telemetry()
+            self._state[ATTR_CONFIG] = await self._get_config()
+            self._state[ATTR_INTERFACES] = await self._get_interfaces()
+            self._state[ATTR_SERVICES] = await self._get_services()
             self._state["carp_interfaces"] = await self._get_carp_interfaces()
             self._state["carp_status"] = await self._get_carp_status()
             # self._state["dhcp_leases"] = await self._client.get_dhcp_leases()
@@ -161,20 +169,22 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
 
             # calcule pps and kbps
             update_time = dict_get(self._state, "update_time")
-            previous_update_time = dict_get(self._state, "previous_state.update_time")
+            previous_update_time = dict_get(
+                self._state, f"{ATTR_PREVIOUS_STATE}.update_time"
+            )
 
             if previous_update_time is not None:
                 elapsed_time = update_time - previous_update_time
 
                 for interface_name in dict_get(
-                    self._state, "telemetry.interfaces", {}
+                    self._state, f"{ATTR_TELEMETRY}.interfaces", {}
                 ).keys():
                     interface = dict_get(
-                        self._state, f"telemetry.interfaces.{interface_name}"
+                        self._state, f"{ATTR_TELEMETRY}.interfaces.{interface_name}"
                     )
                     previous_interface = dict_get(
                         self._state,
-                        f"previous_state.telemetry.interfaces.{interface_name}",
+                        f"{ATTR_PREVIOUS_STATE}.{ATTR_TELEMETRY}.interfaces.{interface_name}",
                     )
                     if previous_interface is None:
                         break
@@ -214,12 +224,12 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                         interface[new_property] = int(round(value, 0))
 
                 for server_name in dict_get(
-                    self._state, "telemetry.openvpn.servers", {}
+                    self._state, f"{ATTR_TELEMETRY}.openvpn.servers", {}
                 ).keys():
                     if (
                         server_name
                         not in dict_get(
-                            self._state, "telemetry.openvpn.servers", {}
+                            self._state, f"{ATTR_TELEMETRY}.openvpn.servers", {}
                         ).keys()
                     ):
                         continue
@@ -227,13 +237,17 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                     if (
                         server_name
                         not in dict_get(
-                            self._state, "previous_state.telemetry.openvpn.servers", {}
+                            self._state,
+                            f"{ATTR_PREVIOUS_STATE}.{ATTR_TELEMETRY}.openvpn.servers",
+                            {},
                         ).keys()
                     ):
                         continue
 
-                    server = self._state["telemetry"]["openvpn"]["servers"][server_name]
-                    previous_server = self._state["previous_state"]["telemetry"][
+                    server = self._state[ATTR_TELEMETRY]["openvpn"]["servers"][
+                        server_name
+                    ]
+                    previous_server = self._state[ATTR_PREVIOUS_STATE][ATTR_TELEMETRY][
                         "openvpn"
                     ]["servers"][server_name]
 

@@ -23,6 +23,7 @@ from homeassistant.util import slugify
 import voluptuous as vol
 
 from .const import (
+    ATTR_MAC,
     CONF_DEVICE_TRACKER_CONSIDER_HOME,
     CONF_DEVICE_TRACKER_ENABLED,
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
@@ -92,7 +93,7 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 system_info: Mapping[str, Any] = await client.get_system_info()
 
                 if name is None:
-                    name: str = system_info["name"]
+                    name: str = system_info[ATTR_NAME]
 
                 # https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
                 await self.async_set_unique_id(slugify(system_info["device_id"]))
@@ -265,7 +266,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
             # follow with all arp table entries
             for entry in arp_table:
-                mac: str = entry.get("mac", "").lower()
+                mac: str = entry.get(ATTR_MAC, "").lower()
                 if len(mac) < 1:
                     continue
 

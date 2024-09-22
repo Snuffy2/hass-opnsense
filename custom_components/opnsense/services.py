@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 import logging
 
+from homeassistant.const import ATTR_DEVICE_ID, ATTR_ENTITY_ID, ATTR_ID
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import (
@@ -11,6 +12,13 @@ from homeassistant.helpers import (
 import voluptuous as vol
 
 from .const import (
+    ATTR_INTERFACE,
+    ATTR_MAC,
+    ATTR_ONLY_IF_RUNNING,
+    ATTR_SERVICE_ID,
+    ATTR_SERVICE_NAME,
+    ATTR_SERVICE_TYPE,
+    DEFAULT_SERVICE_CLOSE_NOTICE_ID,
     DOMAIN,
     OPNSENSE_CLIENT,
     SERVICE_CLOSE_NOTICE,
@@ -82,27 +90,27 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def service_close_notice(call: ServiceCall) -> None:
         clients: list = await _get_clients(
-            call.data.get("device_id", []), call.data.get("entity_id", [])
+            call.data.get(ATTR_DEVICE_ID, []), call.data.get(ATTR_ENTITY_ID, [])
         )
         _LOGGER.debug(f"[service_close_notice] clients: {clients}")
         for client in clients:
             _LOGGER.debug(
-                f"[service_close_notice] Calling stop_service for {call.data.get('id')}"
+                f"[service_close_notice] Calling stop_service for {call.data.get(ATTR_ID)}"
             )
-            await client.close_notice(call.data.get("id"))
+            await client.close_notice(call.data.get(ATTR_ID))
 
     async def service_start_service(call: ServiceCall) -> None:
         clients: list = await _get_clients(
-            call.data.get("device_id", []), call.data.get("entity_id", [])
+            call.data.get(ATTR_DEVICE_ID, []), call.data.get(ATTR_ENTITY_ID, [])
         )
         _LOGGER.debug(f"[service_start_service] clients: {clients}")
         success = None
         for client in clients:
             _LOGGER.debug(
-                f"[service_start_service] Calling start_service for {call.data.get('service_id', call.data.get('service_name'))}"
+                f"[service_start_service] Calling start_service for {call.data.get(ATTR_SERVICE_ID, call.data.get(ATTR_SERVICE_NAME))}"
             )
             response = await client.start_service(
-                call.data.get("service_id", call.data.get("service_name"))
+                call.data.get(ATTR_SERVICE_ID, call.data.get(ATTR_SERVICE_NAME))
             )
             if success is None or success:
                 success = response
@@ -113,16 +121,16 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def service_stop_service(call: ServiceCall) -> None:
         clients: list = await _get_clients(
-            call.data.get("device_id", []), call.data.get("entity_id", [])
+            call.data.get(ATTR_DEVICE_ID, []), call.data.get(ATTR_ENTITY_ID, [])
         )
         _LOGGER.debug(f"[service_stop_service] clients: {clients}")
         success = None
         for client in clients:
             _LOGGER.debug(
-                f"[service_stop_service] Calling stop_service for {call.data.get('service_id', call.data.get('service_name'))}"
+                f"[service_stop_service] Calling stop_service for {call.data.get(ATTR_SERVICE_ID, call.data.get(ATTR_SERVICE_NAME))}"
             )
             response = await client.stop_service(
-                call.data.get("service_id", call.data.get("service_name"))
+                call.data.get(ATTR_SERVICE_ID, call.data.get(ATTR_SERVICE_NAME))
             )
             if success is None or success:
                 success = response
@@ -133,19 +141,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def service_restart_service(call: ServiceCall) -> None:
         clients: list = await _get_clients(
-            call.data.get("device_id", []), call.data.get("entity_id", [])
+            call.data.get(ATTR_DEVICE_ID, []), call.data.get(ATTR_ENTITY_ID, [])
         )
         _LOGGER.debug(f"[service_restart_service] clients: {clients}")
         success = None
-        if call.data.get("only_if_running"):
+        if call.data.get(ATTR_ONLY_IF_RUNNING):
             for client in clients:
                 _LOGGER.debug(
-                    f"[service_restart_service] Calling restart_service_if_running for {call.data.get('service_id', call.data.get('service_name'))}"
+                    f"[service_restart_service] Calling restart_service_if_running for {call.data.get(ATTR_SERVICE_ID, call.data.get(ATTR_SERVICE_NAME))}"
                 )
                 response = await client.restart_service_if_running(
                     call.data.get(
-                        "service_id",
-                        call.data.get("service_name"),
+                        ATTR_SERVICE_ID,
+                        call.data.get(ATTR_SERVICE_NAME),
                     )
                 )
                 if success is None or success:
@@ -153,12 +161,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         else:
             for client in clients:
                 _LOGGER.debug(
-                    f"[service_restart_service] Calling restart_service for {call.data.get('service_id', call.data.get('service_name'))}"
+                    f"[service_restart_service] Calling restart_service for {call.data.get(ATTR_SERVICE_ID, call.data.get(ATTR_SERVICE_NAME))}"
                 )
                 response = await client.restart_service(
                     call.data.get(
-                        "service_id",
-                        call.data.get("service_name"),
+                        ATTR_SERVICE_ID,
+                        call.data.get(ATTR_SERVICE_NAME),
                     )
                 )
                 if success is None or success:
@@ -170,7 +178,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def service_system_halt(call: ServiceCall) -> None:
         clients: list = await _get_clients(
-            call.data.get("device_id", []), call.data.get("entity_id", [])
+            call.data.get(ATTR_DEVICE_ID, []), call.data.get(ATTR_ENTITY_ID, [])
         )
         _LOGGER.debug(f"[service_system_halt] clients: {clients}")
         for client in clients:
@@ -179,7 +187,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def service_system_reboot(call: ServiceCall) -> None:
         clients: list = await _get_clients(
-            call.data.get("device_id", []), call.data.get("entity_id", [])
+            call.data.get(ATTR_DEVICE_ID, []), call.data.get(ATTR_ENTITY_ID, [])
         )
         _LOGGER.debug(f"[service_system_reboot] clients: {clients}")
         for client in clients:
@@ -188,23 +196,27 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def service_send_wol(call: ServiceCall) -> None:
         clients: list = await _get_clients(
-            call.data.get("device_id", []), call.data.get("entity_id", [])
+            call.data.get(ATTR_DEVICE_ID, []), call.data.get(ATTR_ENTITY_ID, [])
         )
         _LOGGER.debug(f"[service_send_wol] clients: {clients}")
         for client in clients:
             _LOGGER.debug(
-                f"[service_send_wol] Calling WOL. interface: {call.data.get('interface')}, mac: {call.data.get('mac')}"
+                f"[service_send_wol] Calling WOL. interface: {call.data.get(ATTR_INTERFACE)}, mac: {call.data.get(ATTR_MAC)}"
             )
-            await client.send_wol(call.data.get("interface"), call.data.get("mac"))
+            await client.send_wol(
+                call.data.get(ATTR_INTERFACE), call.data.get(ATTR_MAC)
+            )
 
     hass.services.async_register(
         domain=DOMAIN,
         service=SERVICE_CLOSE_NOTICE,
         schema=vol.Schema(
             {
-                vol.Required("id", default="all"): vol.Any(cv.positive_int, cv.string),
-                vol.Optional("device_id"): vol.Any(cv.string),
-                vol.Optional("entity_id"): vol.Any(cv.string),
+                vol.Required(ATTR_ID, default=DEFAULT_SERVICE_CLOSE_NOTICE_ID): vol.Any(
+                    cv.positive_int, cv.string
+                ),
+                vol.Optional(ATTR_DEVICE_ID): vol.Any(cv.string),
+                vol.Optional(ATTR_ENTITY_ID): vol.Any(cv.string),
             }
         ),
         service_func=service_close_notice,
@@ -216,17 +228,17 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Exclusive(
-                    "service_id",
-                    "service_type",
+                    ATTR_SERVICE_ID,
+                    ATTR_SERVICE_TYPE,
                     msg="Must use service_id or service_name but not both",
                 ): cv.string,
                 vol.Exclusive(
-                    "service_name",
-                    "service_type",
+                    ATTR_SERVICE_NAME,
+                    ATTR_SERVICE_TYPE,
                     msg="Must use service_id or service_name but not both",
                 ): cv.string,
-                vol.Optional("device_id"): vol.Any(cv.string),
-                vol.Optional("entity_id"): vol.Any(cv.string),
+                vol.Optional(ATTR_DEVICE_ID): vol.Any(cv.string),
+                vol.Optional(ATTR_ENTITY_ID): vol.Any(cv.string),
             }
         ),
         service_func=service_start_service,
@@ -238,17 +250,17 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Exclusive(
-                    "service_id",
-                    "service_type",
+                    ATTR_SERVICE_ID,
+                    ATTR_SERVICE_TYPE,
                     msg="Must use service_id or service_name but not both",
                 ): cv.string,
                 vol.Exclusive(
-                    "service_name",
-                    "service_type",
+                    ATTR_SERVICE_NAME,
+                    ATTR_SERVICE_TYPE,
                     msg="Must use service_id or service_name but not both",
                 ): cv.string,
-                vol.Optional("device_id"): vol.Any(cv.string),
-                vol.Optional("entity_id"): vol.Any(cv.string),
+                vol.Optional(ATTR_DEVICE_ID): vol.Any(cv.string),
+                vol.Optional(ATTR_ENTITY_ID): vol.Any(cv.string),
             }
         ),
         service_func=service_stop_service,
@@ -260,18 +272,18 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Exclusive(
-                    "service_id",
-                    "service_type",
+                    ATTR_SERVICE_ID,
+                    ATTR_SERVICE_TYPE,
                     msg="Must use service_id or service_name but not both",
                 ): cv.string,
                 vol.Exclusive(
-                    "service_name",
-                    "service_type",
+                    ATTR_SERVICE_NAME,
+                    ATTR_SERVICE_TYPE,
                     msg="Must use service_id or service_name but not both",
                 ): cv.string,
-                vol.Optional("only_if_running"): cv.boolean,
-                vol.Optional("device_id"): vol.Any(cv.string),
-                vol.Optional("entity_id"): vol.Any(cv.string),
+                vol.Optional(ATTR_ONLY_IF_RUNNING): cv.boolean,
+                vol.Optional(ATTR_DEVICE_ID): vol.Any(cv.string),
+                vol.Optional(ATTR_ENTITY_ID): vol.Any(cv.string),
             }
         ),
         service_func=service_restart_service,
@@ -282,8 +294,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         service=SERVICE_SYSTEM_HALT,
         schema=vol.Schema(
             {
-                vol.Optional("device_id"): vol.Any(cv.string),
-                vol.Optional("entity_id"): vol.Any(cv.string),
+                vol.Optional(ATTR_DEVICE_ID): vol.Any(cv.string),
+                vol.Optional(ATTR_ENTITY_ID): vol.Any(cv.string),
             }
         ),
         service_func=service_system_halt,
@@ -294,8 +306,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         service=SERVICE_SYSTEM_REBOOT,
         schema=vol.Schema(
             {
-                vol.Optional("device_id"): vol.Any(cv.string),
-                vol.Optional("entity_id"): vol.Any(cv.string),
+                vol.Optional(ATTR_DEVICE_ID): vol.Any(cv.string),
+                vol.Optional(ATTR_ENTITY_ID): vol.Any(cv.string),
             }
         ),
         service_func=service_system_reboot,
@@ -306,10 +318,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         service=SERVICE_SEND_WOL,
         schema=vol.Schema(
             {
-                vol.Required("interface"): vol.Any(cv.string),
-                vol.Required("mac"): vol.Any(cv.string),
-                vol.Optional("device_id"): vol.Any(cv.string),
-                vol.Optional("entity_id"): vol.Any(cv.string),
+                vol.Required(ATTR_INTERFACE): vol.Any(cv.string),
+                vol.Required(ATTR_MAC): vol.Any(cv.string),
+                vol.Optional(ATTR_DEVICE_ID): vol.Any(cv.string),
+                vol.Optional(ATTR_ENTITY_ID): vol.Any(cv.string),
             }
         ),
         service_func=service_send_wol,

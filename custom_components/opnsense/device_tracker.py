@@ -21,6 +21,8 @@ from mac_vendor_lookup import AsyncMacLookup
 
 from . import CoordinatorEntityManager, OPNsenseEntity
 from .const import (
+    ATTR_INTERFACE,
+    ATTR_MAC,
     CONF_DEVICE_TRACKER_CONSIDER_HOME,
     CONF_DEVICES,
     DEFAULT_DEVICE_TRACKER_CONSIDER_HOME,
@@ -95,7 +97,7 @@ async def async_setup_entry(
                 mac_addresses: list = [
                     mac_address.lower()
                     for arp_entry in arp_entries
-                    if (mac_address := arp_entry.get("mac", ""))
+                    if (mac_address := arp_entry.get(ATTR_MAC, ""))
                 ]
 
         for mac_address in mac_addresses:
@@ -176,7 +178,7 @@ class OPNsenseScannerEntity(OPNsenseEntity, ScannerEntity):
         if arp_table is None:
             return None
         for entry in arp_table:
-            if entry.get("mac", "").lower() == self._mac_address:
+            if entry.get(ATTR_MAC, "").lower() == self._mac_address:
                 return entry
 
         return None
@@ -204,7 +206,7 @@ class OPNsenseScannerEntity(OPNsenseEntity, ScannerEntity):
         """Return extra state attributes."""
         entry = self._get_opnsense_arp_entry()
         if entry is not None:
-            for prop_name in ["interface", "expires", "type"]:
+            for prop_name in [ATTR_INTERFACE, "expires", "type"]:
                 self._extra_state[prop_name] = entry.get(prop_name)
 
         if self._last_known_hostname is not None:
@@ -330,7 +332,7 @@ class OPNsenseScannerEntity(OPNsenseEntity, ScannerEntity):
 
         state = state.attributes
         for attr in [
-            "interface",
+            ATTR_INTERFACE,
             "expires",
             "type",
             "last_known_ip",

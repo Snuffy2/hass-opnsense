@@ -10,6 +10,7 @@ from homeassistant.components.switch import (
     SwitchEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_ID, ATTR_NAME
 from homeassistant.const import STATE_UNKNOWN  # ENTITY_CATEGORY_CONFIG,
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_platform
@@ -18,7 +19,7 @@ from homeassistant.util import slugify
 from custom_components.opnsense.pyopnsense import OPNsenseClient
 
 from . import CoordinatorEntityManager, OPNsenseEntity
-from .const import COORDINATOR, DOMAIN
+from .const import ATTR_CONFIG, ATTR_SERVICES, ATTR_STATUS, COORDINATOR, DOMAIN
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .helpers import dict_get
 
@@ -41,8 +42,8 @@ async def async_setup_entry(
         entities = []
 
         # filter rules
-        if "filter" in state["config"].keys():
-            rules = dict_get(state, "config.filter.rule")
+        if "filter" in state[ATTR_CONFIG].keys():
+            rules = dict_get(state, f"{ATTR_CONFIG}.filter.rule")
             if isinstance(rules, list):
                 for rule in rules:
                     if not isinstance(rule, dict):
@@ -57,7 +58,7 @@ async def async_setup_entry(
                     if "associated-rule-id" in rule.keys():
                         continue
 
-                    if "descr" not in rule.keys():
+                    if "descr" not in rule:
                         rule["descr"] = ""
 
                     # not possible to disable these rules
@@ -76,8 +77,8 @@ async def async_setup_entry(
                         config_entry,
                         coordinator,
                         SwitchEntityDescription(
-                            key="filter.{}".format(tracker),
-                            name="Filter Rule {} ({})".format(tracker, rule["descr"]),
+                            key=f"filter.{tracker}",
+                            name=f"Filter Rule {tracker} ({rule['descr']})",
                             icon=icon,
                             # entity_category=entity_category,
                             device_class=device_class,
@@ -87,8 +88,8 @@ async def async_setup_entry(
                     entities.append(entity)
 
         # nat port forward rules
-        if "nat" in state["config"].keys():
-            rules = dict_get(state, "config.nat.rule")
+        if "nat" in state[ATTR_CONFIG].keys():
+            rules = dict_get(state, f"{ATTR_CONFIG}.nat.rule")
             if isinstance(rules, list):
                 for rule in rules:
                     if not isinstance(rule, dict):
@@ -106,17 +107,15 @@ async def async_setup_entry(
                     if len(tracker) < 1:
                         continue
 
-                    if "descr" not in rule.keys():
+                    if "descr" not in rule:
                         rule["descr"] = ""
 
                     entity = OPNsenseNatSwitch(
                         config_entry,
                         coordinator,
                         SwitchEntityDescription(
-                            key="nat_port_forward.{}".format(tracker),
-                            name="NAT Port Forward Rule {} ({})".format(
-                                tracker, rule["descr"]
-                            ),
+                            key=f"nat_port_forward.{tracker}",
+                            name=f"NAT Port Forward Rule {tracker} ({rule['descr']})",
                             icon=icon,
                             # entity_category=entity_category,
                             device_class=device_class,
@@ -126,9 +125,9 @@ async def async_setup_entry(
                     entities.append(entity)
 
         # nat outbound rules
-        if "nat" in state["config"].keys():
+        if "nat" in state[ATTR_CONFIG].keys():
             # to actually be applicable mode must by "hybrid" or "advanced"
-            rules = dict_get(state, "config.nat.outbound.rule")
+            rules = dict_get(state, f"{ATTR_CONFIG}.nat.outbound.rule")
             if isinstance(rules, list):
                 for rule in rules:
                     if not isinstance(rule, dict):
@@ -146,7 +145,7 @@ async def async_setup_entry(
                     if len(tracker) < 1:
                         continue
 
-                    if "descr" not in rule.keys():
+                    if "descr" not in rule:
                         rule["descr"] = ""
 
                     if "Auto created rule" in rule["descr"]:
@@ -156,10 +155,8 @@ async def async_setup_entry(
                         config_entry,
                         coordinator,
                         SwitchEntityDescription(
-                            key="nat_outbound.{}".format(tracker),
-                            name="NAT Outbound Rule {} ({})".format(
-                                tracker, rule["descr"]
-                            ),
+                            key=f"nat_outbound.{tracker}",
+                            name=f"NAT Outbound Rule {tracker} ({rule['descr']})",
                             icon=icon,
                             # entity_category=entity_category,
                             device_class=device_class,
@@ -169,10 +166,10 @@ async def async_setup_entry(
                     entities.append(entity)
 
         # services
-        for service in state["services"]:
+        for service in state[ATTR_SERVICES]:
             if service.get("locked", 1) == 1:
                 continue
-            for prop_name in ["status"]:
+            for prop_name in [ATTR_STATUS]:
                 icon = "mdi:application-cog-outline"
                 # likely only want very specific services to manipulate from actions
                 enabled_default = False
@@ -183,8 +180,8 @@ async def async_setup_entry(
                     config_entry,
                     coordinator,
                     SwitchEntityDescription(
-                        key=f"service.{service.get('id', service.get('name', 'unknown'))}.{prop_name}",
-                        name=f"Service {service.get('description', service.get('name', 'Unknown'))} {prop_name}",
+                        key=f"service.{service.get(ATTR_ID, service.get(ATTR_NAME, 'unknown'))}.{prop_name}",
+                        name=f"Service {service.get('description', service.get(ATTR_NAME, 'Unknown'))} {prop_name}",
                         icon=icon,
                         # entity_category=entity_category,
                         device_class=device_class,
@@ -214,9 +211,9 @@ class OPNsenseSwitch(OPNsenseEntity, SwitchEntity):
         """Initialize the entity."""
         self.config_entry = config_entry
         self.entity_description = entity_description
-        self.coordinator = coordinator
-        self._attr_name = f"{self.opnsense_device_name} {entity_description.name}"
-        self._attr_unique_id = slugify(
+        self.coordinator: OPNsenseDataUpdateCoordinator = coordinator
+        self._attr_name: str = f"{self.opnsense_device_name} {entity_description.name}"
+        self._attr_unique_id: str = slugify(
             f"{self.opnsense_device_unique_id}_{entity_description.key}"
         )
 
@@ -238,7 +235,7 @@ class OPNsenseFilterSwitch(OPNsenseSwitch):
     def _opnsense_get_rule(self):
         state: Mapping[str, Any] = self.coordinator.data
         tracker: str = self._opnsense_get_tracker()
-        for rule in state["config"]["filter"]["rule"]:
+        for rule in state[ATTR_CONFIG]["filter"]["rule"]:
             if dict_get(rule, "created.time") == tracker:
                 return rule
         return None
@@ -299,9 +296,9 @@ class OPNsenseNatSwitch(OPNsenseSwitch):
         rule_type: str = self._opnsense_get_rule_type()
         rules: list = []
         if rule_type == "nat_port_forward":
-            rules = state["config"]["nat"]["rule"]
+            rules = state[ATTR_CONFIG]["nat"]["rule"]
         if rule_type == "nat_outbound":
-            rules = state["config"]["nat"]["outbound"]["rule"]
+            rules = state[ATTR_CONFIG]["nat"]["outbound"]["rule"]
 
         for rule in rules:
             if dict_get(rule, "created.time") == tracker:
@@ -369,8 +366,8 @@ class OPNsenseServiceSwitch(OPNsenseSwitch):
     def _opnsense_get_service(self) -> Mapping[str, Any] | None:
         state: Mapping[str, Any] = self.coordinator.data
         service_id: str = self._opnsense_get_service_id()
-        for service in state["services"]:
-            if service["id"] == service_id:
+        for service in state[ATTR_SERVICES]:
+            if service[ATTR_ID] == service_id:
                 return service
         return None
 
@@ -398,7 +395,7 @@ class OPNsenseServiceSwitch(OPNsenseSwitch):
         if isinstance(service, Mapping):
             client: OPNsenseClient = self._get_opnsense_client()
             result: bool = await client.start_service(
-                service.get("id", service.get("name", None))
+                service.get(ATTR_ID, service.get(ATTR_NAME, None))
             )
             if result:
                 await self.coordinator.async_refresh()
@@ -409,7 +406,7 @@ class OPNsenseServiceSwitch(OPNsenseSwitch):
         if isinstance(service, Mapping):
             client: OPNsenseClient = self._get_opnsense_client()
             result: bool = await client.stop_service(
-                service.get("id", service.get("name", None))
+                service.get(ATTR_ID, service.get(ATTR_NAME, None))
             )
             if result:
                 await self.coordinator.async_refresh()
@@ -417,7 +414,7 @@ class OPNsenseServiceSwitch(OPNsenseSwitch):
     @property
     def extra_state_attributes(self) -> Mapping[str, Any]:
         service: Mapping[str, Any] | None = self._opnsense_get_service()
-        attributes = {}
-        for attr in ["id", "name"]:
+        attributes: Mapping[str, Any] = {}
+        for attr in [ATTR_ID, ATTR_NAME]:
             attributes[f"service_{attr}"] = service.get(attr, None)
         return attributes

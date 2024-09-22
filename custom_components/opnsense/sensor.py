@@ -13,6 +13,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (  # ENTITY_CATEGORY_DIAGNOSTIC,
+    ATTR_NAME,
     PERCENTAGE,
     STATE_UNKNOWN,
     UnitOfDataRate,
@@ -28,6 +29,12 @@ from homeassistant.util.dt import utc_from_timestamp
 
 from . import CoordinatorEntityManager, OPNsenseEntity
 from .const import (
+    ATTR_FILESYSTEMS,
+    ATTR_INTERFACES,
+    ATTR_MEMORY,
+    ATTR_STATUS,
+    ATTR_SYSTEM,
+    ATTR_TELEMETRY,
     COORDINATOR,
     COUNT,
     DATA_PACKETS,
@@ -61,17 +68,17 @@ async def async_setup_entry(
         for sensor_type in resources:
             enabled_default = False
             if sensor_type in [
-                "telemetry.pfstate.used_percent",
-                "telemetry.mbuf.used_percent",
-                "telemetry.memory.swap_used_percent",
-                "telemetry.memory.used_percent",
-                "telemetry.cpu.frequency.current",
-                "telemetry.cpu.usage_total",
-                "telemetry.system.load_average.one_minute",
-                "telemetry.system.load_average.five_minute",
-                "telemetry.system.load_average.fifteen_minute",
-                "telemetry.system.temp",
-                "telemetry.system.boottime",
+                f"{ATTR_TELEMETRY}.pfstate.used_percent",
+                f"{ATTR_TELEMETRY}.mbuf.used_percent",
+                f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.swap_used_percent",
+                f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.used_percent",
+                f"{ATTR_TELEMETRY}.cpu.frequency.current",
+                f"{ATTR_TELEMETRY}.cpu.usage_total",
+                f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.one_minute",
+                f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.five_minute",
+                f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.fifteen_minute",
+                f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.temp",
+                f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.boottime",
                 # "dhcp_stats.leases.total",
                 "dhcp_stats.leases.online",
                 # "dhcp_stats.leases.offline",
@@ -87,7 +94,7 @@ async def async_setup_entry(
             entities.append(entity)
 
         # filesystems
-        for filesystem in dict_get(state, "telemetry.filesystems", []):
+        for filesystem in dict_get(state, f"{ATTR_TELEMETRY}.{ATTR_FILESYSTEMS}", []):
             device_clean: str = normalize_filesystem_device_name(filesystem["device"])
             mountpoint_clean: str = normalize_filesystem_device_name(
                 filesystem["mountpoint"]
@@ -96,8 +103,8 @@ async def async_setup_entry(
                 config_entry,
                 coordinator,
                 SensorEntityDescription(
-                    key=f"telemetry.filesystems.{device_clean}",
-                    name="Filesystem Used Percentage {}".format(mountpoint_clean),
+                    key=f"{ATTR_TELEMETRY}.{ATTR_FILESYSTEMS}.{device_clean}",
+                    name=f"Filesystem Used Percentage {mountpoint_clean}",
                     native_unit_of_measurement=PERCENTAGE,
                     icon="mdi:harddisk",
                     state_class=SensorStateClass.MEASUREMENT,
@@ -136,10 +143,10 @@ async def async_setup_entry(
 
         # interfaces
         for interface_name, interface in dict_get(
-            state, "telemetry.interfaces", {}
+            state, f"{ATTR_TELEMETRY}.interfaces", {}
         ).items():
             for prop_name in [
-                "status",
+                ATTR_STATUS,
                 "inerrs",
                 "outerrs",
                 "collisions",
@@ -176,7 +183,7 @@ async def async_setup_entry(
 
                 # enabled_default
                 if prop_name in [
-                    "status",
+                    ATTR_STATUS,
                     "inbytes_kilobytes_per_second",
                     "outbytes_kilobytes_per_second",
                     "inpkts_packets_per_second",
@@ -213,7 +220,7 @@ async def async_setup_entry(
                 if "pkts" in prop_name or "bytes" in prop_name:
                     icon = "mdi:server-network"
 
-                if prop_name == "status":
+                if prop_name == ATTR_STATUS:
                     icon = "mdi:check-network-outline"
 
                 if icon is None:
@@ -223,7 +230,7 @@ async def async_setup_entry(
                     config_entry,
                     coordinator,
                     SensorEntityDescription(
-                        key=f"telemetry.interface.{interface_name}.{prop_name}",
+                        key=f"{ATTR_TELEMETRY}.interface.{interface_name}.{prop_name}",
                         name=f"Interface {interface_name} {prop_name}",
                         native_unit_of_measurement=native_unit_of_measurement,
                         icon=icon,
@@ -235,8 +242,8 @@ async def async_setup_entry(
                 entities.append(entity)
 
         # gateways
-        for gateway in dict_get(state, "telemetry.gateways", {}).values():
-            for prop_name in ["status", "delay", "stddev", "loss"]:
+        for gateway in dict_get(state, f"{ATTR_TELEMETRY}.gateways", {}).values():
+            for prop_name in [ATTR_STATUS, "delay", "stddev", "loss"]:
                 state_class = None
                 native_unit_of_measurement = None
                 icon = "mdi:router-network"
@@ -249,15 +256,15 @@ async def async_setup_entry(
                 if prop_name in ["delay", "stddev"]:
                     native_unit_of_measurement = UnitOfTime.MILLISECONDS
 
-                if prop_name == "status":
+                if prop_name == ATTR_STATUS:
                     icon = "mdi:check-network-outline"
 
                 entity = OPNsenseGatewaySensor(
                     config_entry,
                     coordinator,
                     SensorEntityDescription(
-                        key=f"telemetry.gateway.{gateway["name"]}.{prop_name}",
-                        name=f"Gateway {gateway["name"]} {prop_name}",
+                        key=f"{ATTR_TELEMETRY}.gateway.{gateway[ATTR_NAME]}.{prop_name}",
+                        name=f"Gateway {gateway[ATTR_NAME]} {prop_name}",
                         native_unit_of_measurement=native_unit_of_measurement,
                         icon=icon,
                         state_class=state_class,
@@ -268,8 +275,10 @@ async def async_setup_entry(
                 entities.append(entity)
 
         # openvpn servers
-        for vpnid in dict_get(state, "telemetry.openvpn.servers", {}).keys():
-            servers: Mapping[str, Any] = dict_get(state, "telemetry.openvpn.servers", {})
+        for vpnid in dict_get(state, f"{ATTR_TELEMETRY}.openvpn.servers", {}).keys():
+            servers: Mapping[str, Any] = dict_get(
+                state, f"{ATTR_TELEMETRY}.openvpn.servers", {}
+            )
             server: Mapping[str, Any] | None = servers.get(vpnid, None)
             if server is None or not isinstance(server, Mapping) or len(server) == 0:
                 continue
@@ -317,8 +326,8 @@ async def async_setup_entry(
                     config_entry,
                     coordinator,
                     SensorEntityDescription(
-                        key=f"telemetry.openvpn.servers.{vpnid}.{prop_name}",
-                        name=f"OpenVPN Server {server["name"]} {prop_name}",
+                        key=f"{ATTR_TELEMETRY}.openvpn.servers.{vpnid}.{prop_name}",
+                        name=f"OpenVPN Server {server[ATTR_NAME]} {prop_name}",
                         native_unit_of_measurement=native_unit_of_measurement,
                         icon=icon,
                         state_class=state_class,
@@ -329,14 +338,14 @@ async def async_setup_entry(
                 entities.append(entity)
 
         # temperatures
-        for temp_device, temp in state.get("telemetry", {}).get("temps", {}).items():
+        for temp_device, temp in state.get(ATTR_TELEMETRY, {}).get("temps", {}).items():
 
             entity = OPNsenseTempSensor(
                 config_entry=config_entry,
                 coordinator=coordinator,
                 entity_description=SensorEntityDescription(
-                    key=f"telemetry.temps.{temp_device}",
-                    name=f"Temp {temp.get('name', temp_device)}",
+                    key=f"{ATTR_TELEMETRY}.temps.{temp_device}",
+                    name=f"Temp {temp.get(ATTR_NAME, temp_device)}",
                     native_unit_of_measurement=UnitOfTemperature.CELSIUS,
                     device_class=SensorDeviceClass.TEMPERATURE,
                     icon="mdi:thermometer",
@@ -359,7 +368,7 @@ async def async_setup_entry(
     cem.process_entities()
 
 
-def normalize_filesystem_device_name(device_name):
+def normalize_filesystem_device_name(device_name) -> str:
     return device_name.replace("/", "_slash_").strip("_")
 
 
@@ -376,8 +385,8 @@ class OPNsenseSensor(OPNsenseEntity, SensorEntity):
         """Initialize the sensor."""
         self.config_entry = config_entry
         self.entity_description = entity_description
-        self.coordinator = coordinator
-        self._attr_entity_registry_enabled_default = enabled_default
+        self.coordinator: OPNsenseDataUpdateCoordinator = coordinator
+        self._attr_entity_registry_enabled_default: bool = enabled_default
         self._attr_name: str = f"{self.opnsense_device_name} {entity_description.name}"
         self._attr_unique_id: str = slugify(
             f"{self.opnsense_device_unique_id}_{entity_description.key}"
@@ -392,7 +401,10 @@ class OPNsenseStaticKeySensor(OPNsenseSensor):
         if value is None:
             return False
 
-        if value == 0 and self.entity_description.key == "telemetry.system.temp":
+        if (
+            value == 0
+            and self.entity_description.key == f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.temp"
+        ):
             return False
 
         if (
@@ -400,8 +412,8 @@ class OPNsenseStaticKeySensor(OPNsenseSensor):
             and self._previous_value is None
             and self.entity_description.key
             in (
-                "telemetry.cpu.frequency.current",
-                "telemetry.cpu.usage_total",
+                f"{ATTR_TELEMETRY}.cpu.frequency.current",
+                f"{ATTR_TELEMETRY}.cpu.usage_total",
             )
         ):
             return False
@@ -413,20 +425,26 @@ class OPNsenseStaticKeySensor(OPNsenseSensor):
         """Return entity state from firewall."""
         value = self._get_opnsense_state_value(self.entity_description.key)
         if value is None:
-            if self.entity_description.key == "telemetry.system.boottime":
+            if (
+                self.entity_description.key
+                == f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.boottime"
+            ):
                 return value
 
             return STATE_UNKNOWN
 
-        if value == 0 and self.entity_description.key == "telemetry.system.temp":
+        if (
+            value == 0
+            and self.entity_description.key == f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.temp"
+        ):
             return STATE_UNKNOWN
 
-        if self.entity_description.key == "telemetry.system.boottime":
+        if self.entity_description.key == f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.boottime":
             value = utc_from_timestamp(value)
 
         if self.entity_description.key in (
-            "telemetry.cpu.frequency.current",
-            "telemetry.cpu.usage_total",
+            f"{ATTR_TELEMETRY}.cpu.frequency.current",
+            f"{ATTR_TELEMETRY}.cpu.usage_total",
         ):
             if value == 0 and self._previous_value is not None:
                 value = self._previous_value
@@ -441,8 +459,8 @@ class OPNsenseStaticKeySensor(OPNsenseSensor):
     @property
     def extra_state_attributes(self):
         attributes = {}
-        if self.entity_description.key in ("telemetry.cpu.usage_total"):
-            temp_attr = self._get_opnsense_state_value("telemetry.cpu")
+        if self.entity_description.key in (f"{ATTR_TELEMETRY}.cpu.usage_total"):
+            temp_attr = self._get_opnsense_state_value(f"{ATTR_TELEMETRY}.cpu")
             # _LOGGER.debug(f"[extra_state_attributes] temp_attr: {temp_attr}")
             for k, v in temp_attr.items():
                 if k.startswith("usage_") and k != "usage_total":
@@ -455,9 +473,12 @@ class OPNsenseStaticKeySensor(OPNsenseSensor):
 class OPNsenseFilesystemSensor(OPNsenseSensor):
     def _opnsense_get_filesystem(self):
         state = self.coordinator.data
-        for filesystem in state.get("telemetry", {}).get("filesystems", []):
+        for filesystem in state.get(ATTR_TELEMETRY, {}).get(ATTR_FILESYSTEMS, []):
             device_clean: str = normalize_filesystem_device_name(filesystem["device"])
-            if self.entity_description.key == f"telemetry.filesystems.{device_clean}":
+            if (
+                self.entity_description.key
+                == f"{ATTR_TELEMETRY}.{ATTR_FILESYSTEMS}.{device_clean}"
+            ):
                 return filesystem
         return None
 
@@ -495,7 +516,9 @@ class OPNsenseInterfaceSensor(OPNsenseSensor):
     def _opnsense_get_interface(self):
         state = self.coordinator.data
         interface_name: str = self._opnsense_get_interface_name()
-        for i_interface_name, interface  in state.get("telemetry", {}).get("interfaces", {}).items():
+        for i_interface_name, interface in (
+            state.get(ATTR_TELEMETRY, {}).get(ATTR_INTERFACES, {}).items()
+        ):
             if i_interface_name == interface_name:
                 return interface
         return None
@@ -522,7 +545,7 @@ class OPNsenseInterfaceSensor(OPNsenseSensor):
     @property
     def icon(self):
         prop_name = self._opnsense_get_interface_property_name()
-        if prop_name == "status" and self.native_value != "up":
+        if prop_name == ATTR_STATUS and self.native_value != "up":
             return "mdi:close-network-outline"
         return super().icon
 
@@ -585,7 +608,7 @@ class OPNsenseCarpInterfaceSensor(OPNsenseSensor):
     def native_value(self):
         interface = self._opnsense_get_interface()
         try:
-            return interface["status"]
+            return interface[ATTR_STATUS]
         except KeyError:
             return STATE_UNKNOWN
 
@@ -600,7 +623,9 @@ class OPNsenseGatewaySensor(OPNsenseSensor):
     def _opnsense_get_gateway(self):
         state = self.coordinator.data
         gateway_name: str = self._opnsense_get_gateway_name()
-        for i_gateway_name, gateway in state.get("telemetry", {}).get("gateways", {}).items():
+        for i_gateway_name, gateway in (
+            state.get(ATTR_TELEMETRY, {}).get("gateways", {}).items()
+        ):
             if i_gateway_name == gateway_name:
                 return gateway
         return None
@@ -636,7 +661,7 @@ class OPNsenseGatewaySensor(OPNsenseSensor):
     @property
     def icon(self):
         prop_name = self._opnsense_get_gateway_property_name()
-        if prop_name == "status" and self.native_value != "online":
+        if prop_name == ATTR_STATUS and self.native_value != "online":
             return "mdi:close-network-outline"
         return super().icon
 
@@ -675,7 +700,9 @@ class OPNsenseOpenVPNServerSensor(OPNsenseSensor):
     def _opnsense_get_server(self):
         state = self.coordinator.data
         vpnid: str = self._opnsense_get_server_vpnid()
-        for server_vpnid, server in dict_get(state, "telemetry.openvpn.servers", {}).items():
+        for server_vpnid, server in dict_get(
+            state, f"{ATTR_TELEMETRY}.openvpn.servers", {}
+        ).items():
             if vpnid == server_vpnid:
                 return server
         return None
@@ -696,7 +723,7 @@ class OPNsenseOpenVPNServerSensor(OPNsenseSensor):
         if server is None:
             return attributes
 
-        for attr in ["vpnid", "name"]:
+        for attr in ["vpnid", ATTR_NAME]:
             attributes[attr] = server[attr]
 
         return attributes
@@ -722,7 +749,7 @@ class OPNsenseTempSensor(OPNsenseSensor):
     def _opnsense_get_temp(self) -> Mapping[str, Any]:
         state = self.coordinator.data
         sensor_temp_device: str = self._opnsense_get_temp_device()
-        for temp_device, temp in state.get("telemetry", {}).get("temps", {}).items():
+        for temp_device, temp in state.get(ATTR_TELEMETRY, {}).get("temps", {}).items():
             if temp_device == sensor_temp_device:
                 return temp
         return {}

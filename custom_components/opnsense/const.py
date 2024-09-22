@@ -52,25 +52,53 @@ DATA_RATE_PACKETS_PER_SECOND = f"{DATA_PACKETS}/{UnitOfTime.SECONDS}"
 
 ICON_MEMORY = "mdi:memory"
 
+
+SERVICE_CLOSE_NOTICE = "close_notice"
+SERVICE_START_SERVICE = "start_service"
+SERVICE_STOP_SERVICE = "stop_service"
+SERVICE_RESTART_SERVICE = "restart_service"
+SERVICE_SYSTEM_HALT = "system_halt"
+SERVICE_SYSTEM_REBOOT = "system_reboot"
+SERVICE_SEND_WOL = "send_wol"
+
+DEFAULT_SERVICE_CLOSE_NOTICE_ID = "all"
+
+ATTR_CONFIG = "config"
+ATTR_FILESYSTEMS = "filesystems"
+ATTR_INTERFACE = "interface"
+ATTR_INTERFACES = "interfaces"
+ATTR_MAC = "mac"
+ATTR_MEMORY = "memory"
+ATTR_ONLY_IF_RUNNING = "only_if_running"
+ATTR_PREVIOUS_STATE = "previous_state"
+ATTR_SERVICE_ID = "service_id"
+ATTR_SERVICE_NAME = "service_name"
+ATTR_SERVICE_TYPE = "service_type"
+ATTR_SERVICES = "services"
+ATTR_SYSTEM_INFO = "system_info"
+ATTR_STATUS = "status"
+ATTR_SYSTEM = "system"
+ATTR_TELEMETRY = "telemetry"
+
 SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     # pfstate
-    "telemetry.pfstate.used": SensorEntityDescription(
-        key="telemetry.pfstate.used",
+    f"{ATTR_TELEMETRY}.pfstate.used": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.pfstate.used",
         name="pf State Table Used",
         native_unit_of_measurement=COUNT,
         icon="mdi:table-network",
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.pfstate.total": SensorEntityDescription(
-        key="telemetry.pfstate.total",
+    f"{ATTR_TELEMETRY}.pfstate.total": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.pfstate.total",
         name="pf State Table Total",
         native_unit_of_measurement=COUNT,
         icon="mdi:table-network",
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.pfstate.used_percent": SensorEntityDescription(
-        key="telemetry.pfstate.used_percent",
+    f"{ATTR_TELEMETRY}.pfstate.used_percent": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.pfstate.used_percent",
         name="pf State Table Used Percentage",
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:table-network",
@@ -78,23 +106,23 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
     # mbuf
-    "telemetry.mbuf.used": SensorEntityDescription(
-        key="telemetry.mbuf.used",
+    f"{ATTR_TELEMETRY}.mbuf.used": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.mbuf.used",
         name="Memory Buffers Used",
         native_unit_of_measurement=UnitOfInformation.BYTES,
         icon=ICON_MEMORY,
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.mbuf.total": SensorEntityDescription(
-        key="telemetry.mbuf.total",
+    f"{ATTR_TELEMETRY}.mbuf.total": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.mbuf.total",
         name="Memory Buffers Total",
         native_unit_of_measurement=UnitOfInformation.BYTES,
         icon=ICON_MEMORY,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.mbuf.used_percent": SensorEntityDescription(
-        key="telemetry.mbuf.used_percent",
+    f"{ATTR_TELEMETRY}.mbuf.used_percent": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.mbuf.used_percent",
         name="Memory Buffers Used Percentage",
         native_unit_of_measurement=PERCENTAGE,
         icon=ICON_MEMORY,
@@ -102,8 +130,8 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
     # memory with state_class due to being less static
-    "telemetry.memory.swap_reserved": SensorEntityDescription(
-        key="telemetry.memory.swap_reserved",
+    f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.swap_reserved": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.swap_reserved",
         name="Memory Swap Reserved",
         native_unit_of_measurement=UnitOfInformation.BYTES,
         icon=ICON_MEMORY,
@@ -111,38 +139,38 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
     # memory without state_class due to being generally static
-    "telemetry.memory.physmem": SensorEntityDescription(
-        key="telemetry.memory.physmem",
+    f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.physmem": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.physmem",
         name="Memory Physmem",
         native_unit_of_measurement=UnitOfInformation.BYTES,
         icon=ICON_MEMORY,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.memory.used": SensorEntityDescription(
-        key="telemetry.memory.used",
+    f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.used": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.used",
         name="Memory Used",
         native_unit_of_measurement=UnitOfInformation.BYTES,
         icon=ICON_MEMORY,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.memory.swap_total": SensorEntityDescription(
-        key="telemetry.memory.swap_total",
+    f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.swap_total": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.swap_total",
         name="Memory Swap Total",
         native_unit_of_measurement=UnitOfInformation.BYTES,
         icon=ICON_MEMORY,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
     # memory percentages
-    "telemetry.memory.swap_used_percent": SensorEntityDescription(
-        key="telemetry.memory.swap_used_percent",
+    f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.swap_used_percent": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.swap_used_percent",
         name="Memory Swap Used Percentage",
         native_unit_of_measurement=PERCENTAGE,
         icon=ICON_MEMORY,
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.memory.used_percent": SensorEntityDescription(
-        key="telemetry.memory.used_percent",
+    f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.used_percent": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_MEMORY}.used_percent",
         name="Memory Used Percentage",
         native_unit_of_measurement=PERCENTAGE,
         icon=ICON_MEMORY,
@@ -165,38 +193,38 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     #     icon="mdi:speedometer",
     #     # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     # ),
-    "telemetry.cpu.count": SensorEntityDescription(
-        key="telemetry.cpu.count",
+    f"{ATTR_TELEMETRY}.cpu.count": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.cpu.count",
         name="CPU Count",
         native_unit_of_measurement=COUNT,
         icon="mdi:speedometer-medium",
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.cpu.usage_total": SensorEntityDescription(
-        key="telemetry.cpu.usage_total",
+    f"{ATTR_TELEMETRY}.cpu.usage_total": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.cpu.usage_total",
         name="CPU Usage",
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:speedometer-medium",
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.system.load_average.one_minute": SensorEntityDescription(
-        key="telemetry.system.load_average.one_minute",
+    f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.one_minute": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.one_minute",
         name="System Load Average One Minute",
         # native_unit_of_measurement=PERCENTAGE,
         icon="mdi:speedometer-slow",
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.system.load_average.five_minute": SensorEntityDescription(
-        key="telemetry.system.load_average.five_minute",
+    f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.five_minute": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.five_minute",
         name="System Load Average Five Minute",
         # native_unit_of_measurement=PERCENTAGE,
         icon="mdi:speedometer-slow",
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     ),
-    "telemetry.system.load_average.fifteen_minute": SensorEntityDescription(
-        key="telemetry.system.load_average.fifteen_minute",
+    f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.fifteen_minute": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.load_average.fifteen_minute",
         name="System Load Average Fifteen Minute",
         # native_unit_of_measurement=PERCENTAGE,
         icon="mdi:speedometer-slow",
@@ -213,8 +241,8 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     #    state_class=SensorStateClass.MEASUREMENT,
     #    # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     # ),
-    "telemetry.system.boottime": SensorEntityDescription(
-        key="telemetry.system.boottime",
+    f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.boottime": SensorEntityDescription(
+        key=f"{ATTR_TELEMETRY}.{ATTR_SYSTEM}.boottime",
         name="System Boottime",
         # native_unit_of_measurement=UnitOfTime.SECONDS,
         device_class=SensorDeviceClass.TIMESTAMP,
@@ -247,11 +275,3 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     #    # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     # ),
 }
-
-SERVICE_CLOSE_NOTICE = "close_notice"
-SERVICE_START_SERVICE = "start_service"
-SERVICE_STOP_SERVICE = "stop_service"
-SERVICE_RESTART_SERVICE = "restart_service"
-SERVICE_SYSTEM_HALT = "system_halt"
-SERVICE_SYSTEM_REBOOT = "system_reboot"
-SERVICE_SEND_WOL = "send_wol"

@@ -18,7 +18,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util import slugify
 
 from . import CoordinatorEntityManager, OPNsenseEntity
-from .const import COORDINATOR, DOMAIN
+from .const import ATTR_STATUS, COORDINATOR, DOMAIN
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .helpers import dict_get
 
@@ -100,7 +100,7 @@ class OPNsenseFirmwareUpdatesAvailableUpdate(OPNsenseUpdate):
             return False
 
         try:
-            status = state["firmware_update_info"]["status"]
+            status = state["firmware_update_info"][ATTR_STATUS]
             if status == "error":
                 return False
         except:
@@ -165,7 +165,7 @@ class OPNsenseFirmwareUpdatesAvailableUpdate(OPNsenseUpdate):
         attrs: Mapping[str, Any] = {}
 
         for key in [
-            "status",
+            ATTR_STATUS,
             "status_msg",
             "last_check",
             "os_version",
@@ -310,7 +310,7 @@ class OPNsenseFirmwareUpdatesAvailableUpdate(OPNsenseUpdate):
             try:
                 response = client.upgrade_status()
                 # after finished status is "done"
-                running = response["status"] == "running"
+                running = response[ATTR_STATUS] == "running"
             except:
                 pass
 
