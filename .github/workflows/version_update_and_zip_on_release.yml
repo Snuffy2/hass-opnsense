@@ -59,13 +59,14 @@ jobs:
           route: GET /repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Update release notes
         if: ${{ github.event_name == 'release' && github.event.release.draft == false }}
         id: update_release_notes
         uses: octokit/request-action@v2.x
         with:
           route: PATCH /repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/${{ steps.get_release.outputs.data.id }}
-          data: |
+          parameters: |
             {
               "body": "### OPNsense Minimum Firmware Required: ${{ env.OPNSENSE_MIN_FIRMWARE }}\n_For firmware versions below the minimum version, the integration will not permit new installations and existing installations will no longer start._\n\n### OPNsense Recommended Firmware: ${{ env.OPNSENSE_LTD_FIRMWARE }}\n_Firmware versions below the recommended version will likely work but may have limited features and/or show errors in the logs._\n\n${{ steps.get_release.outputs.data.body }}"
             }
