@@ -55,7 +55,7 @@ jobs:
         run: |
           echo "Updating release with tag: ${{ github.ref_name }}"
           gh release edit ${{ github.ref_name }} \
-          --notes "<h3>OPNsense Minimum Firmware Required: ${{ env.OPNSENSE_MIN_FIRMWARE }}</h3><i>For firmware versions below the minimum version, the integration will not permit new installations and existing installations will no longer start.</i><br><h3>OPNsense Recommended Firmware: ${{ env.OPNSENSE_LTD_FIRMWARE }}</h3><i>Firmware versions below the recommended version will likely work but may have limited features and/or show errors in the logs.</i><p>$(gh release view ${{ github.ref_name }} --json body -q .body)"
+          --notes "<h3>OPNsense Minimum Firmware Required: ${{ env.OPNSENSE_MIN_FIRMWARE }}</h3><h4>OPNsense Recommended Firmware: ${{ env.OPNSENSE_LTD_FIRMWARE }}</h4><p>$(gh release view ${{ github.ref_name }} --json body -q .body)<p><i>For firmware versions below the minimum version, the integration will not permit new installations and existing installations will no longer start. Firmware versions below the recommended version will likely work but may have limited features and/or show errors in the logs.</i>"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         
