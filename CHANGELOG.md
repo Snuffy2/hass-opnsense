@@ -1,3 +1,15 @@
+<a name="v0.0.4"></a>
+# [v0.0.4](https://github.com/Snuffy2/hass-opnsense/releases/tag/v0.0.4) - 05 Oct 2024
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+
+
+**Full Changelog**: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.3...v0.0.4
+
+[Changes][v0.0.4]
+
+
 <a name="v0.0.3"></a>
 # [v0.0.3](https://github.com/Snuffy2/hass-opnsense/releases/tag/v0.0.3) - 05 Oct 2024
 
@@ -34,6 +46,7 @@
 [Changes][v0.0.1]
 
 
+[v0.0.4]: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.3...v0.0.4
 [v0.0.3]: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.2...v0.0.3
 [v0.0.2]: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.1...v0.0.2
 [v0.0.1]: https://github.com/Snuffy2/hass-opnsense/tree/v0.0.1
