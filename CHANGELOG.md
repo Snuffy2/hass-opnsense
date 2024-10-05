@@ -1,7 +1,19 @@
+<a name="v0.0.11"></a>
+# [v0.0.11](https://github.com/Snuffy2/hass-opnsense/releases/tag/v0.0.11) - 05 Oct 2024
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+
+
+**Full Changelog**: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.10...v0.0.11
+
+[Changes][v0.0.11]
+
+
 <a name="v0.0.10"></a>
 # [v0.0.10](https://github.com/Snuffy2/hass-opnsense/releases/tag/v0.0.10) - 05 Oct 2024
 
-<!-- Release notes generated using configuration in .github/release.yml at main -->
+### OPNsense Minimum Firmware Required: 24.1\n\n_For firmware versions below the minimum version, the integration will not permit new installations and existing installations will no longer start._\n\n### OPNsense Recommended Firmware: 24.7\n\n_Firmware versions below the recommended version will likely work but may have limited features and/or show errors in the logs._\n\n<!-- Release notes generated using configuration in .github/release.yml at main -->
 
 
 
@@ -118,6 +130,7 @@
 [Changes][v0.0.1]
 
 
+[v0.0.11]: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.10...v0.0.11
 [v0.0.10]: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.9...v0.0.10
 [v0.0.9]: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.8...v0.0.9
 [v0.0.8]: https://github.com/Snuffy2/hass-opnsense/compare/v0.0.7...v0.0.8
