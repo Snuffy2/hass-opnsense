@@ -55,8 +55,11 @@ jobs:
         if: ${{ github.event_name == 'release' && github.event.release.draft == false }}
         id: get_release
         run: |
+          # Fetch release info and print for debugging
+          gh release view --json id,tagName,title,draft,body
           RELEASE_ID=$(gh release view --json id -q ".id")
           echo "RELEASE_ID=$RELEASE_ID" >> $GITHUB_ENV
+          echo "Release ID: $RELEASE_ID"  # Debugging: check if the release ID is correct
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Update release notes with firmware information
