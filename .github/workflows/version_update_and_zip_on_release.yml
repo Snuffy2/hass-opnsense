@@ -65,6 +65,7 @@ jobs:
       - name: Update release notes with firmware information
         if: ${{ github.event_name == 'release' && github.event.release.draft == false }}
         run: |
+          echo "Updating release with ID: $RELEASE_ID"
           gh release edit $RELEASE_ID \
           --notes "### OPNsense Minimum Firmware Required: ${{ env.OPNSENSE_MIN_FIRMWARE }}\n\n_For firmware versions below the minimum version, the integration will not permit new installations and existing installations will no longer start._\n\n### OPNsense Recommended Firmware: ${{ env.OPNSENSE_LTD_FIRMWARE }}\n\n_Firmware versions below the recommended version will likely work but may have limited features and/or show errors in the logs._\n\n$(gh release view --json body -q .body)"
         env:
