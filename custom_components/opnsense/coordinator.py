@@ -161,6 +161,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 "state_key": ATTR_UNBOUND_BLOCKLIST,
             },
             {"function": "get_dhcp_leases", "state_key": "dhcp_leases"},
+            {"function": "get_wireguard_data", "state_key": "wireguard"},
         ]
 
         self._state.update(await self._get_states(categories))
