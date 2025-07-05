@@ -23,11 +23,10 @@ from .const import (
     CONF_SYNC_INTERFACES,
     CONF_SYNC_NOTICES,
     CONF_SYNC_SERVICES,
-    CONF_SYNC_SYSTEM_INFO,
     CONF_SYNC_TELEMETRY,
     CONF_SYNC_UNBOUND,
     CONF_SYNC_VPN,
-    DEFAULT_SYNC_OPTION,
+    DEFAULT_SYNC_OPTION_VALUE,
     DOMAIN,
 )
 from .helpers import dict_get
@@ -101,17 +100,16 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
         config: MutableMapping[str, Any] = dict(self.config_entry.data)
         categories: list[MutableMapping[str, str]] = [
             {"function": "get_device_unique_id", "state_key": "device_unique_id"},
+            {"function": "get_system_info", "state_key": "system_info"},
             {
                 "function": "get_host_firmware_version",
                 "state_key": "host_firmware_version",
             },
         ]
 
-        if config.get(CONF_SYNC_TELEMETRY, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_TELEMETRY, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_telemetry", "state_key": "telemetry"})
-        if config.get(CONF_SYNC_SYSTEM_INFO, DEFAULT_SYNC_OPTION):
-            categories.append({"function": "get_system_info", "state_key": "system_info"})
-        if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION_VALUE):
             categories.extend(
                 [
                     {"function": "get_openvpn", "state_key": "openvpn"},
@@ -119,7 +117,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 ]
             )
 
-        if config.get(CONF_SYNC_FIRMWARE_UPDATES, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_FIRMWARE_UPDATES, DEFAULT_SYNC_OPTION_VALUE):
             categories.append(
                 {
                     "function": "get_firmware_update_info",
@@ -127,35 +125,37 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 }
             )
 
-        if config.get(CONF_SYNC_CARP, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_CARP, DEFAULT_SYNC_OPTION_VALUE):
             categories.extend(
                 [
                     {"function": "get_carp_interfaces", "state_key": "carp_interfaces"},
                     {"function": "get_carp_status", "state_key": "carp_status"},
                 ]
             )
-        if config.get(CONF_SYNC_DHCP_LEASES, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_DHCP_LEASES, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_dhcp_leases", "state_key": "dhcp_leases"})
-        if config.get(CONF_SYNC_GATEWAYS, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_GATEWAYS, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_gateways", "state_key": "gateways"})
-        if config.get(CONF_SYNC_SERVICES, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_SERVICES, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_services", "state_key": "services"})
-        if config.get(CONF_SYNC_NOTICES, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_NOTICES, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_notices", "state_key": "notices"})
-        if config.get(CONF_SYNC_FILTERS_AND_NAT, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_FILTERS_AND_NAT, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_config", "state_key": "config"})
-        if config.get(CONF_SYNC_UNBOUND, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_UNBOUND, DEFAULT_SYNC_OPTION_VALUE):
             categories.append(
                 {
                     "function": "get_unbound_blocklist",
                     "state_key": ATTR_UNBOUND_BLOCKLIST,
                 }
             )
-        if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_interfaces", "state_key": "interfaces"})
-        if config.get(CONF_SYNC_CERTIFICATES, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_CERTIFICATES, DEFAULT_SYNC_OPTION_VALUE):
             categories.append({"function": "get_certificates", "state_key": "certificates"})
-        _LOGGER.debug("Categories for fetching data: %s", categories)
+        _LOGGER.debug(
+            "Categories for fetching data: %s", [item["state_key"] for item in categories]
+        )
         return categories
 
     async def _check_device_unique_id(self) -> bool:
@@ -241,7 +241,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
         elapsed_time = update_time - previous_update_time
         config: MutableMapping[str, Any] = dict(self.config_entry.data)
 
-        if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION_VALUE):
             for interface_name, interface in (
                 dict_get(self._state, "interfaces", {}) or {}
             ).items():
@@ -271,7 +271,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
 
                         interface[new_property] = value
 
-        if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION):
+        if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION_VALUE):
             for vpn_type in ("openvpn", "wireguard"):
                 cs = ["servers"]
                 if vpn_type == "wireguard":
@@ -358,7 +358,6 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
             await self._calculate_entity_speeds()
 
             restapi_count, xmlrpc_count = await self._client.get_query_counts()
-            _LOGGER.debug("[async_update_data] wireguard: %s", self._state.get("wireguard"))
             _LOGGER.debug(
                 "Update Complete. REST API Queries: %s. XMLRPC Queries: %s",
                 restapi_count,
