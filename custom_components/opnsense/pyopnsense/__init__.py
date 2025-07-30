@@ -19,7 +19,7 @@ import xmlrpc.client
 
 import aiohttp
 import awesomeversion
-from dateutil.parser import UnknownTimezoneWarning, parse
+from dateutil.parser import ParserError, UnknownTimezoneWarning, parse
 
 from .const import AMBIGUOUS_TZINFOS
 
@@ -658,13 +658,27 @@ clear_subsystem_dirty('filter');
         # error could be because data has not been refreshed at all OR an upgrade is currently in progress
         # _LOGGER.debug("[get_firmware_update_info] status: %s", status)
 
+        last_check_str = status.get("last_check")
+        last_check_expired = True
+        if last_check_str:
+            try:
+                last_check_dt = parse(last_check_str, tzinfos=AMBIGUOUS_TZINFOS)
+                if last_check_dt.tzinfo is None:
+                    last_check_dt = last_check_dt.replace(
+                        tzinfo=timezone(datetime.now().astimezone().utcoffset() or timedelta())
+                    )
+                last_check_expired = (datetime.now().astimezone() - last_check_dt) > timedelta(
+                    days=1
+                )
+            except (ValueError, TypeError, ParserError, UnknownTimezoneWarning):
+                pass
+
         if (
-            status.get("status", None) in {"none", "error"}
+            status.get("status") == "error"
             or "last_check" not in status
-            or not isinstance(dict_get(status, "product.product_check"), dict)
+            or last_check_expired
+            or not isinstance(dict_get(status, "product.product_check"), MutableMapping)
             or not dict_get(status, "product.product_check")
-            or status.get("status_msg", None)
-            == "There are no updates available on the selected mirror."
         ):
             _LOGGER.info("Triggering firmware check")
             await self._post("/api/core/firmware/check")
@@ -1423,7 +1437,7 @@ $toreturn = [
                 systemtime = systemtime.replace(
                     tzinfo=timezone(datetime.now().astimezone().utcoffset() or timedelta())
                 )
-        except (ValueError, TypeError, UnknownTimezoneWarning) as e:
+        except (ValueError, TypeError, ParserError, UnknownTimezoneWarning) as e:
             _LOGGER.warning(
                 "Failed to parse opnsense system time (aka. datetime), using HA system time instead: %s. %s: %s",
                 time_info["datetime"],
@@ -1451,7 +1465,7 @@ $toreturn = [
                     boottime = boottime.replace(
                         tzinfo=timezone(datetime.now().astimezone().utcoffset() or timedelta())
                     )
-            except (ValueError, TypeError, UnknownTimezoneWarning) as e:
+            except (ValueError, TypeError, ParserError, UnknownTimezoneWarning) as e:
                 _LOGGER.info(
                     "Failed to parse opnsense boottime: %s. %s: %s",
                     time_info["boottime"],
