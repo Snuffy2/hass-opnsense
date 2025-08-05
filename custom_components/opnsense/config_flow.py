@@ -136,7 +136,7 @@ async def validate_input(
                 [user_input.get(CONF_USERNAME), user_input.get(CONF_PASSWORD)],
             )
         )
-    except aiohttp.ClientConnectorSSLError as e:
+    except aiohttp.ClientSSLError as e:
         _log_and_set_error(
             errors=errors,
             key="cannot_connect_ssl",
