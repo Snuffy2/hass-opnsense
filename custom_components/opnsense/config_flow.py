@@ -52,7 +52,7 @@ from .const import (
     TRACKED_MACS,
 )
 from .helpers import is_private_ip
-from .pyopnsense import OPNsenseClient
+from .pyopnsense import OPNsenseClient, UnknownFirmware
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -252,6 +252,8 @@ async def _handle_user_input(user_input: MutableMapping[str, Any], hass: HomeAss
         _validate_firmware_version(user_input[CONF_FIRMWARE_VERSION])
     except awesomeversion.exceptions.AwesomeVersionCompareException as e:
         raise UnknownFirmware from e
+
+    await client.set_use_snake_case(initial=True)
 
     require_plugin = any(
         user_input.get(item, DEFAULT_SYNC_OPTION_VALUE) for item in SYNC_ITEMS_REQUIRING_PLUGIN
@@ -728,10 +730,6 @@ class MissingDeviceUniqueID(Exception):
 
 class BelowMinFirmware(Exception):
     """Current firmware is below the Minimum supported version."""
-
-
-class UnknownFirmware(Exception):
-    """Unknown current firmware version."""
 
 
 class PluginMissing(Exception):
