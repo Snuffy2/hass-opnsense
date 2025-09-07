@@ -67,8 +67,5 @@
 ## PR and branch behavior
 - The agent will only create branches or open PRs when the user explicitly requests it or includes the hashtag `#github-pull-request_copilot-coding-agent` to hand off to the asynchronous coding agent.
 
-## Network / install consent
-- The agent must obtain explicit consent before performing network operations outside the repository that are not strictly necessary for running local tests (for example fetching external APIs or secrets). Package installs from PyPI required for running tests are allowed when the user has given permission to install dev dependencies.
-
 ## CI/CD
 - Use GitHub Actions for CI/CD.

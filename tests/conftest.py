@@ -6,9 +6,11 @@ background tasks, and simplify Home Assistant testing.
 """
 
 import asyncio
+from collections.abc import Callable
 import contextlib
 import inspect
 import logging
+import threading
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,9 +24,85 @@ from custom_components.opnsense import pyopnsense as _pyopnsense_mod
 from custom_components.opnsense.const import CONF_DEVICE_UNIQUE_ID
 import homeassistant.core as ha_core
 
+# Module logger for test diagnostics
+logger = logging.getLogger(__name__)
+
 # expose the pyopnsense module under the plain name for tests that
 # import the fixture and expect `pyopnsense` to be available.
 pyopnsense = _pyopnsense_mod
+
+
+def _completed_future_result() -> Any:
+    """Return an already-completed awaitable yielding None.
+
+    If a running loop is available, return a Future set to result=None.
+    Otherwise return a minimal awaitable object that behaves like a done task.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        fut.set_result(None)
+    except RuntimeError:
+
+        class _DoneTask:
+            def done(self) -> bool:  # pragma: no cover - trivial
+                return True
+
+            def cancel(self) -> None:  # pragma: no cover - trivial
+                return None
+
+            def cancelled(self) -> bool:  # pragma: no cover - trivial
+                return False
+
+            def result(self) -> None:  # pragma: no cover - trivial
+                return None
+
+            def exception(self) -> None:  # pragma: no cover - trivial
+                return None
+
+            def add_done_callback(self, cb):  # pragma: no cover - trivial
+                with contextlib.suppress(Exception):
+                    cb(self)
+
+            def __await__(self):  # pragma: no cover - trivial
+                if False:
+                    yield None
+
+        return _DoneTask()
+    else:
+        return fut
+
+
+def _is_pyopnsense_background_coro(coro: Any) -> bool:
+    """Detect if a coroutine is a pyopnsense background worker.
+
+    Checks the coroutine frame globals for a module name containing
+    'pyopnsense' and also whether it's a bound method where `self` is an
+    instance of pyopnsense.OPNsenseClient.
+    """
+    frame = getattr(coro, "cr_frame", None)
+    module_name = ""
+    if frame:
+        with contextlib.suppress(AttributeError, TypeError):
+            g = getattr(frame, "f_globals", None) or {}
+            module_name = g.get("__name__", "") if isinstance(g, dict) else ""
+
+    if isinstance(module_name, str) and "pyopnsense" in module_name:
+        return True
+
+    # Bound-method detection via frame locals
+    if frame:
+        with contextlib.suppress(AttributeError, TypeError):
+            locs = getattr(frame, "f_locals", {}) or {}
+            self_obj = locs.get("self")
+            if (
+                self_obj is not None
+                and getattr(pyopnsense, "OPNsenseClient", None) is not None
+                and isinstance(self_obj, pyopnsense.OPNsenseClient)
+            ):
+                return True
+
+    return False
 
 
 # Provide a shared FakeClientSession for tests to avoid creating real aiohttp sessions
@@ -93,29 +171,89 @@ def _patch_async_create_clientsession(monkeypatch):
 
 
 @pytest.fixture
-def coordinator_capture():
+def coordinator_factory() -> Callable[..., Any]:
+    """Factory for creating lightweight coordinator instances for tests.
+
+    Usage:
+        create = coordinator_factory
+        coord = create()  # MagicMock
+    coord = create(kind="dummy")  # FakeCoordinator()
+        coord = create(cls=MyCoordinatorClass, device_tracker_coordinator=True)
+
+        Keyword args supported:
+    - cls: custom class to instantiate (default: MagicMock or FakeCoordinator if kind="dummy")
+      - kind: "mock" (default) or "dummy"; ignored when cls is provided
+      - capture_list: optional list to which the created instance will be appended
+      - device_tracker_coordinator: if True, set the _is_device_tracker flag on the instance
+      - stub_async: when True and using MagicMock, auto-stub async methods
+        (async_config_entry_first_refresh, async_shutdown) with AsyncMock
+      - other kwargs are forwarded to the class constructor
+    """
+
+    def _make(
+        *,
+        cls: type | None = None,
+        kind: str = "mock",
+        capture_list: list | None = None,
+        stub_async: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        # Resolve class to instantiate
+        if cls is None:
+            if kind == "dummy":
+                cls = FakeCoordinator
+            else:
+                cls = MagicMock
+
+        # Peek without consuming so the kw is still forwarded to the class
+        _is_dt = bool(kwargs.get("device_tracker_coordinator", False))
+        inst = cls(**kwargs)
+
+        # Mirror existing tests which sometimes rely on this flag
+        if _is_dt:
+            with contextlib.suppress(Exception):
+                setattr(inst, "_is_device_tracker", True)
+
+        if capture_list is not None:
+            capture_list.append(inst)
+
+        # Optionally stub common async methods on MagicMock instances
+        if stub_async and isinstance(inst, MagicMock):
+            for name, default in (
+                ("async_config_entry_first_refresh", True),
+                ("async_shutdown", True),
+            ):
+                meth = getattr(inst, name, None)
+                if not inspect.iscoroutinefunction(meth) and not isinstance(meth, AsyncMock):
+                    setattr(inst, name, AsyncMock(return_value=default))
+
+        return inst
+
+    return _make
+
+
+@pytest.fixture
+def coordinator_capture(coordinator_factory: Callable[..., Any]):
     """Provide a reusable capture for created coordinator instances.
 
-    Returns a small namespace-like object with two attributes:
-    - instances: a list that will be appended with each created coordinator.
-    - factory: a callable to pass into monkeypatch that will create the
-      FakeCoordinator, append it to instances, and return it.
+    Exposes:
+      - instances: list of created instances
+      - factory(coord_cls=None): returns a creator that appends instances to the list
     """
 
     class _C:
-        instances: list = []
-
-        def __init__(self):
-            self.instances = []
+        def __init__(self) -> None:
+            self.instances: list[Any] = []
 
         def factory(self, coord_cls=None):
-            # Return a factory function bound to coord_cls that captures instances.
-            def _f(**kwargs):
-                inst = (coord_cls or MagicMock)(**kwargs)
-                self.instances.append(inst)
-                return inst
+            def _create(**kwargs: Any):
+                return coordinator_factory(
+                    cls=coord_cls,
+                    capture_list=self.instances,
+                    **kwargs,
+                )
 
-            return _f
+            return _create
 
     return _C()
 
@@ -200,10 +338,6 @@ async def make_client():
                 await c.async_close()
 
 
-# Module logger for test diagnostics
-logger = logging.getLogger(__name__)
-
-
 @pytest.fixture(autouse=True)
 def _patch_homeassistant_stop(monkeypatch):
     """Wrap HomeAssistant.stop to ignore 'Event loop is closed' runtime errors.
@@ -268,56 +402,12 @@ def _patch_asyncio_create_task(monkeypatch):
         )
 
     def _fake_create_task(coro, *args, **kwargs):
-        # If the coroutine originates from pyopnsense background workers, close
-        # it to avoid 'coroutine was never awaited' warnings and return a dummy
-        # task-like object. Otherwise delegate to the original create_task.
-        frame = getattr(coro, "cr_frame", None)
-        module_name = ""
-        if frame:
-            try:
-                g = getattr(frame, "f_globals", None) or {}
-                module_name = g.get("__name__", "") if isinstance(g, dict) else ""
-            except (AttributeError, TypeError):
-                module_name = ""
-
-        # Match module names that include 'pyopnsense' (e.g. 'custom_components.opnsense.pyopnsense')
-        if isinstance(module_name, str) and "pyopnsense" in module_name:
+        # If the coroutine is a pyopnsense background worker, close it and
+        # return a completed awaitable to avoid scheduling background work.
+        if _is_pyopnsense_background_coro(coro):
             with contextlib.suppress(Exception):
                 coro.close()
-            # Return an already-completed future if a running loop is present.
-            try:
-                loop = asyncio.get_running_loop()
-                fut = loop.create_future()
-                fut.set_result(None)
-            except RuntimeError:
-                # No running loop; provide a minimally awaitable stub.
-                class _DoneTask:
-                    def done(self):
-                        return True
-
-                    def cancel(self):
-                        return None
-
-                    def cancelled(self):
-                        return False
-
-                    def result(self):
-                        return None
-
-                    def exception(self):
-                        return None
-
-                    def add_done_callback(self, cb):
-                        with contextlib.suppress(Exception):
-                            cb(self)
-
-                    def __await__(self):
-                        if False:
-                            yield None  # pragma: no cover
-
-                return _DoneTask()
-            else:
-                return fut
+            return _completed_future_result()
         # Delegate to the original create_task for all other coroutines.
         return _original_create_task(coro, *args, **kwargs)
 
@@ -422,78 +512,17 @@ def _neutralize_pyopnsense_background_tasks(monkeypatch, request):
     # coroutine frame locals and treat coroutines with a `self` that is an
     # OPNsenseClient as pyopnsense background workers.
     try:
-        # If the module-level fake_create_task exists, decorate it to be more
-        # permissive. We patch the pyopnsense.asyncio.create_task if present.
+        # If the module-level fake create_task exists, decorate it using the
+        # shared helpers so the logic is centralized and consistent.
         target_asyncio = getattr(_pyopnsense_mod, "asyncio", None)
         if target_asyncio is not None and hasattr(target_asyncio, "create_task"):
             orig = target_asyncio.create_task
 
             def _wrap_create_task(coro, *args, **kwargs):
-                frame = getattr(coro, "cr_frame", None)
-                module_name = ""
-                if frame:
-                    try:
-                        g = getattr(frame, "f_globals", None) or {}
-                        module_name = g.get("__name__", "") if isinstance(g, dict) else ""
-                    except (AttributeError, TypeError):
-                        module_name = ""
-
-                # If the coroutine originates from a test-local no-op but is a
-                # bound method (has 'self' local that's an OPNsenseClient),
-                # treat it like a pyopnsense background worker.
-                is_pyopnsense_bound = False
-                if frame:
-                    try:
-                        locs = getattr(frame, "f_locals", {}) or {}
-                        self_obj = locs.get("self")
-                        if (
-                            self_obj is not None
-                            and getattr(pyopnsense, "OPNsenseClient", None) is not None
-                            and isinstance(self_obj, pyopnsense.OPNsenseClient)
-                        ):
-                            is_pyopnsense_bound = True
-                    except (AttributeError, TypeError):
-                        is_pyopnsense_bound = False
-
-                if is_pyopnsense_bound or (
-                    isinstance(module_name, str) and "pyopnsense" in module_name
-                ):
-                    with contextlib.suppress(AttributeError, TypeError):
+                if _is_pyopnsense_background_coro(coro):
+                    with contextlib.suppress(Exception):
                         coro.close()
-                    try:
-                        loop = asyncio.get_running_loop()
-                        fut = loop.create_future()
-                        fut.set_result(None)
-                    except RuntimeError:
-
-                        class _DoneTask:
-                            def done(self):
-                                return True
-
-                            def cancel(self):
-                                return None
-
-                            def cancelled(self):
-                                return False
-
-                            def result(self):
-                                return None
-
-                            def exception(self):
-                                return None
-
-                            def add_done_callback(self, cb):
-                                with contextlib.suppress(AttributeError, TypeError):
-                                    cb(self)
-
-                            def __await__(self):
-                                if False:
-                                    yield None  # pragma: no cover
-
-                        return _DoneTask()
-                    else:
-                        return fut
-
+                    return _completed_future_result()
                 return orig(coro, *args, **kwargs)
 
             monkeypatch.setattr(target_asyncio, "create_task", _wrap_create_task, raising=False)
@@ -503,57 +532,98 @@ def _neutralize_pyopnsense_background_tasks(monkeypatch, request):
 
 
 @pytest.fixture
-def coordinator():
-    """Provide a lightweight coordinator mock for tests.
+def coordinator(coordinator_factory: Callable[..., Any]):
+    """Provide a lightweight coordinator mock for tests (MagicMock)."""
+    return coordinator_factory(stub_async=True)
 
-    Use MagicMock so that registering listeners (which happens synchronously) does not
-    produce AsyncMock "never awaited" warnings. Tests that need async behavior can
-    set specific async methods on the mock to AsyncMock.
+
+class FakeCoordinator(MagicMock):
+    """Lightweight FakeCoordinator used in tests.
+
+    Module-level FakeCoordinator used by tests that expect a class to be passed
+    into coordinator_capture.factory(...). Implemented as a thin subclass of
+    MagicMock so it preserves mock semantics while providing the small async
+    helpers and flags tests rely on (refreshed/shut/_is_device_tracker).
     """
-    return MagicMock()
 
+    def __init__(self, **kwargs):
+        """Initialize the MagicMock base."""
+        super().__init__()
+        # mirror existing tests which inspect this flag
+        self._is_device_tracker = kwargs.get("device_tracker_coordinator", False)
 
-class DummyCoordinator(MagicMock):
-    """Lightweight coordinator mock used by the tests.
+    async def async_config_entry_first_refresh(self):
+        """Mark that initial refresh happened for assertions."""
+        self.refreshed = True
+        return True
 
-    Use a MagicMock so that callbacks registered synchronously do not create
-    AsyncMock coroutines that are never awaited. Tests can set async
-    attributes individually to AsyncMock when they need awaitable behavior.
-    """
+    async def async_shutdown(self):
+        """Record that shutdown was invoked."""
+        self.shut = True
+        return True
 
 
 @pytest.fixture
-def dummy_coordinator():
-    """Provide a fresh DummyCoordinator instance for a test.
+def fake_client_factory():
+    """Unified factory for creating FakeClient classes used in tests.
 
-    Tests can request this fixture when they need a lightweight coordinator
-    mock that behaves like the previous `DummyCoordinator()` constructor.
-    """
-    return DummyCoordinator()
-
-
-@pytest.fixture
-def fake_client():
-    """Return a factory that constructs lightweight FakeClient instances for tests.
-
-    Usage:
-        client = fake_client()
-        client = fake_client(device_id="other", firmware_version="1.0")
+    Supports two modes:
+      - flow=True: returns a FakeFlowClient class used by config/option flow tests.
+      - flow=False: returns a general FakeClient class for other tests.
     """
 
     def _make(
+        *,
+        flow: bool = False,
         device_id: object = "dev1",
-        firmware_version: str = "99.0",
+        firmware: str | None = None,
+        firmware_version: str | None = None,
         telemetry: dict | None = None,
         close_result: bool = True,
+        plugin_installed: bool = False,
     ):
+        # Back-compat: allow either firmware or firmware_version kw
+        fw = (
+            firmware if firmware is not None else (firmware_version if firmware_version else "99.0")
+        )
+
+        if flow:
+
+            class FakeFlowClient:
+                """Configurable fake client for flow tests (with last_instance tracking)."""
+
+                last_instance: "FakeFlowClient | None" = None
+
+                def __init__(self, *args, **kwargs):
+                    FakeFlowClient.last_instance = self
+                    self._is_plugin_called = 0
+                    self._device_id = device_id
+                    self._firmware = fw
+                    self._plugin_installed = plugin_installed
+
+                async def get_host_firmware_version(self) -> str:
+                    return self._firmware
+
+                async def set_use_snake_case(self, initial: bool = False) -> None:
+                    return None
+
+                async def get_system_info(self) -> dict:
+                    return {"name": "OPNsense"}
+
+                async def get_device_unique_id(self) -> str:
+                    return cast("str", self._device_id)
+
+                async def is_plugin_installed(self) -> bool:
+                    self._is_plugin_called += 1
+                    return self._plugin_installed
+
+            return FakeFlowClient
+
         class FakeClient:
             def __init__(self, **kwargs):
-                # allow explicit overrides via kwargs when tests call the production
-                # client factory with parameters; prefer explicit args passed to
-                # the fixture factory above.
+                # prefer explicit args passed to the fixture factory above
                 self._device_id = device_id
-                self._firmware = firmware_version
+                self._firmware = fw
                 self._telemetry = telemetry or {}
                 self._close_result = close_result
 
@@ -573,7 +643,7 @@ def fake_client():
             async def get_telemetry(self):
                 return self._telemetry
 
-            async def set_use_snake_case(self):
+            async def set_use_snake_case(self, initial: bool = False):
                 return True
 
             async def reset_query_counts(self):
@@ -593,6 +663,27 @@ def fake_client():
                 return {"servers": {}}
 
         return FakeClient
+
+    return _make
+
+
+@pytest.fixture
+def fake_client(fake_client_factory):
+    """Backwards-compatible fixture returning the general FakeClient class."""
+
+    def _make(
+        device_id: object = "dev1",
+        firmware_version: str = "99.0",
+        telemetry: dict | None = None,
+        close_result: bool = True,
+    ):
+        return fake_client_factory(
+            flow=False,
+            device_id=device_id,
+            firmware_version=firmware_version,
+            telemetry=telemetry,
+            close_result=close_result,
+        )
 
     return _make
 
@@ -644,81 +735,22 @@ def fake_reg_factory():
 
 
 @pytest.fixture
-def fake_flow_client():
-    """Return a factory that constructs a lightweight FakeClient used in flow tests.
-
-    The returned factory when called yields a FakeClient class suitable for
-    config/option flow validation paths and records calls to is_plugin_installed.
-    """
+def fake_flow_client(fake_client_factory):
+    """Backwards-compatible fixture returning the FakeFlowClient class for flow tests."""
 
     def _make(
         device_id: str = "unique-id",
         firmware: str = "25.1",
         plugin_installed: bool = False,
     ):
-        class FakeFlowClient:
-            """Configurable fake client for flow tests.
-
-            Attributes:
-                last_instance: class var pointing to last created instance
-
-            """
-
-            last_instance: "FakeFlowClient | None" = None
-
-            def __init__(self, *args, **kwargs):
-                FakeFlowClient.last_instance = self
-                self._is_plugin_called = 0
-                self._device_id = device_id
-                self._firmware = firmware
-                self._plugin_installed = plugin_installed
-
-            async def get_host_firmware_version(self) -> str:
-                return self._firmware
-
-            async def set_use_snake_case(self, initial: bool = False) -> None:
-                return None
-
-            async def get_system_info(self) -> dict:
-                return {"name": "OPNsense"}
-
-            async def get_device_unique_id(self) -> str:
-                return self._device_id
-
-            async def is_plugin_installed(self) -> bool:
-                self._is_plugin_called += 1
-                return self._plugin_installed
-
-        return FakeFlowClient
+        return fake_client_factory(
+            flow=True,
+            device_id=device_id,
+            firmware=firmware,
+            plugin_installed=plugin_installed,
+        )
 
     return _make
-
-
-@pytest.fixture
-def fake_coordinator():
-    """Return a simple FakeCoordinator class tests can pass to coordinator_capture.factory.
-
-    The class records when its refresh/shutdown methods are called and accepts
-    kwargs such as `device_tracker_coordinator` to mirror prior test-local
-    coordinator implementations.
-    """
-
-    class FakeCoordinator:
-        def __init__(self, **kwargs):
-            # mirror existing tests which inspect this flag
-            self._is_device_tracker = kwargs.get("device_tracker_coordinator", False)
-
-        async def async_config_entry_first_refresh(self):
-            # mark that initial refresh happened for assertions
-            self.refreshed = True
-            return True
-
-        async def async_shutdown(self):
-            # record that shutdown was invoked
-            self.shut = True
-            return True
-
-    return FakeCoordinator
 
 
 @pytest.fixture
@@ -922,3 +954,64 @@ def pytest_runtest_teardown(item: Any, nextitem: Any) -> None:
         with contextlib.suppress(Exception):
             if not handle.cancelled():
                 handle.cancel()
+
+
+@pytest.fixture
+def minimal_hass() -> ha_core.HomeAssistant | MagicMock:
+    """Return a minimal hass-like object suitable for direct entity state writes.
+
+    Provides:
+    - loop_thread_id to satisfy HA's write checks
+    - data["integrations"] baseline
+    - a minimal .states with async_set_internal no-op
+    """
+
+    hass_local = MagicMock(spec=ha_core.HomeAssistant)
+    hass_local.loop = None
+    hass_local.loop_thread_id = threading.get_ident()
+    hass_local.data = {"integrations": {}}
+
+    class _States:
+        def async_set_internal(self, *args, **kwargs):
+            return None
+
+    hass_local.states = _States()
+    return hass_local
+
+
+@pytest.fixture
+def attach_entity_runtime():
+    """Helper to attach hass, entity_id, and a no-op writer to an entity under test.
+
+    Usage: attach_entity_runtime(entity, hass, entity_id="switch.my_entity")
+    """
+
+    def _attach(ent: Any, hass: ha_core.HomeAssistant, entity_id: str | None = None) -> Any:
+        ent.hass = hass
+        if entity_id is None:
+            unique = getattr(ent, "_attr_unique_id", None)
+            desc_key = getattr(getattr(ent, "entity_description", None), "key", None)
+            entity_id = f"switch.{unique or desc_key or 'entity'}"
+        ent.entity_id = entity_id
+        # Avoid depending on full HA state machinery in unit tests
+        ent.async_write_ha_state = lambda: None
+        return ent
+
+    return _attach
+
+
+@pytest.fixture
+def patch_async_call_later(monkeypatch: pytest.MonkeyPatch):
+    """Patch async_call_later to return a remover that immediately clears the delay.
+
+    Returns the fake function for optional assertions.
+    """
+
+    def fake_async_call_later(hass, delay, action):
+        def remover():
+            action(None)
+
+        return remover
+
+    monkeypatch.setattr("custom_components.opnsense.switch.async_call_later", fake_async_call_later)
+    return fake_async_call_later

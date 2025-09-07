@@ -610,6 +610,74 @@ def test_vpn_sensor_icon_variants(desc_key, state, expect_close_icon, make_confi
         assert s.icon != "mdi:close-network-outline"
 
 
+def test_vpn_server_clients_extra_attributes_included(make_config_entry):
+    """Servers with client entries should populate clients extra_state_attributes including bytes fields."""
+    entry = make_config_entry()
+
+    coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coord.data = {
+        "openvpn": {
+            "servers": {
+                "uuid1": {
+                    "name": "ovpn1",
+                    "status": "up",
+                    "clients": [
+                        {
+                            "name": "c1",
+                            "status": "up",
+                            "bytes_sent": 100,
+                            "bytes_recv": 200,
+                            "tunnel_addresses": ["10.0.0.1"],
+                        }
+                    ],
+                }
+            }
+        }
+    }
+
+    desc = MagicMock()
+    desc.key = "openvpn.servers.uuid1.status"
+    desc.name = "VPN Server Clients"
+
+    s = OPNsenseVPNSensor(config_entry=entry, coordinator=coord, entity_description=desc)
+    s.hass = MagicMock()
+    s.entity_id = "sensor.vpn_server_clients"
+    s.async_write_ha_state = lambda: None
+    s._handle_coordinator_update()
+
+    assert s.available is True
+    assert "clients" in s.extra_state_attributes
+    clients = s.extra_state_attributes["clients"]
+    assert isinstance(clients, list) and clients
+    client0 = clients[0]
+    # bytes_sent/bytes_recv should be preserved in filtered client attributes
+    assert client0.get("bytes_sent") == 100
+    assert client0.get("bytes_recv") == 200
+
+
+def test_wireguard_client_connected_servers_property(make_config_entry):
+    """Wireguard client instance with connected_servers should expose that property when enabled."""
+    entry = make_config_entry()
+
+    coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coord.data = {
+        "wireguard": {"clients": {"c1": {"name": "c1", "enabled": True, "connected_servers": 3}}}
+    }
+
+    desc = MagicMock()
+    desc.key = "wireguard.clients.c1.connected_servers"
+    desc.name = "WG Connected Servers"
+
+    s = OPNsenseVPNSensor(config_entry=entry, coordinator=coord, entity_description=desc)
+    s.hass = MagicMock()
+    s.entity_id = "sensor.wg_conn_servers"
+    s.async_write_ha_state = lambda: None
+    s._handle_coordinator_update()
+
+    assert s.available is True
+    assert s.native_value == 3
+
+
 def test_sensor_module_import() -> None:
     """Test that the sensor module can be imported via relative import."""
     assert sensor_module is not None

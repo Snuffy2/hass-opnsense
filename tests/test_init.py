@@ -68,13 +68,15 @@ def _patch_hass_async_create_clientsession(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_success(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry should succeed with valid client and coordinator."""
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client())
     # use shared coordinator capture fixture
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
 
     # create a minimal config entry using the shared helper so all fields
@@ -104,13 +106,15 @@ async def test_async_setup_entry_success(
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_device_id_mismatch(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry should fail when client reports mismatched device id."""
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(device_id="other"))
     # use shared coordinator capture fixture
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
 
     # use the shared helper to construct the entry for consistency
@@ -429,13 +433,15 @@ async def test_async_update_listener_device_removal_param(
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_firmware_below_min(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry returns False for devices with firmware below minimum supported."""
     # fake client where device id matches but firmware is below min
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version="1.0"))
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
 
     entry = make_config_entry(
@@ -458,12 +464,14 @@ async def test_async_setup_entry_firmware_below_min(
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_firmware_between_min_and_ltd(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry logs a warning issue for firmware between min and LTD but continues."""
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version="25.0"))
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
     # capture calls to the issue registry to assert a warning issue is created
     create_issue_mock = MagicMock()
@@ -577,7 +585,7 @@ async def test_migrate_2_to_3_success(monkeypatch, fake_client):
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_awesomeversion_exception(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry should continue when AwesomeVersion comparison raises an exception."""
 
@@ -592,7 +600,9 @@ async def test_async_setup_entry_awesomeversion_exception(
 
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client())
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
     monkeypatch.setattr(init_mod.awesomeversion, "AwesomeVersion", DummyAV)
     entry = make_config_entry(
@@ -827,14 +837,16 @@ async def test_async_migrate_entry_returns_false_when_submigration_fails(
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_firmware_above_ltd_calls_delete(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry deletes previous issues when firmware is at or above LTD."""
     monkeypatch.setattr(
         init_mod, "OPNsenseClient", fake_client(firmware_version=init_mod.OPNSENSE_LTD_FIRMWARE)
     )
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
     called = []
     monkeypatch.setattr(init_mod.ir, "async_delete_issue", lambda *a, **k: called.append(True))
@@ -857,14 +869,16 @@ async def test_async_setup_entry_firmware_above_ltd_calls_delete(
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_firmware_at_or_above_ltd_deletes_previous_issues(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry cleans up previous firmware-related issues for LTD and min thresholds."""
     monkeypatch.setattr(
         init_mod, "OPNsenseClient", fake_client(firmware_version=init_mod.OPNSENSE_LTD_FIRMWARE)
     )
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
 
     # capture delete_issue calls
@@ -896,13 +910,15 @@ async def test_async_setup_entry_firmware_at_or_above_ltd_deletes_previous_issue
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_delete_uses_actual_firmware_string(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry uses the client's firmware string when deleting previous issues."""
     firmware_str = "99.9"
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version=firmware_str))
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
 
     calls = MagicMock()
@@ -933,12 +949,14 @@ async def test_async_setup_entry_delete_uses_actual_firmware_string(
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_delete_not_called_for_between_min_and_ltd(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """async_setup_entry should not call delete_issue for firmware between min and LTD."""
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version="25.0"))
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
 
     delete_issue_mock = MagicMock()
@@ -965,12 +983,14 @@ async def test_async_setup_entry_delete_not_called_for_between_min_and_ltd(
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_with_device_tracker_enabled(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
 ):
     """Device tracker option creates a device-tracker coordinator and triggers initial refresh."""
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client())
     monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
     )
 
     entry = make_config_entry(
