@@ -20,6 +20,7 @@ import aiohttp
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.plugins import get_scheduled_timer_handles
+from yarl import URL
 
 import custom_components.opnsense as _init_mod
 from custom_components.opnsense import pyopnsense as _pyopnsense_mod
@@ -49,16 +50,79 @@ def map_hass_components_to_custom_components(
         "update",
         "services",
     )
-    hc_pkg = types.ModuleType(f"homeassistant.components.{domain}")
-    sys.modules[f"homeassistant.components.{domain}"] = hc_pkg
-    for m in modules:
-        try:
-            loaded = importlib.import_module(f"custom_components.{domain}.{m}")
-            sys.modules[f"homeassistant.components.{domain}.{m}"] = loaded
-            setattr(hc_pkg, m, loaded)
-        except Exception:  # noqa: BLE001
-            # best-effort mapping; missing modules will be ignored
-            pass
+    pkg_name = f"homeassistant.components.{domain}"
+
+    # Record prior values so cleanup can restore them
+    prev_pkg = sys.modules.get(pkg_name)
+    injected_module_keys: dict[str, object | None] = {}
+    injected_attrs: dict[str, object | None] = {}
+
+    hc_pkg = types.ModuleType(pkg_name)
+
+    # Install the package module, recording any previous value
+    injected_module_keys[pkg_name] = prev_pkg
+    sys.modules[pkg_name] = hc_pkg
+
+    # Track whether we raised while importing so we can still cleanup
+    raised: Exception | None = None
+    try:
+        for m in modules:
+            key = f"{pkg_name}.{m}"
+            try:
+                loaded = importlib.import_module(f"custom_components.{domain}.{m}")
+                # Record previous value for this key (or None)
+                injected_module_keys[key] = sys.modules.get(key)
+                sys.modules[key] = loaded
+                # Record previous attribute on the package (or None)
+                injected_attrs[m] = getattr(hc_pkg, m, None)
+                setattr(hc_pkg, m, loaded)
+            except Exception:  # noqa: BLE001 - best-effort mapping
+                # Ignore missing modules; continue mapping others
+                continue
+    except Exception as exc:  # noqa: BLE001
+        raised = exc
+        # Fall through to finally to ensure cleanup runs if desired by caller
+    finally:
+
+        def _cleanup() -> None:
+            """Restore sys.modules and package attributes to their prior state.
+
+            This is safe to call multiple times and guards against missing keys.
+            """
+            # Restore or remove module entries we injected
+            for k, prev in list(injected_module_keys.items()):
+                if prev is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = prev  # type: ignore[assignment]
+
+            # Restore or remove attributes on the package module
+            pkg = sys.modules.get(pkg_name)
+            if pkg is not None:
+                for attr, prev in list(injected_attrs.items()):
+                    if prev is None:
+                        with contextlib.suppress(Exception):
+                            delattr(pkg, attr)
+                    else:
+                        setattr(pkg, attr, prev)
+
+        # Attach the cleanup and a context-manager provider to the returned
+        # package module so callers can opt-in to automatic cleanup.
+        setattr(hc_pkg, "_cleanup", _cleanup)
+
+        @contextlib.contextmanager
+        def _as_context():
+            try:
+                yield hc_pkg
+            finally:
+                _cleanup()
+
+        setattr(hc_pkg, "_as_context", _as_context)
+
+        # If an exception occurred during mapping, propagate it after
+        # attaching the cleanup so callers can still perform explicit cleanup.
+        if raised:
+            raise raised
 
     return hc_pkg
 
@@ -112,6 +176,11 @@ def _is_pyopnsense_background_coro(coro: Any) -> bool:
     instance of pyopnsense.OPNsenseClient.
     """
     frame = getattr(coro, "cr_frame", None)
+    # Fast-path: match known background worker names
+    with contextlib.suppress(AttributeError):
+        name = getattr(getattr(coro, "cr_code", None), "co_name", "")
+        if name in {"_monitor_queue", "_process_queue"}:
+            return True
     module_name = ""
     if frame:
         with contextlib.suppress(AttributeError, TypeError):
@@ -232,7 +301,6 @@ def _ensure_hass_compat(hass_obj: Any) -> None:
         # Best-effort fallback using object.__setattr__ if direct assignment fails.
         with contextlib.suppress(Exception):
             object.__setattr__(cfg, "async_get_known_entry", _async_get_known_entry)
-            object.__setattr__(cfg, "async_get_known_entry", _async_get_known_entry)
 
 
 @pytest.fixture
@@ -253,6 +321,7 @@ def coordinator_capture(coordinator_factory: Callable[..., Any]):
                 return coordinator_factory(
                     cls=coord_cls,
                     capture_list=self.instances,
+                    stub_async=True,
                     **kwargs,
                 )
 
@@ -479,9 +548,12 @@ def ph_hass(request, hass=None):
     # No real hass fixture available; return a MagicMock fallback.
     m = MagicMock()
     m.config_entries = MagicMock()
-    m.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    m.config_entries.async_reload = AsyncMock(return_value=None)
     m.data = {}
+    # Minimal services API expected by tests/services
+    m.services = MagicMock()
+    m.services.async_register = MagicMock()
+    m.services.async_services = MagicMock(return_value={})
+    m.services.async_clear = MagicMock()
     # Mirror HomeAssistant API used by the integration/tests.
     m.async_create_task = MagicMock(side_effect=_schedule_or_return)
     # provide a loop wrapper that cancels scheduled timer handles immediately
@@ -759,6 +831,66 @@ def fake_stream_response_factory():
 
 
 @pytest.fixture
+def fake_http_error_response_factory():
+    """Return a factory that constructs a pre-populated HTTP response for error cases.
+
+    The returned object implements:
+      - .status / .reason / .ok
+      - .request_info.real_url, .history, .headers
+      - async context manager __aenter__/__aexit__
+      - .json(content_type=None) async coroutine
+      - .content.iter_chunked(n) async generator
+    """
+
+    def _make(
+        status: int = 500,
+        ok: bool = False,
+        json_ret: Any | None = None,
+        chunks: list[bytes] | None = None,
+        reason: str = "Err",
+    ):
+        class _Resp:
+            def __init__(self):
+                self.status = status
+                self.reason = reason
+                self.ok = ok
+
+                class RI:
+                    real_url = URL("http://localhost")
+
+                self.request_info = RI()
+                self.history = []
+                self.headers = {}
+                self._json_ret = json_ret if json_ret is not None else {"x": 1}
+                self._chunks = list(chunks or [b"data:{}\n\n"])
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self, content_type=None):
+                return self._json_ret
+
+            @property
+            def content(self):
+                class C:
+                    def __init__(self, chunks):
+                        self._chunks = chunks
+
+                    async def iter_chunked(self, _n):
+                        for c in self._chunks:
+                            yield c
+
+                return C(self._chunks)
+
+        return _Resp()
+
+    return _make
+
+
+@pytest.fixture
 def fake_reg_factory():
     """Return a factory that constructs a configurable fake device registry.
 
@@ -840,7 +972,7 @@ def _patch_homeassistant_stop(monkeypatch):
         except RuntimeError as err:
             if "Event loop is closed" in str(err):
                 # Log for diagnostics then swallow this specific error during tests.
-                logger.exception(
+                logger.debug(
                     "HomeAssistant.stop suppressed during test teardown: Event loop is closed",
                     exc_info=err,
                 )
@@ -851,13 +983,27 @@ def _patch_homeassistant_stop(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _patch_asyncio_create_task(monkeypatch):
+def _patch_asyncio_create_task(monkeypatch, request):
     """Patch asyncio.create_task to avoid creating background workers for pyopnsense during tests.
 
     For coroutines created by pyopnsense, close the coroutine object and return a dummy task-like
     object to prevent "coroutine was never awaited" warnings while avoiding scheduling real
     background work during tests.
     """
+
+    # Allow tests to opt-out of this global patch when they exercise pyopnsense internals.
+    # Tests can either add the marker `@pytest.mark.no_patch_create_task` or run a test file
+    # that targets pyopnsense directly (for example `tests/test_pyopnsense.py`). In those
+    # cases we should not replace `pyopnsense.asyncio.create_task` so the real behavior is
+    # preserved for the test.
+    try:
+        if getattr(request, "node", None) and request.node.get_closest_marker(
+            "no_patch_create_task"
+        ):
+            return
+    except (AttributeError, TypeError):
+        # If we cannot determine the requesting test, continue with patching.
+        pass
 
     # keep a reference to the original so we can delegate for non-target coroutines
     # Prefer the one from the pyopnsense module if present, otherwise fall back

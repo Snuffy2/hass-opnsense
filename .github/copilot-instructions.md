@@ -61,8 +61,11 @@
 - Don't run pytest with `--disable-warnings` and address all warnings.
 - Prefer running the full pytest suite by default for this repository. Only run focused tests when the user explicitly asks for targeted runs.
 - One test file per integration file: every integration source file should have a single corresponding test module; add new unit tests for that integration to that existing test module and do not create additional test modules targeting the same integration except for explicit end-to-end/integration tests in `test_integration.py`.
+- Do not create new test files under tests for an integration without explicit approval; always append to the existing test module for that integration instead.
+- If creating a new test file is needed, ask the user or include the tag `#allow-new-test-file` in the request.
 - Achieve at least 80% code coverage.
 - When making changes to code, include tests for the new/changed behavior; the agent should add tests alongside code edits even when changes are not minimally invasive.
+Do not use `exec()` in tests.
 
 ## PR and branch behavior
 - The agent will only create branches or open PRs when the user explicitly requests it or includes the hashtag `#github-pull-request_copilot-coding-agent` to hand off to the asynchronous coding agent.

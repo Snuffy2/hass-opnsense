@@ -145,6 +145,14 @@ def timestamp_to_datetime(timestamp: int | None) -> datetime | None:
     )
 
 
+def _parse_lease_ends(ends_value: str) -> datetime | None:
+    """Parse an ISC `ends` string (YYYY/MM/DD HH:MM:SS) into a tz-aware datetime."""
+    if not ends_value:
+        return None
+    dt: datetime = datetime.strptime(ends_value, "%Y/%m/%d %H:%M:%S")
+    return dt.replace(tzinfo=timezone(datetime.now().astimezone().utcoffset() or timedelta()))
+
+
 class VoucherServerError(Exception):
     """Error from Voucher Server."""
 
@@ -1169,11 +1177,8 @@ $toreturn = [
             lease["type"] = lease_info.get("type", None)
             lease["mac"] = lease_info.get("mac", None)
             if lease_info.get("ends", None):
-                dt: datetime = datetime.strptime(lease_info.get("ends", None), "%Y/%m/%d %H:%M:%S")
-                lease["expires"] = dt.replace(
-                    tzinfo=timezone(datetime.now().astimezone().utcoffset() or timedelta())
-                )
-                if lease["expires"] < datetime.now().astimezone():
+                lease["expires"] = _parse_lease_ends(lease_info.get("ends", None))
+                if lease["expires"] and lease["expires"] < datetime.now().astimezone():
                     continue
             else:
                 lease["expires"] = lease_info.get("ends", None)

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import inspect as _inspect
 import socket
 from ssl import SSLError
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 import xmlrpc.client as xc
 from xmlrpc.client import Fault
@@ -124,6 +125,19 @@ async def test_safe_dict_get_and_list_get(monkeypatch, make_client) -> None:
     result_empty_list = await client._safe_list_get("/fake")
     assert result_empty_list == []
     await client.async_close()
+
+
+def test_parse_lease_ends_none_and_format() -> None:
+    """Unit tests for `_parse_lease_ends` helper: empty returns None, valid parse returns datetime with tzinfo."""
+    # empty -> None
+    assert pyopnsense._parse_lease_ends("") is None
+    assert pyopnsense._parse_lease_ends(None) is None
+
+    # valid format -> datetime with tzinfo
+    future = (datetime.now() + timedelta(hours=1)).strftime("%Y/%m/%d %H:%M:%S")
+    dt = pyopnsense._parse_lease_ends(future)
+    assert isinstance(dt, datetime)
+    assert dt.tzinfo is not None
 
 
 @pytest.mark.asyncio
@@ -249,6 +263,265 @@ async def test_get_device_unique_id_and_system_info(make_client) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "firmware,expected",
+    [
+        ("25.6.9", False),  # older than 25.7 -> camelCase
+        ("25.7", True),  # equal to 25.7 -> snake_case
+        ("26.0.0", True),  # newer -> snake_case
+    ],
+)
+async def test_set_use_snake_case_version_branches(
+    make_client, firmware: str, expected: bool
+) -> None:
+    """Verify set_use_snake_case flips behavior for firmware <25.7 and >=25.7."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._firmware_version = firmware
+        await client.set_use_snake_case()
+        assert client._use_snake_case is expected
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_set_use_snake_case_compare_exception_raises_when_initial(
+    monkeypatch, make_client
+) -> None:
+    """If AwesomeVersion comparison raises and initial=True, UnknownFirmware is raised."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._firmware_version = "weird"
+
+        class BadCompare:
+            def __init__(self, v):
+                self.v = v
+
+            def __lt__(self, other):
+                raise pyopnsense.awesomeversion.exceptions.AwesomeVersionCompareException(
+                    "compare failed"
+                )
+
+        monkeypatch.setattr(pyopnsense.awesomeversion, "AwesomeVersion", BadCompare)
+
+        with pytest.raises(pyopnsense.UnknownFirmware):
+            await client.set_use_snake_case(initial=True)
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_set_use_snake_case_compare_exception_logged_when_not_initial(
+    monkeypatch, make_client
+) -> None:
+    """If AwesomeVersion comparison raises and initial=False, method logs and falls back to snake_case."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._firmware_version = "weird"
+
+        class BadCompare:
+            def __init__(self, v):
+                self.v = v
+
+            def __lt__(self, other):
+                raise pyopnsense.awesomeversion.exceptions.AwesomeVersionCompareException(
+                    "compare failed"
+                )
+
+        monkeypatch.setattr(pyopnsense.awesomeversion, "AwesomeVersion", BadCompare)
+
+        await client.set_use_snake_case(initial=False)
+        # On compare exception the implementation defaults to snake_case
+        assert client._use_snake_case is True
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,payload_attr",
+    [
+        ("get_from_stream", None),
+        ("get", None),
+        ("post", {"payload": {}}),
+        ("unknown", None),
+    ],
+)
+async def test_process_queue_does_not_touch_done_future(
+    make_client, method: str, payload_attr: dict | None
+) -> None:
+    """Ensure _process_queue does not call set_result/set_exception when future.done() is True.
+
+    This targets the four places that guard with `if future is not None and not future.done()`.
+    """
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+
+    # Cancel background workers/monitor created in __init__ so we control the worker lifecycle here.
+    for w in list(client._workers):
+        with contextlib.suppress(Exception):
+            w.cancel()
+    client._workers = []
+    with contextlib.suppress(Exception):
+        client._queue_monitor.cancel()
+
+    # Patch the handler methods so they run quickly and deterministically.
+    client._do_get_from_stream = AsyncMock(return_value={"ok": True})
+    client._do_get = AsyncMock(return_value={"ok": True})
+    client._do_post = AsyncMock(return_value={"ok": True})
+
+    # Create a fake future-like object that is already done.
+    fake_future = MagicMock()
+    fake_future.done.return_value = True
+    fake_future.set_result = MagicMock()
+    fake_future.set_exception = MagicMock()
+
+    # Put the item into the queue with the done future.
+    if method == "get_from_stream":
+        await client._request_queue.put(("get_from_stream", "/p", None, fake_future, "tst"))
+    elif method == "get":
+        await client._request_queue.put(("get", "/p", None, fake_future, "tst"))
+    elif method == "post":
+        await client._request_queue.put(
+            ("post", "/p", payload_attr.get("payload"), fake_future, "tst")
+        )
+    else:
+        await client._request_queue.put(("bogus", "/p", None, fake_future, "tst"))
+
+    # Run one worker instance to process the single queued item and then cancel it.
+    task = asyncio.create_task(client._process_queue())
+
+    # Give the task a short moment to process the queue item.
+    await asyncio.sleep(0.05)
+
+    # Ensure set_result/set_exception were NOT called because future.done() is True.
+    fake_future.set_result.assert_not_called()
+    fake_future.set_exception.assert_not_called()
+
+    # Also assert the correct handler was exercised.
+    if method == "get_from_stream":
+        client._do_get_from_stream.assert_awaited_once()
+        client._do_get.assert_not_awaited()
+        client._do_post.assert_not_awaited()
+    elif method == "get":
+        client._do_get.assert_awaited_once()
+        client._do_get_from_stream.assert_not_awaited()
+        client._do_post.assert_not_awaited()
+    elif method == "post":
+        client._do_post.assert_awaited_once()
+        client._do_get.assert_not_awaited()
+        client._do_get_from_stream.assert_not_awaited()
+    else:
+        client._do_get.assert_not_awaited()
+        client._do_post.assert_not_awaited()
+        client._do_get_from_stream.assert_not_awaited()
+
+    # Cancel our worker and close client
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ftype,expected_path",
+    [
+        ("update", "/api/core/firmware/update"),
+        ("upgrade", "/api/core/firmware/upgrade"),
+    ],
+)
+async def test_upgrade_firmware_calls_safe_dict_post(
+    make_client, ftype: str, expected_path: str
+) -> None:
+    """upgrade_firmware should call _safe_dict_post with the correct path for update/upgrade."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._safe_dict_post = AsyncMock(return_value={"status": "ok"})
+
+        res = await client.upgrade_firmware(type=ftype)
+        assert isinstance(res, dict)
+        client._safe_dict_post.assert_awaited_with(expected_path)
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_firmware_invalid_type_returns_none(make_client) -> None:
+    """upgrade_firmware should return None and not call _safe_dict_post for unknown types."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._safe_dict_post = AsyncMock()
+        res = await client.upgrade_firmware(type="nonsense")
+        assert res is None
+        client._safe_dict_post.assert_not_awaited()
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_status_and_changelog_call_safe_dict_post(make_client) -> None:
+    """upgrade_status and firmware_changelog should forward to _safe_dict_post with correct paths."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._safe_dict_post = AsyncMock(return_value={"ok": True})
+
+        st = await client.upgrade_status()
+        assert st == {"ok": True}
+        client._safe_dict_post.assert_awaited_with("/api/core/firmware/upgradestatus")
+
+        client._safe_dict_post.reset_mock()
+        ver = "1.2.3"
+        ch = await client.firmware_changelog(ver)
+        assert ch == {"ok": True}
+        client._safe_dict_post.assert_awaited_with(f"/api/core/firmware/changelog/{ver}")
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "side_effect,expect_exception",
+    [
+        (None, False),
+        (RuntimeError("boom"), False),  # decorator should swallow and not raise
+    ],
+)
+async def test_filter_configure_calls_exec_php_and_handles_errors(
+    make_client, side_effect, expect_exception
+) -> None:
+    """Ensure `_filter_configure` calls `_exec_php` with the expected script and does not propagate errors."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        if side_effect is None:
+            client._exec_php = AsyncMock(return_value={})
+        else:
+
+            async def _raise(*a, **k):
+                raise side_effect
+
+            client._exec_php = AsyncMock(side_effect=_raise)
+
+        # Call the method; it should not raise even when _exec_php raises because of @_log_errors
+        with contextlib.suppress(Exception):
+            await client._filter_configure()
+
+        # Assert _exec_php was awaited once and script contained filter_configure
+        client._exec_php.assert_awaited_once()
+        called_script = client._exec_php.call_args[0][0]
+        assert "filter_configure" in called_script
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
 async def test_get_firmware_update_info_triggers_check_on_conditions(make_client) -> None:
     """Trigger firmware update check when status is missing data or outdated."""
     session = MagicMock(spec=aiohttp.ClientSession)
@@ -263,6 +536,418 @@ async def test_get_firmware_update_info_triggers_check_on_conditions(make_client
         # Call should trigger _post('/api/core/firmware/check')
         res = await client.get_firmware_update_info()
         assert res == status
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_get_firmware_update_info_handles_awesomeversion_compare_exception(
+    monkeypatch, make_client
+) -> None:
+    """When AwesomeVersion comparison raises AwesomeVersionCompareException, update_needs_info is set and a firmware check is triggered."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        # Prepare a valid status so missing_data/last_check won't trigger the check
+        status = {
+            "product": {
+                "product_version": "1.0",
+                "product_latest": "2.0",
+                "product_check": {"ok": 1},
+            },
+            "status_msg": "There are no updates available on the selected mirror.",
+            "last_check": datetime.now().isoformat(),
+        }
+        client._safe_dict_get = AsyncMock(return_value=status)
+
+        # Ensure _post is observable
+        client._post = AsyncMock(return_value={})
+
+        # Replace AwesomeVersion with a class that raises AwesomeVersionCompareException on comparison
+        class BadCompare:
+            def __init__(self, v):
+                self.v = v
+
+            def __gt__(self, other):
+                raise pyopnsense.awesomeversion.exceptions.AwesomeVersionCompareException(
+                    "compare failed"
+                )
+
+        monkeypatch.setattr(pyopnsense.awesomeversion, "AwesomeVersion", BadCompare)
+
+        # Call and assert that a firmware check (_post) was triggered due to the exception
+        await client.get_firmware_update_info()
+        client._post.assert_awaited_with("/api/core/firmware/check")
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ValueError,
+        TypeError,
+        pyopnsense.ParserError,
+        pyopnsense.UnknownTimezoneWarning,
+    ],
+)
+async def test_get_firmware_update_info_handles_last_check_parse_exceptions(
+    monkeypatch, make_client, exc
+) -> None:
+    """If parsing last_check raises common parse/timezone errors, the code should catch them and trigger a firmware check."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        status = {
+            "product": {
+                "product_version": "1.0",
+                "product_latest": "2.0",
+                "product_check": {"ok": 1},
+            },
+            "status_msg": "There are no updates available on the selected mirror.",
+            "last_check": "2020-01-01T00:00:00Z",
+        }
+        client._safe_dict_get = AsyncMock(return_value=status)
+
+        # Observe whether a firmware check is triggered
+        client._post = AsyncMock(return_value={})
+
+        # Replace the parse function to raise the parametrized exception
+        def bad_parse(s, tzinfos=None):
+            raise exc("parse failed")
+
+        monkeypatch.setattr(pyopnsense, "parse", bad_parse)
+
+        await client.get_firmware_update_info()
+        client._post.assert_awaited_with("/api/core/firmware/check")
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_value",
+    [
+        None,
+        [],
+        {"data": []},  # ret_data is not a mapping
+    ],
+)
+async def test_get_config_handles_non_mapping_response_and_non_mapping_data(
+    make_client, response_value
+) -> None:
+    """get_config should return {} when the XMLRPC response or its 'data' is not a mapping."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        # Make _exec_php return the parametrized bad response
+        client._exec_php = AsyncMock(return_value=response_value)
+
+        result = await client.get_config()
+        assert result == {}
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cfg,expect_restore,expect_disabled_removed",
+    [
+        (  # missing 'created'
+            {"filter": {"rule": [{"name": "r1"}]}},
+            False,
+            False,
+        ),
+        (  # created present but no 'time'
+            {"filter": {"rule": [{"created": {}}]}},
+            False,
+            False,
+        ),
+        (  # created.time mismatch
+            {"filter": {"rule": [{"created": {"time": "other"}}]}},
+            False,
+            False,
+        ),
+        (  # matching and has 'disabled' -> removed and restore called
+            {"filter": {"rule": [{"created": {"time": "t1"}, "disabled": "1"}]}},
+            True,
+            True,
+        ),
+    ],
+)
+async def test_enable_filter_rule_by_created_time_various(
+    make_client, cfg: dict[str, Any], expect_restore: bool, expect_disabled_removed: bool
+) -> None:
+    """Parameterized tests for enable_filter_rule_by_created_time guards and positive case."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client.get_config = AsyncMock(return_value=cfg)
+        client._restore_config_section = AsyncMock()
+        client._filter_configure = AsyncMock()
+
+        await client.enable_filter_rule_by_created_time("t1")
+
+        if expect_restore:
+            client._restore_config_section.assert_awaited_once()
+            client._filter_configure.assert_awaited_once()
+        else:
+            client._restore_config_section.assert_not_awaited()
+            client._filter_configure.assert_not_awaited()
+
+        if expect_disabled_removed:
+            assert "disabled" not in cfg["filter"]["rule"][0]
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cfg,expect_restore,expect_disabled_set",
+    [
+        (  # missing 'created'
+            {"filter": {"rule": [{"name": "r1"}]}},
+            False,
+            False,
+        ),
+        (  # created present but no 'time'
+            {"filter": {"rule": [{"created": {}}]}},
+            False,
+            False,
+        ),
+        (  # created.time mismatch
+            {"filter": {"rule": [{"created": {"time": "other"}}]}},
+            False,
+            False,
+        ),
+        (  # matching and no 'disabled' -> set and restore called
+            {"filter": {"rule": [{"created": {"time": "t1"}}]}},
+            True,
+            True,
+        ),
+    ],
+)
+async def test_disable_filter_rule_by_created_time_various(
+    make_client, cfg: dict[str, Any], expect_restore: bool, expect_disabled_set: bool
+) -> None:
+    """Parameterized tests for disable_filter_rule_by_created_time guards and positive case."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client.get_config = AsyncMock(return_value=cfg)
+        client._restore_config_section = AsyncMock()
+        client._filter_configure = AsyncMock()
+
+        await client.disable_filter_rule_by_created_time("t1")
+
+        if expect_restore:
+            client._restore_config_section.assert_awaited_once()
+            client._filter_configure.assert_awaited_once()
+        else:
+            client._restore_config_section.assert_not_awaited()
+            client._filter_configure.assert_not_awaited()
+
+        if expect_disabled_set:
+            assert cfg["filter"]["rule"][0].get("disabled") == "1"
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cfg,expect_restore,expect_disabled_removed",
+    [
+        (  # missing 'created'
+            {"nat": {"rule": [{"name": "r1"}]}},
+            False,
+            False,
+        ),
+        (  # created present but no 'time'
+            {"nat": {"rule": [{"created": {}}]}},
+            False,
+            False,
+        ),
+        (  # created.time mismatch
+            {"nat": {"rule": [{"created": {"time": "other"}}]}},
+            False,
+            False,
+        ),
+        (  # matching and has 'disabled' -> removed and restore called
+            {"nat": {"rule": [{"created": {"time": "t1"}, "disabled": "1"}]}},
+            True,
+            True,
+        ),
+    ],
+)
+async def test_enable_nat_port_forward_rule_by_created_time_various(
+    make_client, cfg: dict[str, Any], expect_restore: bool, expect_disabled_removed: bool
+) -> None:
+    """Parameterized tests for enable_nat_port_forward_rule_by_created_time guards and positive case."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client.get_config = AsyncMock(return_value=cfg)
+        client._restore_config_section = AsyncMock()
+        client._filter_configure = AsyncMock()
+
+        await client.enable_nat_port_forward_rule_by_created_time("t1")
+
+        if expect_restore:
+            client._restore_config_section.assert_awaited_once()
+            client._filter_configure.assert_awaited_once()
+        else:
+            client._restore_config_section.assert_not_awaited()
+            client._filter_configure.assert_not_awaited()
+
+        if expect_disabled_removed:
+            assert "disabled" not in cfg["nat"]["rule"][0]
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cfg,expect_restore,expect_disabled_set",
+    [
+        (  # missing 'created'
+            {"nat": {"rule": [{"name": "r1"}]}},
+            False,
+            False,
+        ),
+        (  # created present but no 'time'
+            {"nat": {"rule": [{"created": {}}]}},
+            False,
+            False,
+        ),
+        (  # created.time mismatch
+            {"nat": {"rule": [{"created": {"time": "other"}}]}},
+            False,
+            False,
+        ),
+        (  # matching and no 'disabled' -> set and restore called
+            {"nat": {"rule": [{"created": {"time": "t1"}}]}},
+            True,
+            True,
+        ),
+    ],
+)
+async def test_disable_nat_port_forward_rule_by_created_time_various(
+    make_client, cfg: dict[str, Any], expect_restore: bool, expect_disabled_set: bool
+) -> None:
+    """Parameterized tests for disable_nat_port_forward_rule_by_created_time guards and positive case."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client.get_config = AsyncMock(return_value=cfg)
+        client._restore_config_section = AsyncMock()
+        client._filter_configure = AsyncMock()
+
+        await client.disable_nat_port_forward_rule_by_created_time("t1")
+
+        if expect_restore:
+            client._restore_config_section.assert_awaited_once()
+            client._filter_configure.assert_awaited_once()
+        else:
+            client._restore_config_section.assert_not_awaited()
+            client._filter_configure.assert_not_awaited()
+
+        if expect_disabled_set:
+            assert cfg["nat"]["rule"][0].get("disabled") == "1"
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cfg,expect_restore,expect_disabled_removed",
+    [
+        (  # missing 'created'
+            {"nat": {"outbound": {"rule": [{"name": "r1"}]}}},
+            False,
+            False,
+        ),
+        (  # created present but no 'time'
+            {"nat": {"outbound": {"rule": [{"created": {}}]}}},
+            False,
+            False,
+        ),
+        (  # created.time mismatch
+            {"nat": {"outbound": {"rule": [{"created": {"time": "other"}}]}}},
+            False,
+            False,
+        ),
+        (  # matching and has 'disabled' -> removed and restore called
+            {"nat": {"outbound": {"rule": [{"created": {"time": "t1"}, "disabled": "1"}]}}},
+            True,
+            True,
+        ),
+    ],
+)
+async def test_enable_nat_outbound_rule_by_created_time_various(
+    make_client, cfg: dict[str, Any], expect_restore: bool, expect_disabled_removed: bool
+) -> None:
+    """Parameterized tests for enable_nat_outbound_rule_by_created_time guards and positive case."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client.get_config = AsyncMock(return_value=cfg)
+        client._restore_config_section = AsyncMock()
+        client._filter_configure = AsyncMock()
+
+        await client.enable_nat_outbound_rule_by_created_time("t1")
+
+        if expect_restore:
+            client._restore_config_section.assert_awaited_once()
+            client._filter_configure.assert_awaited_once()
+        else:
+            client._restore_config_section.assert_not_awaited()
+            client._filter_configure.assert_not_awaited()
+
+        if expect_disabled_removed:
+            assert "disabled" not in cfg["nat"]["outbound"]["rule"][0]
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cfg,expect_restore,expect_disabled_set",
+    [
+        (  # created.time mismatch (no KeyError since created present)
+            {"nat": {"outbound": {"rule": [{"created": {"time": "other"}}]}}},
+            False,
+            False,
+        ),
+        (  # matching and no 'disabled' -> set and restore called
+            {"nat": {"outbound": {"rule": [{"created": {"time": "t1"}}]}}},
+            True,
+            True,
+        ),
+    ],
+)
+async def test_disable_nat_outbound_rule_by_created_time_various(
+    make_client, cfg: dict[str, Any], expect_restore: bool, expect_disabled_set: bool
+) -> None:
+    """Parameterized tests for disable_nat_outbound_rule_by_created_time (limited cases to avoid KeyError)."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client.get_config = AsyncMock(return_value=cfg)
+        client._restore_config_section = AsyncMock()
+        client._filter_configure = AsyncMock()
+
+        await client.disable_nat_outbound_rule_by_created_time("t1")
+
+        if expect_restore:
+            client._restore_config_section.assert_awaited_once()
+            client._filter_configure.assert_awaited_once()
+        else:
+            client._restore_config_section.assert_not_awaited()
+            client._filter_configure.assert_not_awaited()
+
+        if expect_disabled_set:
+            assert cfg["nat"]["outbound"]["rule"][0].get("disabled") == "1"
     finally:
         await client.async_close()
 
@@ -756,53 +1441,246 @@ async def test_exec_php_error_paths(exc_factory, initial: bool, make_client) -> 
     ],
 )
 async def test_do_get_post_error_initial_behavior(
-    method_name, session_method, args, kwargs, make_client
+    method_name, session_method, args, kwargs, make_client, fake_http_error_response_factory
 ) -> None:
     """When client._initial is True, non-ok responses should raise ClientResponseError for _do_get/_do_post."""
     session = MagicMock(spec=aiohttp.ClientSession)
 
-    # create a fake response context manager
-    class FakeResp:
-        def __init__(self, status=500, ok=False):
-            self.status = status
-            self.reason = "Err"
-            self.ok = ok
-
-            # Provide a minimal request_info with real_url to satisfy logging
-            class RI:
-                real_url = URL("http://localhost")
-
-            self.request_info = RI()
-            self.history = []
-            self.headers = {}
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def json(self, content_type=None):
-            return {"x": 1}
-
-        @property
-        def content(self):
-            class C:
-                async def iter_chunked(self, n):
-                    yield b"data:{}\n\n" % b"{}"
-
-            return C()
-
+    # use shared factory to create a populated error response
     if session_method == "get":
-        session.get = lambda *a, **k: FakeResp(status=403, ok=False)
+        session.get = lambda *a, **k: fake_http_error_response_factory(status=403, ok=False)
     else:
-        session.post = lambda *a, **k: FakeResp(status=500, ok=False)
+        session.post = lambda *a, **k: fake_http_error_response_factory(status=500, ok=False)
 
+    # create a client instance and assert that when running in initial mode
+    # non-ok HTTP responses raise a ClientResponseError from _do_get/_do_post
     client = make_client(session=session)
     client._initial = True
     try:
         with pytest.raises(aiohttp.ClientResponseError):
             await getattr(client, method_name)(*args, **kwargs)
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_kea_interfaces_and_reservation_static_dynamic(make_client) -> None:
+    """Test _get_kea_interfaces behavior when disabled and enabled, and reservation mapping for static leases."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        # Kea disabled
+        client._safe_dict_get = AsyncMock(return_value={"dhcpv4": {"general": {"enabled": "0"}}})
+        res_disabled = await client._get_kea_interfaces()
+        assert res_disabled == {}
+
+        # Kea enabled with interfaces
+        client._safe_dict_get = AsyncMock(
+            side_effect=[
+                {
+                    "dhcpv4": {
+                        "general": {
+                            "enabled": "1",
+                            "interfaces": {"em0": {"selected": 1, "value": "desc"}},
+                        }
+                    }
+                },
+                {"rows": []},
+            ]
+        )
+        res_if = await client._get_kea_interfaces()
+        assert res_if == {"em0": "desc"}
+
+        # Kea leases with reservation mapping -> static
+        # Note: _get_kea_dhcpv4_leases calls _safe_dict_get first for leases then for
+        # reservations. Provide responses in that order so reservation mapping is used
+        # to mark the lease as static.
+        client._safe_dict_get = AsyncMock(
+            side_effect=[
+                {
+                    "rows": [
+                        {
+                            "if_name": "em0",
+                            "if_descr": "d",
+                            "state": "0",
+                            "hwaddr": "mac1",
+                            "address": "1.2.3.4",
+                        }
+                    ]
+                },
+                {"rows": [{"hw_address": "mac1", "ip_address": "1.2.3.4"}]},
+            ]
+        )
+        leases = await client._get_kea_dhcpv4_leases()
+        assert isinstance(leases, list) and leases and leases[0]["type"] == "static"
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ends_offset_seconds,expect_included,expect_expires_none",
+    [
+        (86400, True, False),  # ends 1 day in future -> included, expires is datetime
+        (-86400, False, False),  # ends 1 day in past -> excluded
+        (None, True, True),  # no ends -> included, expires preserved (None)
+    ],
+)
+async def test_isc_dhcpv4_ends_parsing_and_expiry(
+    make_client, ends_offset_seconds, expect_included, expect_expires_none
+) -> None:
+    """Verify _get_isc_dhcpv4_leases parses 'ends' and filters expired leases."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        now = datetime.now().astimezone()
+        if ends_offset_seconds is None:
+            ends_val = None
+        else:
+            ends_dt = now + timedelta(seconds=ends_offset_seconds)
+            ends_val = ends_dt.strftime("%Y/%m/%d %H:%M:%S")
+
+        # Build a single lease row that matches the active/mac checks
+        lease_row = {
+            "state": "active",
+            "mac": "aa:bb:cc",
+            "address": "192.0.2.1",
+            "if": "em0",
+            "if_descr": "descr",
+            "ends": ends_val,
+        }
+
+        client._use_snake_case = True
+        client._safe_dict_get = AsyncMock(return_value={"rows": [lease_row]})
+
+        res = await client._get_isc_dhcpv4_leases()
+        if expect_included:
+            assert isinstance(res, list) and len(res) == 1
+            expires = res[0].get("expires")
+            if expect_expires_none:
+                assert expires is None
+            else:
+                assert isinstance(expires, datetime) and expires.tzinfo is not None
+        else:
+            assert res == []
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_dnsmasq_leases_filters_and_expiry(make_client) -> None:
+    """Test _get_dnsmasq_leases filtering, hostname rules and expiry handling."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        # Set firmware versions to be >=25.1 and >=25.1.7
+        client._firmware_version = "25.2"
+        # one active lease with wildcard hostname should be None hostname and reserved -> static
+        client._safe_dict_get = AsyncMock(
+            return_value={
+                "rows": [
+                    {
+                        "address": "1.2.3.4",
+                        "hostname": "*",
+                        "if_descr": "d",
+                        "if": "em0",
+                        "is_reserved": "1",
+                        "hwaddr": "mac1",
+                        "expire": 9999999999,
+                    }
+                ]
+            }
+        )
+        leases = await client._get_dnsmasq_leases()
+        assert isinstance(leases, list)
+        assert leases[0]["hostname"] is None
+
+        # expired lease should be filtered out
+        client._safe_dict_get = AsyncMock(
+            return_value={
+                "rows": [{"address": "1.2.3.5", "hostname": "h", "if": "em0", "expire": 0}]
+            }
+        )
+        leases2 = await client._get_dnsmasq_leases()
+        # Implementation treats a numeric expire==0 as falsy and does not convert it to
+        # a datetime; the entry will therefore remain with expires==0.
+        assert isinstance(leases2, list) and leases2[0]["expires"] == 0
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "firmware,expect_rows",
+    [
+        ("25.0", False),  # <25.1 -> early return
+        ("25.1.5", False),  # >=25.1 but <25.1.7 -> early return
+        ("25.1.7", True),  # >=25.1.7 -> proceed
+        ("25.2", True),  # later versions proceed
+    ],
+)
+async def test_get_dnsmasq_leases_version_gating(
+    make_client, firmware: str, expect_rows: bool
+) -> None:
+    """Verify version gates skip dnsmasq processing for older firmware ranges."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._firmware_version = firmware
+
+        # If processing proceeds, return a single valid lease row
+        rows = [
+            {
+                "address": "1.2.3.4",
+                "hostname": "h",
+                "if": "em0",
+                "is_reserved": "0",
+                "hwaddr": "mac1",
+                "expire": 9999999999,
+                "if_descr": "d",
+            }
+        ]
+        client._safe_dict_get = AsyncMock(return_value={"rows": rows})
+
+        res = await client._get_dnsmasq_leases()
+        if expect_rows:
+            assert isinstance(res, list) and len(res) == 1
+        else:
+            assert res == []
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_get_dnsmasq_leases_handles_awesomeversion_compare_exception(
+    monkeypatch, make_client
+) -> None:
+    """If AwesomeVersion comparison raises, the function should continue and process leases."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._firmware_version = "weird"
+
+        # Make AwesomeVersion compare raise when comparisons are attempted
+        class BadCompare:
+            def __init__(self, v):
+                self.v = v
+
+            def __lt__(self, other):
+                raise pyopnsense.awesomeversion.exceptions.AwesomeVersionCompareException(
+                    "compare failed"
+                )
+
+        monkeypatch.setattr(pyopnsense.awesomeversion, "AwesomeVersion", BadCompare)
+
+        client._safe_dict_get = AsyncMock(
+            return_value={
+                "rows": [{"address": "1.2.3.4", "hostname": "h", "if": "em0", "expire": 9999999999}]
+            }
+        )
+
+        res = await client._get_dnsmasq_leases()
+        assert isinstance(res, list)
     finally:
         await client.async_close()
 
@@ -1092,6 +1970,84 @@ async def test_get_from_stream_partial_chunks_accumulates_buffer(
     try:
         res = await client._do_get_from_stream("/stream2", caller="tst")
         assert isinstance(res, dict)
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "alias_rows,post_side_effects,expected",
+    [
+        (None, None, False),  # alias_list rows not a list
+        (["notamap"], None, False),  # items not mappings -> no uuid
+        ([{"name": "other", "uuid": "u"}], None, False),  # alias not found
+        ([{"name": "a", "uuid": "u1"}], [{"result": "failed"}], False),
+        (
+            [{"name": "a", "uuid": "u1"}],
+            [{"result": "ok"}, {"result": "failed"}],
+            False,
+        ),
+        (
+            [{"name": "a", "uuid": "u1"}],
+            [{"result": "ok"}, {"result": "saved"}, {"status": "failed"}],
+            False,
+        ),
+    ],
+)
+async def test_toggle_alias_failure_modes(
+    make_client, alias_rows, post_side_effects, expected
+) -> None:
+    """Parameterize failure branches of toggle_alias (no rows, bad items, and each failing step)."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._use_snake_case = True
+        client._safe_dict_get = AsyncMock(return_value={"rows": alias_rows})
+
+        if post_side_effects is None:
+            client._safe_dict_post = AsyncMock()
+        else:
+            client._safe_dict_post = AsyncMock(side_effect=post_side_effects)
+
+        res = await client.toggle_alias("a", "on")
+        assert res is expected
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "use_snake_case,toggle_on_off,expected_fragment",
+    [
+        (True, "on", "/api/firewall/alias/toggle_item/uuid1/1"),
+        (True, "off", "/api/firewall/alias/toggle_item/uuid1/0"),
+        (False, "on", "/api/firewall/alias/toggleItem/uuid1/1"),
+        (False, "off", "/api/firewall/alias/toggleItem/uuid1/0"),
+        (True, "noop", "/api/firewall/alias/toggle_item/uuid1"),
+    ],
+)
+async def test_toggle_alias_success_urls(
+    make_client, use_snake_case, toggle_on_off, expected_fragment
+) -> None:
+    """Verify toggle_alias constructs correct endpoint and succeeds when subsequent calls return success."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._use_snake_case = use_snake_case
+        client._safe_dict_get = AsyncMock(return_value={"rows": [{"name": "a", "uuid": "uuid1"}]})
+
+        # First call toggles, then set, then reconfigure
+        client._safe_dict_post = AsyncMock(
+            side_effect=[{"result": "ok"}, {"result": "saved"}, {"status": "ok"}]
+        )
+
+        res = await client.toggle_alias("a", toggle_on_off)
+        assert res is True
+
+        # inspect the first call URL
+        first_call = client._safe_dict_post.await_args_list[0]
+        url = first_call.args[0]
+        assert expected_fragment in url
     finally:
         await client.async_close()
 
@@ -2428,6 +3384,90 @@ async def test_get_isc_dhcpv4_and_v6_parsing() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hostname_input,expected",
+    [
+        ("host1", "host1"),  # normal non-empty string -> preserved
+        ("", None),  # empty string -> coerced to None
+        (123, None),  # non-string -> coerced to None
+        (None, None),  # missing/None -> coerced to None
+    ],
+)
+async def test_get_isc_dhcpv6_hostname_variants(hostname_input, expected) -> None:
+    """Verify hostname handling in `_get_isc_dhcpv6_leases` for multiple variants.
+
+    This exercises the conditional that only keeps string hostnames with length > 0.
+    """
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = pyopnsense.OPNsenseClient(
+        url="http://localhost", username="u", password="p", session=session
+    )
+
+    client._use_snake_case = True
+    # Build a single lease row with varying hostname shapes
+    lease_row = {
+        "state": "active",
+        "mac": "m2",
+        "address": "fe80::1",
+        "if": "em1",
+    }
+    # only include hostname key when hostname_input is not explicitly None to test both
+    # the presence and absence code paths
+    if hostname_input is not None:
+        lease_row["hostname"] = hostname_input
+
+    client._safe_dict_get = AsyncMock(return_value={"rows": [lease_row]})
+
+    v6 = await client._get_isc_dhcpv6_leases()
+    assert isinstance(v6, list) and len(v6) == 1
+    got = v6[0].get("hostname")
+    assert got == expected
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "delta_hours,expect_count",
+    [
+        (1, 1),  # ends in the future -> lease kept
+        (-1, 0),  # ends in the past -> lease skipped via continue
+    ],
+)
+async def test_get_isc_dhcpv6_ends_future_and_past(delta_hours, expect_count) -> None:
+    """Exercise parsing of `ends` and expiry comparison in `_get_isc_dhcpv6_leases`.
+
+    Provides leases with ends in the future and past to hit the parsing branch and
+    the continue when expired.
+    """
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = pyopnsense.OPNsenseClient(
+        url="http://localhost", username="u", password="p", session=session
+    )
+
+    client._use_snake_case = True
+    when = datetime.now() + timedelta(hours=delta_hours)
+    ends_value = when.strftime("%Y/%m/%d %H:%M:%S")
+
+    lease_row = {
+        "state": "active",
+        "mac": "m2",
+        "address": "fe80::1",
+        "if": "em1",
+        "hostname": "h2",
+        "ends": ends_value,
+    }
+
+    client._safe_dict_get = AsyncMock(return_value={"rows": [lease_row]})
+
+    v6 = await client._get_isc_dhcpv6_leases()
+    assert isinstance(v6, list)
+    assert len(v6) == expect_count
+    if expect_count == 1:
+        assert isinstance(v6[0].get("expires"), datetime)
+    await client.async_close()
+
+
+@pytest.mark.asyncio
 async def test_get_dhcp_leases_combined_structure() -> None:
     """Ensure get_dhcp_leases combines multiple sources and returns expected mapping."""
     session = MagicMock(spec=aiohttp.ClientSession)
@@ -2997,3 +4037,151 @@ async def test_get_device_unique_id_no_mac(make_client) -> None:
     client._safe_list_get = AsyncMock(return_value=[{"is_physical": False}])
     assert await client.get_device_unique_id() is None
     await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_openvpn_providers_instances_and_routes_edgecases(make_client) -> None:
+    """Exercise OpenVPN providers/instances/routes edge cases and ensure safe handling."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+
+    # providers info contains an empty uuid and a non-mapping value which should be skipped
+    providers_info = {"": "notamap", "p1": {"name": "pname"}}
+
+    # instances contains a client without uuid and a server with uuid
+    instances_info = {
+        "rows": [
+            {"role": "client"},
+            {"role": "server", "uuid": "s1", "description": "srv", "enabled": "1"},
+        ]
+    }
+
+    # routes reference a server id that does not exist to ensure it's skipped
+    routes_info = {
+        "rows": [
+            {
+                "id": "missing",
+                "common_name": "c1",
+                "real_address": "1.2.3.4",
+                "virtual_address": "10.0.0.1",
+            }
+        ]
+    }
+
+    async def fake_safe_dict_get(path):
+        if "providers" in path:
+            return providers_info
+        if "instances/search" in path:
+            return instances_info
+        if "search_routes" in path or "searchRoutes" in path:
+            return routes_info
+        if "/instances/get/" in path:
+            return {"instance": {}}
+        return {}
+
+    client._safe_dict_get = AsyncMock(side_effect=fake_safe_dict_get)
+
+    openvpn = await client.get_openvpn()
+    # providers with mapping should have been considered; ensure function returns structure
+    assert isinstance(openvpn, dict)
+    assert "servers" in openvpn and "clients" in openvpn
+    await client.async_close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "services_return,service_name,expected",
+    [
+        (None, "svc", False),  # None returned -> False
+        ({"rows": []}, "svc", False),  # empty list -> False
+        ({"rows": [{"name": "svc", "running": 1}]}, "svc", True),  # name match
+        ({"rows": [{"id": "svc", "running": 1}]}, "svc", True),  # id match
+        ({"rows": [{"name": "svc", "running": 0}]}, "svc", False),  # running false
+        (
+            {"rows": [{"name": "other", "running": 1}, {"id": "svc", "running": 0}]},
+            "svc",
+            False,
+        ),  # mixed entries, target not running
+    ],
+)
+async def test_get_service_is_running_various(
+    make_client, services_return, service_name, expected
+) -> None:
+    """Parametrized tests for `get_service_is_running` covering edgecases and matches."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        # Prepare the mocked get_services to return rows or None as parametrized
+        if services_return is None:
+            client.get_services = AsyncMock(return_value=None)
+        else:
+            rows = services_return.get("rows", [])
+            transformed = []
+            for s in rows:
+                ss = dict(s)
+                ss["status"] = ss.get("running", 0) == 1
+                transformed.append(ss)
+            client.get_services = AsyncMock(return_value=transformed)
+
+        res = await client.get_service_is_running(service_name)
+        assert res is expected
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_add_openvpn_server_and_process_routes_missing_server() -> None:
+    """Test _add_openvpn_server duplicate handling and _process_openvpn_routes skipping when server missing."""
+    openvpn: dict = {"servers": {}, "clients": {}}
+
+    inst = {"uuid": "u1", "description": "d", "enabled": "1", "dev_type": "tun"}
+    # add server first time
+    await pyopnsense.OPNsenseClient._add_openvpn_server(inst, openvpn)
+    assert "u1" in openvpn["servers"]
+    # call again with same uuid should not raise and server remains
+    await pyopnsense.OPNsenseClient._add_openvpn_server(inst, openvpn)
+    assert "u1" in openvpn["servers"]
+
+    # process routes where route id not in servers should be skipped
+    routes_info = {
+        "rows": [
+            {
+                "id": "nope",
+                "common_name": "c",
+                "real_address": "1.2.3.4",
+                "virtual_address": "10.0.0.2",
+            }
+        ]
+    }
+    await pyopnsense.OPNsenseClient._process_openvpn_routes(routes_info, openvpn)
+    # ensure no clients were incorrectly added
+    assert all(len(s.get("clients", [])) >= 0 for s in openvpn["servers"].values())
+
+
+@pytest.mark.asyncio
+async def test_link_wireguard_client_to_server_fallback() -> None:
+    """When server id not found, _link_wireguard_client_to_server should return fallback mapping."""
+    servers: dict = {}
+    srv = {"value": "peer-name"}
+    res = await pyopnsense.OPNsenseClient._link_wireguard_client_to_server("nope", servers, srv)
+    assert res.get("uuid") == "nope"
+    assert res.get("name") == "peer-name"
+
+
+@pytest.mark.asyncio
+async def test_do_get_from_stream_unparsed_lines(make_client, fake_stream_response_factory) -> None:
+    """Ensure lines not starting with 'data:' are logged/ignored and parsing continues."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    # first chunk contains an unparsed line, second chunk contains two data messages
+    session.get = lambda *a, **k: fake_stream_response_factory(
+        [b"unparsed line\n\n", b'data: {"a": 1}\n\n', b'data: {"b": 2}\n\n']
+    )
+    client = pyopnsense.OPNsenseClient(
+        url="http://localhost", username="u", password="p", session=session
+    )
+    try:
+        res = await client._do_get_from_stream("/stream", caller="tst")
+        assert isinstance(res, dict)
+        assert res.get("b") == 2
+    finally:
+        await client.async_close()

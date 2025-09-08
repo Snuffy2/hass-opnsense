@@ -76,7 +76,7 @@ async def test_async_setup_entry_success(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
 
     # create a minimal config entry using the shared helper so all fields
@@ -114,7 +114,7 @@ async def test_async_setup_entry_device_id_mismatch(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
 
     # use the shared helper to construct the entry for consistency
@@ -186,7 +186,7 @@ async def test_async_remove_config_entry_device_branches(monkeypatch, hass):
 
 
 @pytest.mark.asyncio
-async def test_async_remove_config_entry_device_no_linked_entities(monkeypatch):
+async def test_async_remove_config_entry_device_no_linked_entities(monkeypatch, ph_hass):
     """When no linked entities exist for a device, removal should succeed (return True)."""
     # device not linked via via_device_id and has an id
     device = MagicMock()
@@ -201,7 +201,7 @@ async def test_async_remove_config_entry_device_no_linked_entities(monkeypatch):
     )
 
     # call the removal helper with a dummy config entry
-    res = await init_mod.async_remove_config_entry_device(None, MagicMock(entry_id="x"), device)
+    res = await init_mod.async_remove_config_entry_device(ph_hass, MagicMock(entry_id="x"), device)
     assert res is True
 
 
@@ -440,7 +440,7 @@ async def test_async_setup_entry_firmware_below_min(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
 
     entry = make_config_entry(
@@ -470,7 +470,7 @@ async def test_async_setup_entry_firmware_between_min_and_ltd(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
     # capture calls to the issue registry to assert a warning issue is created
     create_issue_mock = MagicMock()
@@ -601,7 +601,7 @@ async def test_async_setup_entry_awesomeversion_exception(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
     monkeypatch.setattr(init_mod.awesomeversion, "AwesomeVersion", DummyAV)
     entry = make_config_entry(
@@ -845,7 +845,7 @@ async def test_async_setup_entry_firmware_above_ltd_calls_delete(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
     called = []
     monkeypatch.setattr(init_mod.ir, "async_delete_issue", lambda *a, **k: called.append(True))
@@ -860,7 +860,7 @@ async def test_async_setup_entry_firmware_above_ltd_calls_delete(
     )
     hass = ph_hass
     hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = MagicMock()
+    hass.config_entries.async_reload = AsyncMock()
     res = await init_mod.async_setup_entry(hass, entry)
     assert res is True
     assert called, "async_delete_issue should have been called for firmware >= LTD"
@@ -877,7 +877,7 @@ async def test_async_setup_entry_firmware_at_or_above_ltd_deletes_previous_issue
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
 
     # capture delete_issue calls
@@ -894,7 +894,7 @@ async def test_async_setup_entry_firmware_at_or_above_ltd_deletes_previous_issue
     )
     hass = ph_hass
     hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = MagicMock()
+    hass.config_entries.async_reload = AsyncMock()
     res = await init_mod.async_setup_entry(hass, entry)
     assert res is True
 
@@ -917,7 +917,7 @@ async def test_async_setup_entry_delete_uses_actual_firmware_string(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
 
     calls = MagicMock()
@@ -933,7 +933,7 @@ async def test_async_setup_entry_delete_uses_actual_firmware_string(
     )
     hass = ph_hass
     hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = MagicMock()
+    hass.config_entries.async_reload = AsyncMock()
     res = await init_mod.async_setup_entry(hass, entry)
     assert res is True
 
@@ -955,7 +955,7 @@ async def test_async_setup_entry_delete_not_called_for_between_min_and_ltd(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
 
     delete_issue_mock = MagicMock()
@@ -989,7 +989,7 @@ async def test_async_setup_entry_with_device_tracker_enabled(
     monkeypatch.setattr(
         init_mod,
         "OPNsenseDataUpdateCoordinator",
-        coordinator_capture.factory(lambda **k: coordinator),
+        coordinator_capture.factory(),
     )
 
     entry = make_config_entry(
@@ -1004,7 +1004,7 @@ async def test_async_setup_entry_with_device_tracker_enabled(
 
     hass = ph_hass
     hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = MagicMock()
+    hass.config_entries.async_reload = AsyncMock()
     res = await init_mod.async_setup_entry(hass, entry)
     assert res is True
     # ensure a device-tracker coordinator was created and its initial refresh ran
@@ -1056,3 +1056,316 @@ async def test_migrate_2_to_3_handles_identifier_collision(monkeypatch, fake_cli
 
     res = await init_mod._migrate_2_to_3(hass, cfg)
     assert res is True
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_continues_when_router_id_missing(
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
+):
+    """If client.get_device_unique_id returns None, async_setup_entry should continue."""
+    # fake client that returns None for device id and valid firmware
+    monkeypatch.setattr(
+        init_mod, "OPNsenseClient", fake_client(device_id=None, firmware_version="99.9")
+    )
+    monkeypatch.setattr(
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(),
+    )
+
+    entry = make_config_entry(
+        data={
+            init_mod.CONF_URL: "http://1.2.3.4",
+            init_mod.CONF_USERNAME: "u",
+            init_mod.CONF_PASSWORD: "p",
+            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
+        }
+    )
+
+    hass = ph_hass
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+    hass.config_entries.async_reload = AsyncMock()
+
+    # should not raise and should return True
+    res = await init_mod.async_setup_entry(hass, entry)
+    assert res is True
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_registers_update_listener_and_removes_device_tracker(
+    monkeypatch, ph_hass, coordinator_capture, fake_client, coordinator, make_config_entry
+):
+    """async_setup_entry should register update listener and remove device_tracker from platforms when disabled."""
+    # fake client with valid firmware and device id to allow normal flow
+    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client())
+    monkeypatch.setattr(
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(lambda **k: coordinator),
+    )
+
+    # create entry without enabling device tracker (default False)
+    entry = make_config_entry(
+        data={
+            init_mod.CONF_URL: "http://1.2.3.4",
+            init_mod.CONF_USERNAME: "u",
+            init_mod.CONF_PASSWORD: "p",
+            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
+        },
+        options={},
+    )
+
+    # spy on add_update_listener to ensure listener registration occurred
+    called = {}
+
+    def fake_add_update_listener(cb):
+        called["listener"] = True
+        return lambda: None
+
+    entry.add_update_listener = fake_add_update_listener
+
+    hass = ph_hass
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+    hass.config_entries.async_reload = AsyncMock()
+
+    res = await init_mod.async_setup_entry(hass, entry)
+    assert res is True
+
+    # ensure the update listener was registered
+    assert called.get("listener", False) is True
+
+    # Verify device tracker platform was removed from loaded platforms (if present)
+    if (
+        hasattr(entry, "runtime_data")
+        and getattr(entry.runtime_data, "loaded_platforms", None) is not None
+    ):
+        assert init_mod.Platform.DEVICE_TRACKER not in entry.runtime_data.loaded_platforms
+
+
+@pytest.mark.asyncio
+async def test_async_update_listener_no_prefix_match(monkeypatch, ph_hass, make_config_entry):
+    """When removal_prefix exists but entity unique_id does not match, no removal occurs."""
+    entry = make_config_entry(
+        data={init_mod.CONF_DEVICE_UNIQUE_ID: "dev1", "sync_telemetry": False}, unique_id="uX"
+    )
+    setattr(entry.runtime_data, init_mod.SHOULD_RELOAD, True)
+
+    hass = ph_hass
+    hass.config_entries.async_reload = AsyncMock()
+    hass.data = {}
+
+    # entity that does not match the removal prefix
+    class Ent:
+        def __init__(self, entity_id, unique_id):
+            self.entity_id = entity_id
+            self.unique_id = unique_id
+
+    prefix = list(init_mod.GRANULAR_SYNC_PREFIX["sync_telemetry"])[0]
+    ent = Ent("sensor.x", f"{entry.unique_id}_not_{prefix}_suffix")
+
+    ER = MagicMock()
+    ER.async_remove = MagicMock()
+    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: ER)
+    monkeypatch.setattr(
+        init_mod.er, "async_entries_for_config_entry", lambda registry, config_entry_id: [ent]
+    )
+
+    DR = MagicMock()
+    DR.async_remove_device = MagicMock()
+    monkeypatch.setattr(init_mod.dr, "async_get", lambda hass: DR)
+    monkeypatch.setattr(
+        init_mod.dr, "async_entries_for_config_entry", lambda registry, config_entry_id: []
+    )
+
+    if not hasattr(hass, "async_create_task"):
+        hass.async_create_task = MagicMock()
+
+    await init_mod._async_update_listener(hass, entry)
+
+    ER.async_remove.assert_not_called()
+    DR.async_remove_device.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_migrate_1_to_2_preserve_verify_ssl(ph_hass):
+    """If CONF_VERIFY_SSL already present, migration should preserve it and update entry."""
+    cfg = MagicMock()
+    cfg.data = {init_mod.CONF_VERIFY_SSL: True}
+    cfg.version = 1
+
+    hass = ph_hass
+    hass.config_entries.async_update_entry = MagicMock(return_value=True)
+
+    res = await init_mod._migrate_1_to_2(hass, cfg)
+    assert res is True
+    # CONF_VERIFY_SSL should still be present and True in the updated data
+    hass.config_entries.async_update_entry.assert_called_once()
+    called_data = (
+        hass.config_entries.async_update_entry.call_args.kwargs.get("data")
+        or hass.config_entries.async_update_entry.call_args.args[1]
+    )
+    assert called_data[init_mod.CONF_VERIFY_SSL] is True
+
+
+@pytest.mark.asyncio
+async def test_migrate_2_to_3_skips_non_opnsense_device(monkeypatch, fake_client):
+    """Devices without an 'opnsense' identifier should be skipped when migrating."""
+    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(device_id="newdev"))
+
+    dev = MagicMock()
+    dev.id = "d1"
+    dev.identifiers = {("other", "x")}
+
+    DR = MagicMock()
+    DR.async_entries_for_config_entry = lambda registry, config_entry_id: [dev]
+    DR.async_update_device = MagicMock()
+    monkeypatch.setattr(init_mod.dr, "async_get", lambda hass: DR)
+
+    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: MagicMock())
+    monkeypatch.setattr(
+        init_mod.er, "async_entries_for_config_entry", lambda registry, config_entry_id: []
+    )
+
+    cfg = MagicMock()
+    cfg.data = {
+        init_mod.CONF_URL: "http://1.2.3.4",
+        init_mod.CONF_USERNAME: "u",
+        init_mod.CONF_PASSWORD: "p",
+    }
+    cfg.version = 2
+    cfg.entry_id = "e"
+    cfg.unique_id = "old_unique"
+
+    hass = MagicMock(spec=HomeAssistant)
+    hass.data = {}
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_update_entry = MagicMock(return_value=True)
+
+    res = await init_mod._migrate_2_to_3(hass, cfg)
+    assert res is True
+    # since device had no 'opnsense' identifier, update_device should not be called
+    assert not DR.async_update_device.called
+
+
+@pytest.mark.asyncio
+async def test_migrate_2_to_3_update_entry_fails_returns_false(monkeypatch, fake_client):
+    """If async_update_entry returns False, migration should report failure."""
+    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(device_id="newdev"))
+    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: MagicMock())
+    monkeypatch.setattr(
+        init_mod.er, "async_entries_for_config_entry", lambda registry, config_entry_id: []
+    )
+    monkeypatch.setattr(init_mod.dr, "async_get", lambda hass: MagicMock())
+    monkeypatch.setattr(
+        init_mod.dr, "async_entries_for_config_entry", lambda registry, config_entry_id: []
+    )
+
+    cfg = MagicMock()
+    cfg.data = {
+        init_mod.CONF_URL: "http://1.2.3.4",
+        init_mod.CONF_USERNAME: "u",
+        init_mod.CONF_PASSWORD: "p",
+    }
+    cfg.version = 2
+    cfg.entry_id = "e"
+    cfg.unique_id = "old_unique"
+
+    hass = MagicMock(spec=HomeAssistant)
+    hass.data = {}
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_update_entry = MagicMock(return_value=False)
+
+    res = await init_mod._migrate_2_to_3(hass, cfg)
+    assert res is False
+
+
+@pytest.mark.asyncio
+async def test_migrate_3_to_4_skips_non_sensor_platform(monkeypatch, fake_client):
+    """If an entity's platform is not sensor, it should be ignored by migration."""
+    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(telemetry={}))
+
+    e = MagicMock()
+    e.entity_id = "binary_sensor.x"
+    e.unique_id = "whatever"
+
+    ER = MagicMock()
+    ER.async_update_entity = MagicMock()
+    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: ER)
+    monkeypatch.setattr(
+        init_mod.er, "async_entries_for_config_entry", lambda registry, config_entry_id: [e]
+    )
+
+    cfg = MagicMock()
+    cfg.data = {
+        init_mod.CONF_URL: "http://1.2.3.4",
+        init_mod.CONF_USERNAME: "u",
+        init_mod.CONF_PASSWORD: "p",
+    }
+    cfg.version = 3
+    cfg.entry_id = "e3"
+
+    hass = MagicMock(spec=HomeAssistant)
+    hass.data = {}
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_update_entry = MagicMock(return_value=True)
+
+    res = await init_mod._migrate_3_to_4(hass, cfg)
+    assert res is True
+    ER.async_update_entity.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_migrate_3_to_4_openvpn_rename(monkeypatch, fake_client):
+    """OpenVPN telemetry unique_ids should be renamed to openvpn_* and updated."""
+    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(telemetry={}))
+
+    e = MagicMock()
+    e.entity_id = "sensor.ovpn"
+    e.unique_id = "abc_telemetry_openvpn_name"
+
+    ER = MagicMock()
+    ER.async_update_entity = MagicMock(
+        return_value=MagicMock(entity_id=e.entity_id, unique_id="new")
+    )
+    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: ER)
+    monkeypatch.setattr(
+        init_mod.er, "async_entries_for_config_entry", lambda registry, config_entry_id: [e]
+    )
+
+    cfg = MagicMock()
+    cfg.data = {
+        init_mod.CONF_URL: "http://1.2.3.4",
+        init_mod.CONF_USERNAME: "u",
+        init_mod.CONF_PASSWORD: "p",
+    }
+    cfg.version = 3
+    cfg.entry_id = "e3"
+
+    hass = MagicMock(spec=HomeAssistant)
+    hass.data = {}
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_update_entry = MagicMock(return_value=True)
+
+    res = await init_mod._migrate_3_to_4(hass, cfg)
+    assert res is True
+    ER.async_update_entity.assert_called_once_with(e.entity_id, new_unique_id="abc_openvpn_name")
+
+
+@pytest.mark.asyncio
+async def test_async_migrate_entry_successful_chained(monkeypatch, ph_hass):
+    """When starting at version 1 and all sub-migrations succeed, async_migrate_entry returns True."""
+    m12 = AsyncMock(return_value=True)
+    m23 = AsyncMock(return_value=True)
+    m34 = AsyncMock(return_value=True)
+    monkeypatch.setattr(init_mod, "_migrate_1_to_2", m12)
+    monkeypatch.setattr(init_mod, "_migrate_2_to_3", m23)
+    monkeypatch.setattr(init_mod, "_migrate_3_to_4", m34)
+
+    cfg = MagicMock()
+    cfg.version = 1
+
+    res = await init_mod.async_migrate_entry(ph_hass, cfg)
+    assert res is True
+    m12.assert_awaited_once()
+    m23.assert_awaited_once()
+    m34.assert_awaited_once()

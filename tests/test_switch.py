@@ -5,7 +5,6 @@ async setup flows for the integration's switch platform.
 """
 
 import asyncio
-import contextlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -330,7 +329,8 @@ async def test_unbound_and_vpn_variations(coordinator, ph_hass, make_config_entr
         assert vpn.is_on is bool(inst.get("enabled"))
 
 
-def test_delay_update_setter(monkeypatch, coordinator, make_config_entry):
+@pytest.mark.asyncio
+async def test_delay_update_setter(monkeypatch, coordinator, make_config_entry):
     """Delay update setter captures and removes scheduled removers correctly."""
     desc = SwitchEntityDescription(key="x", name="DelayTest")
     config_entry = make_config_entry(
@@ -343,33 +343,27 @@ def test_delay_update_setter(monkeypatch, coordinator, make_config_entry):
     )
     # synchronous test: use a plain hass-like object with a dedicated loop
     hass_local = MagicMock(spec=HomeAssistant)
-    loop = asyncio.new_event_loop()
-    try:
-        hass_local.loop = loop
-        hass_local.data = {}
-        ent.hass = hass_local
-        called = {"removed": False}
+    # Use the running event loop provided by pytest-asyncio for hass.loop
+    hass_local.loop = asyncio.get_running_loop()
+    hass_local.data = {}
+    ent.hass = hass_local
+    called = {"removed": False}
 
-        def fake_async_call_later(*args, **kwargs):
-            def remover():
-                called["removed"] = True
+    def fake_async_call_later(*args, **kwargs):
+        def remover():
+            called["removed"] = True
 
-            return remover
+        return remover
 
-        monkeypatch.setattr(
-            "custom_components.opnsense.switch.async_call_later", fake_async_call_later
-        )
+    monkeypatch.setattr("custom_components.opnsense.switch.async_call_later", fake_async_call_later)
 
-        ent.delay_update = True
-        assert ent.delay_update is True
-        # ensure async_call_later returned remover was captured
-        assert callable(getattr(ent, "_delay_update_remove", None))
-        ent.delay_update = False
-        assert called["removed"] is True
-    finally:
-        # make sure we close the loop created for this test
-        with contextlib.suppress(RuntimeError):
-            loop.close()
+    ent.delay_update = True
+    assert ent.delay_update is True
+    # ensure async_call_later returned remover was captured
+    assert callable(getattr(ent, "_delay_update_remove", None))
+    ent.delay_update = False
+    assert called["removed"] is True
+    # no manual loop to close when using pytest-asyncio
 
 
 @pytest.mark.asyncio
@@ -744,72 +738,67 @@ async def test_switch_handle_error_sets_unavailable(
 ) -> None:
     """When underlying rule/service lookups return non-mapping values, switch becomes unavailable."""
     hass_local = MagicMock(spec=HomeAssistant)
-    loop = asyncio.new_event_loop()
-    try:
-        hass_local.loop = loop
-        hass_local.data = {}
+    # Use the running event loop provided by pytest-asyncio
+    hass_local.loop = asyncio.get_running_loop()
+    hass_local.data = {}
 
-        if kind == "filter":
-            # compile one valid filter entity then monkeypatch to produce error
-            config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
-            setattr(config_entry.runtime_data, COORDINATOR, coordinator)
-            state = {"config": {"filter": {"rule": [{"descr": "Good", "created": {"time": "t1"}}]}}}
-            coordinator.data = state
-            ent = (await _compile_filter_switches(config_entry, coordinator, state))[0]
-            ent.hass = hass_local
-            ent.coordinator = make_coord(state)
-            ent.entity_id = f"switch.{ent._attr_unique_id}"
-            ent.async_write_ha_state = lambda: None
+    if kind == "filter":
+        # compile one valid filter entity then monkeypatch to produce error
+        config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+        setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+        state = {"config": {"filter": {"rule": [{"descr": "Good", "created": {"time": "t1"}}]}}}
+        coordinator.data = state
+        ent = (await _compile_filter_switches(config_entry, coordinator, state))[0]
+        ent.hass = hass_local
+        ent.coordinator = make_coord(state)
+        ent.entity_id = f"switch.{ent._attr_unique_id}"
+        ent.async_write_ha_state = lambda: None
 
-            def _fake_get_rule_filter() -> Any:
-                return 5
+        def _fake_get_rule_filter() -> Any:
+            return 5
 
-            ent._opnsense_get_rule = _fake_get_rule_filter
-        elif kind == "nat":
-            desc = SwitchEntityDescription(key="nat_port_forward.abc", name="NAT")
-            config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
-            setattr(config_entry.runtime_data, COORDINATOR, coordinator)
-            ent = OPNsenseNatSwitch(
-                config_entry=config_entry,
-                coordinator=coordinator,
-                entity_description=desc,
-            )
-            ent.hass = hass_local
-            ent.coordinator = make_coord({})
-            ent.entity_id = "switch.nat"
-            ent.async_write_ha_state = lambda: None
+        ent._opnsense_get_rule = _fake_get_rule_filter
+    elif kind == "nat":
+        desc = SwitchEntityDescription(key="nat_port_forward.abc", name="NAT")
+        config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+        setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+        ent = OPNsenseNatSwitch(
+            config_entry=config_entry,
+            coordinator=coordinator,
+            entity_description=desc,
+        )
+        ent.hass = hass_local
+        ent.coordinator = make_coord({})
+        ent.entity_id = "switch.nat"
+        ent.async_write_ha_state = lambda: None
 
-            def _fake_get_rule_nat() -> Any:
-                return 123
+        def _fake_get_rule_nat() -> Any:
+            return 123
 
-            ent._opnsense_get_rule = _fake_get_rule_nat
-        else:  # service
-            desc = SwitchEntityDescription(key="service.svc1.status", name="Svc")
-            config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
-            setattr(config_entry.runtime_data, COORDINATOR, coordinator)
-            ent = OPNsenseServiceSwitch(
-                config_entry=config_entry,
-                coordinator=coordinator,
-                entity_description=desc,
-            )
-            ent.hass = hass_local
-            ent.coordinator = make_coord({})
-            ent.entity_id = "switch.svc"
-            ent.async_write_ha_state = lambda: None
+        ent._opnsense_get_rule = _fake_get_rule_nat
+    else:  # service
+        desc = SwitchEntityDescription(key="service.svc1.status", name="Svc")
+        config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+        setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+        ent = OPNsenseServiceSwitch(
+            config_entry=config_entry,
+            coordinator=coordinator,
+            entity_description=desc,
+        )
+        ent.hass = hass_local
+        ent.coordinator = make_coord({})
+        ent.entity_id = "switch.svc"
+        ent.async_write_ha_state = lambda: None
 
-            def _fake_get_service() -> Any:
-                return 5
+        def _fake_get_service() -> Any:
+            return 5
 
-            ent._opnsense_get_service = _fake_get_service
+        ent._opnsense_get_service = _fake_get_service
 
-        # Exercise the update logic; ensure the handler did not raise and
-        # availability is reported as a boolean (handlers may early-return).
-        ent._handle_coordinator_update()
-        assert isinstance(ent.available, bool)
-    finally:
-        # make sure we close the loop created for this test
-        with contextlib.suppress(RuntimeError):
-            loop.close()
+    # Exercise the update logic; ensure the handler did not raise and
+    # availability is reported as a boolean (handlers may early-return).
+    ent._handle_coordinator_update()
+    assert isinstance(ent.available, bool)
 
 
 def test_entity_icons(make_config_entry):
@@ -1710,8 +1699,6 @@ def test_delay_setter_no_remover(monkeypatch, coordinator, make_config_entry):
     hass_local.loop = None
     hass_local.data = {"integrations": {}}
     ent.hass = hass_local
-    # ensure entity_id present for HA entity operations
-    ent.entity_id = f"switch.{getattr(ent, '_attr_unique_id', None) or ent.entity_description.key}"
     # provide minimal HA identity for entity write operations
     ent.entity_id = "switch.filter_test"
     ent.async_write_ha_state = lambda: None

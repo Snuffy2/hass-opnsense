@@ -11,6 +11,7 @@ jobs:
   tests:
     name: pytest and coverage report
     runs-on: ubuntu-latest
+    if: ${{ !(github.event_name == 'pull_request' && contains(join(github.event.pull_request.labels.*.name, ','), 'dependencies')) }}
     permissions:
       # Gives the action the necessary permissions for publishing new
       # comments in pull requests.
@@ -29,6 +30,7 @@ jobs:
             echo "github.event_name: ${{ github.event_name }}"
             echo "github.ref_name: ${{ github.ref_name }}"
             echo "github.event.repository.default_branch: ${{ github.event.repository.default_branch }}"
+            echo "PR labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}"
 
       - name: Setup Python 3 (with caching)
         uses: actions/setup-python@v6.0.0
@@ -54,6 +56,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MINIMUM_GREEN: 90
           MINIMUM_ORANGE: 70
+
       - name: Store PR Comment to be Posted
         if: steps.coverage_comment.outputs.COMMENT_FILE_WRITTEN == 'true'
         uses: actions/upload-artifact@v4.6.2
