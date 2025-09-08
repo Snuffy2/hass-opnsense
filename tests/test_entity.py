@@ -68,7 +68,9 @@ def test_get_opnsense_state_value_nested_lookup(make_config_entry, coordinator):
 
 
 @pytest.mark.asyncio
-async def test_async_added_to_hass_sets_client_and_calls_update(make_config_entry, coordinator):
+async def test_async_added_to_hass_sets_client_and_calls_update(
+    make_config_entry, coordinator, ph_hass
+):
     """async_added_to_hass attaches client and triggers update handler."""
     entry = make_config_entry()
     coord = coordinator
@@ -87,8 +89,7 @@ async def test_async_added_to_hass_sets_client_and_calls_update(make_config_entr
 
     ent._handle_coordinator_update = fake_handle
 
-    # provide a minimal hass stub so lifecycle behaves more like real HA
-    ent.hass = MagicMock()
+    ent.hass = ph_hass
     # should not raise because runtime_data contains OPNSENSE_CLIENT
     await ent.async_added_to_hass()
     assert ent._client is client
@@ -96,7 +97,7 @@ async def test_async_added_to_hass_sets_client_and_calls_update(make_config_entr
 
 
 @pytest.mark.asyncio
-async def test_async_added_to_hass_missing_client_raises(make_config_entry, coordinator):
+async def test_async_added_to_hass_missing_client_raises(make_config_entry, coordinator, ph_hass):
     """async_added_to_hass raises when runtime client is missing."""
     entry = make_config_entry()
     coord = coordinator
@@ -107,7 +108,7 @@ async def test_async_added_to_hass_missing_client_raises(make_config_entry, coor
 
     # avoid writing HA state (which requires hass) by stubbing the handler
     ent._handle_coordinator_update = lambda: None
-    ent.hass = MagicMock()
+    ent.hass = ph_hass
     with pytest.raises(AssertionError):
         await ent.async_added_to_hass()
 

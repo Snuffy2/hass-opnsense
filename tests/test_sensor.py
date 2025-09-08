@@ -1,6 +1,5 @@
 """These tests import the integration code via relative imports and assert behavior across sensor variants using a synthesized coordinator state."""
 
-# removed unused `inspect` and `sys` imports when tracer-based test was replaced
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -31,6 +30,8 @@ from custom_components.opnsense.sensor import (
     slugify_filesystem_mountpoint,
 )
 
+# conftest shim is applied automatically via ph_hass; no explicit import required
+
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_invalid_state(make_config_entry):
@@ -52,7 +53,7 @@ async def test_async_setup_entry_invalid_state(make_config_entry):
 
 
 @pytest.mark.asyncio
-async def test_static_key_sensor_cpu_and_boot_and_certificates(make_config_entry):
+async def test_static_key_sensor_cpu_and_boot_and_certificates(make_config_entry, ph_hass):
     """Static key sensors should expose CPU, boot time, and certificate counts."""
     coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     coordinator.data = {
@@ -72,7 +73,7 @@ async def test_static_key_sensor_cpu_and_boot_and_certificates(make_config_entry
     s_cpu = OPNsenseStaticKeySensor(
         config_entry=entry, coordinator=coordinator, entity_description=desc
     )
-    s_cpu.hass = MagicMock()
+    s_cpu.hass = ph_hass
     s_cpu.entity_id = "sensor.cpu_total"
     s_cpu.async_write_ha_state = lambda: None
     # first call when previous is None and value !=0 -> available True and extra attributes

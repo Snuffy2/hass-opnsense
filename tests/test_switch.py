@@ -114,8 +114,7 @@ async def test_switch_toggle_variants(
     assert len(ents) >= 1
     ent = ents[0]
 
-    hass = ph_hass
-    ent.hass = hass
+    ent.hass = ph_hass
     ent.coordinator = make_coord(state)
     # prefer unique id if present, otherwise fall back to entity_description.key
     unique = getattr(ent, "_attr_unique_id", None)
@@ -1847,11 +1846,9 @@ async def test_nat_no_rule_or_client_noop(coordinator, make_config_entry):
 
 @pytest.mark.asyncio
 async def test_filter_async_turn_on_off_calls_client_and_sets_delay(
-    coordinator, make_config_entry, minimal_hass, patch_async_call_later
+    coordinator, make_config_entry, ph_hass, patch_async_call_later
 ):
     """Turning filter switch on/off should call client methods and set delay_update."""
-
-    # async_call_later patched by patch_async_call_later fixture
 
     desc = SwitchEntityDescription(key="filter.t1", name="FilterTest")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -1865,7 +1862,7 @@ async def test_filter_async_turn_on_off_calls_client_and_sets_delay(
     client.enable_filter_rule_by_created_time = AsyncMock(return_value=True)
     client.disable_filter_rule_by_created_time = AsyncMock(return_value=True)
     ent._client = client
-    ent.hass = minimal_hass
+    ent.hass = ph_hass
     ent.entity_id = "switch.filter_test"
 
     await ent.async_turn_on()
@@ -1902,12 +1899,10 @@ async def test_nat_async_turn_on_off_calls_correct_client_method(
     method_enable,
     method_disable,
     key_prefix,
-    minimal_hass,
+    ph_hass,
     patch_async_call_later,
 ):
     """NAT switch should choose the correct client method for port-forward vs outbound rules."""
-
-    # async_call_later patched by patch_async_call_later fixture
 
     desc = SwitchEntityDescription(key=f"{key_prefix}.r1", name="NatTest")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -1920,8 +1915,9 @@ async def test_nat_async_turn_on_off_calls_correct_client_method(
     setattr(client, method_enable, AsyncMock(return_value=True))
     setattr(client, method_disable, AsyncMock(return_value=True))
     ent._client = client
-    ent.hass = minimal_hass
-    ent.entity_id = f"switch.{desc.key}"
+    ent.hass = ph_hass
+    # Home Assistant object_id must not contain dots; replace them so ph_hass accepts the entity_id
+    ent.entity_id = f"switch.{desc.key.replace('.', '_')}"
 
     await ent.async_turn_on()
     getattr(client, method_enable).assert_awaited_once_with(ent._tracker)
@@ -1932,7 +1928,9 @@ async def test_nat_async_turn_on_off_calls_correct_client_method(
     assert ent._attr_is_on is False
 
 
-def test_vpn_handle_coordinator_update_sets_icon_and_attributes(coordinator, make_config_entry):
+def test_vpn_handle_coordinator_update_sets_icon_and_attributes(
+    coordinator, make_config_entry, ph_hass
+):
     """VPN switch should populate extra_state_attributes and have the expected icon when on."""
     # build a coordinator state with a server instance that has multiple properties
     state = {
@@ -1945,11 +1943,8 @@ def test_vpn_handle_coordinator_update_sets_icon_and_attributes(coordinator, mak
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
     setattr(config_entry.runtime_data, COORDINATOR, coord)
     ent = OPNsenseVPNSwitch(config_entry=config_entry, coordinator=coord, entity_description=desc)
-    hass_local = MagicMock(spec=HomeAssistant)
-    hass_local.loop = None
-    hass_local.data = {"integrations": {}}
     ent.coordinator = coord
-    ent.hass = hass_local
+    ent.hass = ph_hass
     ent.async_write_ha_state = lambda: None
     ent._handle_coordinator_update()
     # should be available and on
@@ -1963,7 +1958,7 @@ def test_vpn_handle_coordinator_update_sets_icon_and_attributes(coordinator, mak
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
 def test_filter_handle_exceptions_sets_unavailable(
-    exc_type, coordinator, make_config_entry
+    exc_type, coordinator, make_config_entry, ph_hass
 ) -> None:
     """Filter handler should mark entity unavailable when .get raises common exceptions."""
     desc = SwitchEntityDescription(key="filter.ex", name="FilterEx")
@@ -1973,7 +1968,7 @@ def test_filter_handle_exceptions_sets_unavailable(
     ent = OPNsenseFilterSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = ph_hass
     ent.coordinator = make_coord({})
     ent.entity_id = f"switch.{ent._attr_unique_id}"
     ent.async_write_ha_state = lambda: None
@@ -1998,7 +1993,9 @@ def test_filter_handle_exceptions_sets_unavailable(
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
-def test_nat_handle_exceptions_sets_unavailable(exc_type, coordinator, make_config_entry) -> None:
+def test_nat_handle_exceptions_sets_unavailable(
+    exc_type, coordinator, make_config_entry, ph_hass
+) -> None:
     """NAT handler should mark entity unavailable when membership check raises exceptions."""
     desc = SwitchEntityDescription(key="nat_port_forward.ex", name="NATEx")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -2007,7 +2004,7 @@ def test_nat_handle_exceptions_sets_unavailable(exc_type, coordinator, make_conf
     ent = OPNsenseNatSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = ph_hass
     ent.coordinator = make_coord({})
     ent.entity_id = f"switch.{ent.entity_description.key}"
     ent.async_write_ha_state = lambda: None
@@ -2026,7 +2023,9 @@ def test_nat_handle_exceptions_sets_unavailable(exc_type, coordinator, make_conf
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
-def test_vpn_handle_exceptions_sets_unavailable(exc_type, coordinator, make_config_entry) -> None:
+def test_vpn_handle_exceptions_sets_unavailable(
+    exc_type, coordinator, make_config_entry, ph_hass
+) -> None:
     """VPN handler should mark entity unavailable when instance indexing raises exceptions."""
     desc = SwitchEntityDescription(key="openvpn.clients.ex", name="VPNEx")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -2035,7 +2034,7 @@ def test_vpn_handle_exceptions_sets_unavailable(exc_type, coordinator, make_conf
     ent = OPNsenseVPNSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = ph_hass
     ent.entity_id = f"switch.{ent.entity_description.key}"
     ent.async_write_ha_state = lambda: None
 

@@ -141,14 +141,13 @@ async def test_async_setup_entry_device_id_mismatch(
 
 
 @pytest.mark.asyncio
-async def test_async_update_listener_not_reload(monkeypatch, make_config_entry):
+async def test_async_update_listener_not_reload(monkeypatch, make_config_entry, ph_hass):
     """_async_update_listener should set SHOULD_RELOAD True and not call reload when flag False."""
     entry = make_config_entry(entry_id="e", unique_id="u")
     # ensure runtime_data exists and set SHOULD_RELOAD to False
     setattr(entry.runtime_data, init_mod.SHOULD_RELOAD, False)
 
-    # hass with config_entries.async_reload not called
-    hass = MagicMock(spec=HomeAssistant)
+    hass = ph_hass
     hass.config_entries = MagicMock()
     hass.config_entries.async_reload = AsyncMock()
 

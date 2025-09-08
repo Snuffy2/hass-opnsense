@@ -247,15 +247,14 @@ def test_async_get_options_flow_returns_options_flow():
 
 
 @pytest.mark.asyncio
-async def test_options_flow_init_with_user_triggers_update():
+async def test_options_flow_init_with_user_triggers_update(ph_hass):
     """Submitting user input to async_step_init should update entry and create entry."""
     cfg = MagicMock()
     cfg.data = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
     cfg.options = {cf_mod.CONF_DEVICE_TRACKER_ENABLED: False}
 
     flow = cf_mod.OPNsenseOptionsFlow(cfg)
-    flow.hass = MagicMock()
-    flow.hass.config_entries = MagicMock()
+    flow.hass = ph_hass
     flow.hass.config_entries.async_update_entry = MagicMock()
     # set a handler so flow._config_entry_id property is available during the test
     flow.handler = "opnsense"
@@ -276,15 +275,14 @@ async def test_options_flow_init_with_user_triggers_update():
 
 
 @pytest.mark.asyncio
-async def test_options_flow_granular_sync_calls_validate_and_updates(monkeypatch):
+async def test_options_flow_granular_sync_calls_validate_and_updates(monkeypatch, ph_hass):
     """async_step_granular_sync should call validate_input and update entry when no errors."""
     cfg = MagicMock()
     cfg.data = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
     cfg.options = {cf_mod.CONF_DEVICE_TRACKER_ENABLED: False}
 
     flow = cf_mod.OPNsenseOptionsFlow(cfg)
-    flow.hass = MagicMock()
-    flow.hass.config_entries = MagicMock()
+    flow.hass = ph_hass
     flow.hass.config_entries.async_update_entry = MagicMock()
 
     # monkeypatch validate_input to return no errors
@@ -309,7 +307,9 @@ async def test_options_flow_granular_sync_calls_validate_and_updates(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_device_tracker_shows_form_when_no_user_input(monkeypatch, make_config_entry):
+async def test_device_tracker_shows_form_when_no_user_input(
+    monkeypatch, make_config_entry, ph_hass
+):
     """async_step_device_tracker should show form containing data_schema when called without user_input."""
     cfg = make_config_entry(
         data={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
@@ -317,7 +317,7 @@ async def test_device_tracker_shows_form_when_no_user_input(monkeypatch, make_co
     )
 
     flow = cf_mod.OPNsenseOptionsFlow(cfg)
-    flow.hass = MagicMock()
+    flow.hass = ph_hass
 
     # monkeypatch _get_dt_entries to return an ordered dict-like mapping
     async def fake_get_dt_entries(hass, config, selected_devices):
@@ -339,7 +339,7 @@ async def test_device_tracker_shows_form_when_no_user_input(monkeypatch, make_co
 
 
 @pytest.mark.asyncio
-async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_entry):
+async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_entry, ph_hass):
     """When user submits manual devices, they should be parsed and saved to options."""
     # Build a fake config_entry using shared factory
     config_entry = make_config_entry(
@@ -352,9 +352,7 @@ async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_e
     )
 
     flow = cf_mod.OPNsenseOptionsFlow(config_entry)
-    # attach hass with config_entries.update stub
-    flow.hass = MagicMock()
-    flow.hass.config_entries = MagicMock()
+    flow.hass = ph_hass
     flow.hass.config_entries.async_update_entry = MagicMock()
     # make the flow aware of its handler so config_entry property works during tests
     flow.handler = "opnsense"
@@ -395,7 +393,7 @@ async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_e
     ],
 )
 async def test_validate_input_user_respects_granular_flag_for_plugin_check(
-    monkeypatch, granular_flag, config_step, expected_called, fake_flow_client
+    monkeypatch, granular_flag, config_step, expected_called, fake_flow_client, ph_hass
 ):
     """Plugin check not required for config step of user.
 
@@ -418,7 +416,7 @@ async def test_validate_input_user_respects_granular_flag_for_plugin_check(
 
     # Create a real config flow and stub methods that interact with Home Assistant internals
     flow = cf_mod.OPNsenseConfigFlow()
-    flow.hass = MagicMock()
+    flow.hass = ph_hass
 
     async def _noop(*args, **kwargs):
         return None
@@ -479,7 +477,7 @@ async def test_validate_input_user_respects_granular_flag_for_plugin_check(
     ],
 )
 async def test_granular_sync_flow_plugin_check(
-    monkeypatch, flow_type, require_plugin, expected_called, fake_flow_client
+    monkeypatch, flow_type, require_plugin, expected_called, fake_flow_client, ph_hass
 ):
     """Test plugin check behavior when granular sync is enabled and granular items are set.
 
@@ -503,7 +501,7 @@ async def test_granular_sync_flow_plugin_check(
     if flow_type == "config":
         # Prepare a config flow and populate internal config
         flow = cf_mod.OPNsenseConfigFlow()
-        flow.hass = MagicMock()
+        flow.hass = ph_hass
         flow._config = {
             cf_mod.CONF_URL: "https://host.example",
             cf_mod.CONF_USERNAME: "user",
@@ -523,7 +521,7 @@ async def test_granular_sync_flow_plugin_check(
         }
         cfg.options = {cf_mod.CONF_DEVICE_TRACKER_ENABLED: False}
         flow = cf_mod.OPNsenseOptionsFlow(cfg)
-        flow.hass = MagicMock()
+        flow.hass = ph_hass
         # emulate HA internals required by the options flow methods in tests
         flow.handler = "opnsense"
         flow.hass.config_entries = MagicMock()
