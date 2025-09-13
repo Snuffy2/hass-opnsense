@@ -1,6 +1,5 @@
 """Unit tests for custom_components.opnsense.update."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -146,7 +145,6 @@ def test_get_versions_scenarios(
     coordinator,
 ):
     """Parameterize _get_versions behaviors across upgrade package presence and missing fields."""
-    # Use the shared fixture for a config entry
     entry = make_config_entry()
     ent = OPNsenseFirmwareUpdatesAvailableUpdate(
         config_entry=entry,
@@ -465,7 +463,9 @@ def test_get_release_notes_variants(
 
 
 @pytest.mark.asyncio
-async def test_async_install_reboots_when_needed(monkeypatch, make_config_entry, coordinator):
+async def test_async_install_reboots_when_needed(
+    patch_asyncio_sleep, monkeypatch, make_config_entry, coordinator
+):
     """async_install should trigger a reboot when the update requires it."""
     entry = make_config_entry()
     coord = coordinator
@@ -510,9 +510,8 @@ async def test_async_install_reboots_when_needed(monkeypatch, make_config_entry,
     # provide coordinator state with firmware info and upgrade in progress
     ent.coordinator.data = {"firmware_update_info": {"status": "update"}}
 
-    # speed up sleep and capture await count
-    sleep_spy = AsyncMock(return_value=None)
-    monkeypatch.setattr(asyncio, "sleep", sleep_spy)
+    # speed up sleep and capture await count via fixture
+    sleep_spy = patch_asyncio_sleep
 
     await ent.async_install()
     assert fake.rebooted is True
@@ -618,7 +617,9 @@ def test_get_release_notes_exception_path(monkeypatch, make_config_entry, coordi
 
 
 @pytest.mark.asyncio
-async def test_async_install_exceptions_loop(monkeypatch, make_config_entry, coordinator):
+async def test_async_install_exceptions_loop(
+    patch_asyncio_sleep, monkeypatch, make_config_entry, coordinator
+):
     """async_install should handle exceptions and exit the install loop gracefully."""
     entry = make_config_entry()
     ent = OPNsenseFirmwareUpdatesAvailableUpdate(
@@ -648,7 +649,8 @@ async def test_async_install_exceptions_loop(monkeypatch, make_config_entry, coo
     bad = BadClient()
     ent._client = bad
     ent.coordinator.data = {"firmware_update_info": {"status": "update"}}
-    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+    # Use fixture to avoid real sleeps
+    _ = patch_asyncio_sleep
 
     await ent.async_install()
     assert bad.rebooted is False
@@ -713,11 +715,17 @@ async def test_async_release_notes_returns_value(make_config_entry, coordinator)
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_adds_entity_when_enabled(make_config_entry):
-    """async_setup_entry should add the update entity when sync option enabled."""
-    # create a minimal config entry and set runtime coordinator placeholder
+@pytest.mark.parametrize("enabled,expected", [(True, True), (False, False)])
+async def test_async_setup_entry_respects_sync_firmware_option(
+    make_config_entry, enabled: bool, expected: bool
+):
+    """async_setup_entry should add the update entity only when the sync option is enabled.
+
+    Parametrized over enabled=True/False and asserts presence of the
+    OPNsenseFirmwareUpdatesAvailableUpdate entity when enabled.
+    """
     entry = make_config_entry(
-        data={CONF_DEVICE_UNIQUE_ID: "dev1", "url": "http://x", CONF_SYNC_FIRMWARE_UPDATES: True}
+        data={CONF_DEVICE_UNIQUE_ID: "dev1", CONF_SYNC_FIRMWARE_UPDATES: enabled}
     )
 
     created: list = []
@@ -726,25 +734,12 @@ async def test_async_setup_entry_adds_entity_when_enabled(make_config_entry):
         created.extend(ents)
 
     await update_module.async_setup_entry(MagicMock(), entry, add_entities)
-    assert isinstance(created, list)
-    # entity should be the firmware update entity class
-    assert created and isinstance(created[0], update_module.OPNsenseFirmwareUpdatesAvailableUpdate)
-
-
-@pytest.mark.asyncio
-async def test_async_setup_entry_skips_when_disabled(make_config_entry):
-    """async_setup_entry should not add update entity when sync option disabled."""
-    entry = make_config_entry(
-        data={CONF_DEVICE_UNIQUE_ID: "dev1", CONF_SYNC_FIRMWARE_UPDATES: False}
-    )
-
-    created: list = []
-
-    def add_entities(ents):
-        created.extend(ents)
-
-    await update_module.async_setup_entry(MagicMock(), entry, add_entities)
-    assert created == []
+    if expected:
+        assert created and isinstance(
+            created[0], update_module.OPNsenseFirmwareUpdatesAvailableUpdate
+        )
+    else:
+        assert created == []
 
 
 def test_get_product_class_index_error(make_config_entry, coordinator):

@@ -368,10 +368,17 @@ async def test_process_queue_does_not_touch_done_future(
     with contextlib.suppress(Exception):
         client._queue_monitor.cancel()
 
-    # Patch the handler methods so they run quickly and deterministically.
-    client._do_get_from_stream = AsyncMock(return_value={"ok": True})
-    client._do_get = AsyncMock(return_value={"ok": True})
-    client._do_post = AsyncMock(return_value={"ok": True})
+    # Use an Event so the test can wait deterministically for the handler to run
+    event = asyncio.Event()
+
+    async def _return_ok_and_set(*args, **kwargs):
+        # Signal that a handler ran and return the expected value.
+        event.set()
+        return {"ok": True}
+
+    client._do_get_from_stream = AsyncMock(side_effect=_return_ok_and_set)
+    client._do_get = AsyncMock(side_effect=_return_ok_and_set)
+    client._do_post = AsyncMock(side_effect=_return_ok_and_set)
 
     # Create a fake future-like object that is already done.
     fake_future = MagicMock()
@@ -394,8 +401,12 @@ async def test_process_queue_does_not_touch_done_future(
     # Run one worker instance to process the single queued item and then cancel it.
     task = asyncio.create_task(client._process_queue())
 
-    # Give the task a short moment to process the queue item.
-    await asyncio.sleep(0.05)
+    # Wait for the handler to run. In the 'bogus' case no handler should run,
+    # so use a short timeout to avoid hanging the test.
+    # No handler ran within the timeout (expected for the bogus method),
+    # suppress the TimeoutError to avoid failing the test.
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(event.wait(), 0.5)
 
     # Ensure set_result/set_exception were NOT called because future.done() is True.
     fake_future.set_result.assert_not_called()
@@ -1400,36 +1411,48 @@ async def test_notices_close_notice_and_unbound_blocklist(make_client) -> None:
 
 
 @pytest.mark.parametrize(
-    "exc_factory,initial",
+    "exc_factory,initial,expected_raise",
     [
-        (lambda: TypeError("bad json"), False),
-        (lambda: Fault(1, "err"), False),
-        (lambda: socket.gaierror("name or service not known"), False),
-        (lambda: SSLError("ssl fail"), False),
-        (lambda: Fault(2, "err"), True),
-        (lambda: socket.gaierror("no host"), True),
-        (lambda: SSLError("ssl fail"), True),
+        # Non-initial: all exceptions swallowed, return {}
+        (lambda: TypeError("bad json"), False, False),
+        (lambda: Fault(1, "err"), False, False),
+        (lambda: socket.gaierror("name or service not known"), False, False),
+        (lambda: SSLError("ssl fail"), False, False),
+        # Initial mode: Fault is swallowed, but socket/SSL should raise
+        (lambda: Fault(2, "err"), True, False),
+        (lambda: socket.gaierror("no host"), True, True),
+        (lambda: SSLError("ssl fail"), True, True),
     ],
 )
 @pytest.mark.asyncio
-async def test_exec_php_error_paths(exc_factory, initial: bool, make_client) -> None:
-    """_exec_php should swallow known exceptions and return {} regardless of initial flag.
+async def test_exec_php_error_paths(
+    exc_factory, initial: bool, expected_raise: bool, make_client
+) -> None:
+    """Validate _exec_php exception handling across initial modes.
 
-    Consolidates previous exec_php tests into one parameterized function covering:
+    Cases covered:
     - TypeError JSON issues
     - xmlrpc.client.Fault
     - socket.gaierror
     - ssl.SSLError
-    With both initial False and initial True states.
+
+    Expectation:
+    - When initial is False: all are swallowed and return {}
+    - When initial is True: socket.gaierror and ssl.SSLError raise; others return {}
     """
     session = MagicMock(spec=aiohttp.ClientSession)
     client = make_client(session=session)
     client._initial = initial
     proxy = MagicMock()
-    proxy.opnsense.exec_php.side_effect = exc_factory()
+    err = exc_factory()
+    proxy.opnsense.exec_php.side_effect = err
     client._get_proxy = MagicMock(return_value=proxy)
-    res = await client._exec_php("echo test;")
-    assert res == {}
+    if expected_raise:
+        with pytest.raises(type(err)):
+            await client._exec_php("echo test;")
+    else:
+        res = await client._exec_php("echo test;")
+        assert res == {}
 
 
 @pytest.mark.asyncio
@@ -2226,6 +2249,7 @@ async def test_manage_service_and_restart_if_running(monkeypatch, make_client) -
 async def test_scanner_entity_handle_coordinator_update_missing_state_sets_unavailable(
     make_client,
     make_config_entry,
+    hass_without_loop,
 ) -> None:
     """OPNsenseScannerEntity should mark unavailable when coordinator state missing or invalid."""
 
@@ -2244,7 +2268,7 @@ async def test_scanner_entity_handle_coordinator_update_missing_state_sets_unava
         hostname=None,
     )
     # ensure async_write_ha_state won't raise due to missing hass during unit test
-    ent.hass = MagicMock()
+    ent.hass = hass_without_loop
     ent.async_write_ha_state = MagicMock()
     ent._handle_coordinator_update()
     assert ent._available is False

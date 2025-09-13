@@ -4,7 +4,6 @@ These tests validate switch compilation helpers, entity behavior, and
 async setup flows for the integration's switch platform.
 """
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -35,7 +34,16 @@ from custom_components.opnsense.switch import (
     _compile_vpn_switches,
 )
 from homeassistant.components.switch import SwitchEntityDescription
-from homeassistant.core import HomeAssistant
+
+
+def _safe_entity_id(domain: str, key_or_uid: str | None) -> str:
+    """Build a safe Home Assistant entity_id by replacing dots with underscores.
+
+    If key_or_uid is None, return a domain-only placeholder.
+    """
+    if not key_or_uid:
+        return f"{domain}.unknown"
+    return f"{domain}.{key_or_uid.replace('.', '_')}"
 
 
 def make_coord(data):
@@ -330,7 +338,9 @@ async def test_unbound_and_vpn_variations(coordinator, ph_hass, make_config_entr
 
 
 @pytest.mark.asyncio
-async def test_delay_update_setter(monkeypatch, coordinator, make_config_entry):
+async def test_delay_update_setter(
+    patch_async_call_later, coordinator, make_config_entry, hass_with_running_loop
+) -> None:
     """Delay update setter captures and removes scheduled removers correctly."""
     desc = SwitchEntityDescription(key="x", name="DelayTest")
     config_entry = make_config_entry(
@@ -341,45 +351,26 @@ async def test_delay_update_setter(monkeypatch, coordinator, make_config_entry):
     ent = OPNsenseFilterSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    # synchronous test: use a plain hass-like object with a dedicated loop
-    hass_local = MagicMock(spec=HomeAssistant)
-    # Use the running event loop provided by pytest-asyncio for hass.loop
-    hass_local.loop = asyncio.get_running_loop()
-    hass_local.data = {}
+    # synchronous test: use the shared hass fixture wired to the running loop
+    hass_local = hass_with_running_loop
     ent.hass = hass_local
-    called = {"removed": False}
-
-    def fake_async_call_later(*args, **kwargs):
-        def remover():
-            called["removed"] = True
-
-        return remover
-
-    monkeypatch.setattr("custom_components.opnsense.switch.async_call_later", fake_async_call_later)
-
     ent.delay_update = True
     assert ent.delay_update is True
     # ensure async_call_later returned remover was captured
     assert callable(getattr(ent, "_delay_update_remove", None))
     ent.delay_update = False
-    assert called["removed"] is True
+    # The remover returned by the fixture calls the stored action which clears
+    # the delay flag; assert the flag is cleared and the internal remover reset.
+    assert ent.delay_update is False
+    assert ent._delay_update_remove is None
     # no manual loop to close when using pytest-asyncio
 
 
 @pytest.mark.asyncio
 async def test_vpn_turn_on_off_calls_client_and_sets_delay(
-    monkeypatch, coordinator, ph_hass, make_config_entry
+    patch_async_call_later, coordinator, ph_hass, make_config_entry
 ):
     """VPN switch should call toggle_vpn_instance, update state, and enable delay_update."""
-
-    # replace async_call_later so tests don't schedule real callbacks
-    def fake_async_call_later(hass, delay, action):
-        def remover():
-            return None
-
-        return remover
-
-    monkeypatch.setattr("custom_components.opnsense.switch.async_call_later", fake_async_call_later)
 
     desc = SwitchEntityDescription(key="openvpn.clients.c1", name="VPNC")
     coord = make_coord({"openvpn": {"clients": {"c1": {"enabled": False, "name": "C1"}}}})
@@ -425,11 +416,6 @@ async def test_vpn_turn_on_off_noops_when_preconditions_fail(
     monkeypatch, coordinator, ph_hass, make_config_entry
 ):
     """VPN async_turn_on/async_turn_off should be no-ops when preconditions are not met."""
-    # replace async_call_later to avoid scheduling
-    monkeypatch.setattr(
-        "custom_components.opnsense.switch.async_call_later",
-        lambda hass, delay, action: (lambda: None),
-    )
 
     desc = SwitchEntityDescription(key="openvpn.clients.c2", name="VPNC2")
     coord = make_coord({"openvpn": {"clients": {"c2": {"enabled": True, "name": "C2"}}}})
@@ -467,7 +453,7 @@ async def test_vpn_turn_on_off_noops_when_preconditions_fail(
     ],
 )
 async def test_vpn_async_turn_off_variations(
-    monkeypatch,
+    patch_async_call_later,
     coordinator,
     ph_hass,
     caplog,
@@ -478,11 +464,6 @@ async def test_vpn_async_turn_off_variations(
     make_config_entry,
 ):
     """Parameterize async_turn_off behavior for success, failure, and missing client."""
-    # avoid scheduling real async_call_later during tests
-    monkeypatch.setattr(
-        "custom_components.opnsense.switch.async_call_later",
-        lambda hass, delay, action: (lambda: None),
-    )
 
     desc = SwitchEntityDescription(key="openvpn.clients.cx", name="VPNCX")
     coord = make_coord({"openvpn": {"clients": {"cx": {"enabled": True, "name": "CX"}}}})
@@ -734,13 +715,10 @@ async def test_async_setup_entry_missing_state(
 @pytest.mark.parametrize("kind", ["filter", "nat", "service"])
 @pytest.mark.asyncio
 async def test_switch_handle_error_sets_unavailable(
-    kind: str, coordinator, make_config_entry
+    kind: str, coordinator, make_config_entry, hass_with_running_loop
 ) -> None:
     """When underlying rule/service lookups return non-mapping values, switch becomes unavailable."""
-    hass_local = MagicMock(spec=HomeAssistant)
-    # Use the running event loop provided by pytest-asyncio
-    hass_local.loop = asyncio.get_running_loop()
-    hass_local.data = {}
+    hass_local = hass_with_running_loop
 
     if kind == "filter":
         # compile one valid filter entity then monkeypatch to produce error
@@ -1008,7 +986,7 @@ async def test_vpn_toggle_parametrized(
         ent._client.toggle_vpn_instance.assert_awaited_once()
 
 
-def test_reset_delay_calls_existing_remover(monkeypatch, make_config_entry):
+def test_reset_delay_calls_existing_remover(patch_async_call_later, monkeypatch, make_config_entry):
     """Resetting delay should call any existing remover and replace it."""
     desc = SwitchEntityDescription(key="filter.t1", name="Filter")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -1027,7 +1005,9 @@ def test_reset_delay_calls_existing_remover(monkeypatch, make_config_entry):
         called["new_removed"] = True
 
     ent._delay_update_remove = old_remover
-    # monkeypatch async_call_later to return new_remover
+    # This test needs a specific replacer so override the fixture-provided
+    # async_call_later to return `new_remover` (instead of the default
+    # remover returned by the fixture).
     monkeypatch.setattr(
         "custom_components.opnsense.switch.async_call_later",
         lambda hass, delay, action: new_remover,
@@ -1687,7 +1667,7 @@ def test_filter_handle_no_rule_sets_unavailable(coordinator, make_config_entry):
     assert ent.available is False
 
 
-def test_delay_setter_no_remover(monkeypatch, coordinator, make_config_entry):
+def test_delay_setter_no_remover(monkeypatch, coordinator, make_config_entry, hass_without_loop):
     """Setting delay_update False when no remover is present should be safe."""
     desc = SwitchEntityDescription(key="filter.tno", name="NoRemover")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -1695,10 +1675,7 @@ def test_delay_setter_no_remover(monkeypatch, coordinator, make_config_entry):
     ent = OPNsenseFilterSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    hass_local = MagicMock(spec=HomeAssistant)
-    hass_local.loop = None
-    hass_local.data = {"integrations": {}}
-    ent.hass = hass_local
+    ent.hass = hass_without_loop
     # provide minimal HA identity for entity write operations
     ent.entity_id = "switch.filter_test"
     ent.async_write_ha_state = lambda: None
@@ -1754,7 +1731,9 @@ async def test_compile_port_forward_rules_not_list_returns_empty(coordinator, ma
     assert res == []
 
 
-def test_reset_delay_triggers_clear(monkeypatch, coordinator, make_config_entry):
+def test_reset_delay_triggers_clear(
+    patch_async_call_later, coordinator, make_config_entry, hass_without_loop
+):
     """Invoking the stored remover should execute the _clear action and unset flags."""
     desc = SwitchEntityDescription(key="filter.clear", name="ClearTest")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -1762,24 +1741,13 @@ def test_reset_delay_triggers_clear(monkeypatch, coordinator, make_config_entry)
     ent = OPNsenseFilterSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    hass_local = MagicMock(spec=HomeAssistant)
-    hass_local.loop = None
-    hass_local.data = {"integrations": {}}
-    ent.hass = hass_local
+    ent.hass = hass_without_loop
     # ensure entity_id present for HA entity operations
-    ent.entity_id = f"switch.{getattr(ent, '_attr_unique_id', None) or ent.entity_description.key}"
+    ent.entity_id = _safe_entity_id(
+        "switch", getattr(ent, "_attr_unique_id", None) or ent.entity_description.key
+    )
     ent.async_write_ha_state = lambda: None
 
-    # monkeypatch async_call_later to return a remover that calls the provided action
-    def fake_async_call_later(hass, delay, action):
-        def remover():
-            action(None)
-
-        return remover
-
-    monkeypatch.setattr("custom_components.opnsense.switch.async_call_later", fake_async_call_later)
-
-    # set delay True to create _delay_update_remove
     ent.delay_update = True
     assert ent._delay_update_remove is not None
     # calling the remover should clear the delay flag
@@ -1993,7 +1961,7 @@ def test_nat_handle_exceptions_sets_unavailable(
     )
     ent.hass = ph_hass
     ent.coordinator = make_coord({})
-    ent.entity_id = f"switch.{ent.entity_description.key}"
+    ent.entity_id = _safe_entity_id("switch", ent.entity_description.key)
     ent.async_write_ha_state = lambda: None
 
     # create a mapping whose __contains__ raises the exception when checking 'disabled'
@@ -2044,7 +2012,7 @@ def test_vpn_handle_exceptions_sets_unavailable(
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
 def test_service_handle_exceptions_sets_unavailable(
-    exc_type, coordinator, make_config_entry
+    exc_type, coordinator, make_config_entry, hass_with_running_loop
 ) -> None:
     """Service handler should mark entity unavailable when indexing raises exceptions."""
     desc = SwitchEntityDescription(key="service.svcx.status", name="SvcEx")
@@ -2054,7 +2022,7 @@ def test_service_handle_exceptions_sets_unavailable(
     ent = OPNsenseServiceSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = hass_with_running_loop
     ent.entity_id = f"switch.{ent.entity_description.key}"
     ent.async_write_ha_state = lambda: None
 

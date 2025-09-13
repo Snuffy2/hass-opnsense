@@ -29,6 +29,65 @@ import homeassistant.core as ha_core
 
 logger = logging.getLogger(__name__)
 
+
+@pytest.fixture
+async def hass_with_running_loop(ph_hass) -> MagicMock:
+    """Provide a hass-like object wired to the running event loop.
+
+    Prefer the real `ph_hass` fixture when available so tests interact
+    with a real HomeAssistant instance provided by pytest-homeassistant.
+    When `ph_hass` is not present, fall back to a `MagicMock` with a
+    running loop and minimal `data` mapping.
+    """
+    # Prefer the provided `ph_hass` fixture when available. If tests or
+    # environments do not provide ph_hass, the fixture will be None and we
+    # fallback below.
+    hass_local = ph_hass if ph_hass is not None else MagicMock(spec=ha_core.HomeAssistant)
+
+    # Ensure hass has a running loop attribute for tests that expect it
+    # Set loop if a running loop is available - suppress RuntimeError when not
+    with contextlib.suppress(RuntimeError):
+        hass_local.loop = asyncio.get_running_loop()
+
+    # Ensure a minimal data mapping and config_entries compatibility
+    hass_local.data = getattr(hass_local, "data", {}) or {}
+    _ensure_hass_compat(hass_local)
+    return hass_local
+
+
+@pytest.fixture
+def hass_without_loop(ph_hass) -> MagicMock:
+    """Provide a hass-like object with no event loop (loop is None).
+
+    Prefer the `ph_hass` fixture when available and simply set its
+    `loop` attribute to `None` for tests that expect synchronous
+    behaviour. If `ph_hass` is not provided, fall back to a MagicMock
+    with the same minimal shape.
+    """
+    if ph_hass is not None:
+        # Create a lightweight proxy MagicMock that exposes the minimal
+        # attributes tests expect but does not mutate the real ph_hass
+        # (avoids breaking teardown of the real hass fixture).
+        proxy = MagicMock(spec=ha_core.HomeAssistant)
+        proxy.config_entries = getattr(ph_hass, "config_entries", MagicMock())
+        proxy.services = getattr(ph_hass, "services", MagicMock())
+        proxy.async_create_task = getattr(ph_hass, "async_create_task", MagicMock())
+        # Copy a shallow copy of data so tests can manipulate it safely
+        proxy.data = dict(getattr(ph_hass, "data", {}) or {})
+        proxy.data.setdefault("integrations", {})
+        proxy.loop = None
+        with contextlib.suppress(Exception):
+            _ensure_hass_compat(proxy)
+        return proxy
+
+    # Fallback for environments without ph_hass: return a standalone MagicMock
+    hass_local = MagicMock(spec=ha_core.HomeAssistant)
+    hass_local.loop = None
+    hass_local.data = {"integrations": {}}
+    _ensure_hass_compat(hass_local)
+    return hass_local
+
+
 # expose the pyopnsense module under the plain name for tests that
 # import the fixture and expect `pyopnsense` to be available.
 pyopnsense = _pyopnsense_mod
@@ -171,26 +230,24 @@ def _completed_future_result() -> Any:
 def _is_pyopnsense_background_coro(coro: Any) -> bool:
     """Detect if a coroutine is a pyopnsense background worker.
 
-    Checks the coroutine frame globals for a module name containing
-    'pyopnsense' and also whether it's a bound method where `self` is an
-    instance of pyopnsense.OPNsenseClient.
+    This intentionally uses a narrow heuristic to avoid false positives.
+    Return True only when the coroutine's function name matches a known
+    background worker (for example `_monitor_queue` or `_process_queue`)
+    or when the coroutine is a bound method whose `self` is an
+    :class:`pyopnsense.OPNsenseClient` instance.
+
+    Avoid matching based on the coroutine's module name or other globals
+    since those can produce false positives in tests that import or wrap
+    pyopnsense helpers.
     """
-    frame = getattr(coro, "cr_frame", None)
-    # Fast-path: match known background worker names
+    # Fast-path: match known background worker names on the code object
     with contextlib.suppress(AttributeError):
         name = getattr(getattr(coro, "cr_code", None), "co_name", "")
         if name in {"_monitor_queue", "_process_queue"}:
             return True
-    module_name = ""
-    if frame:
-        with contextlib.suppress(AttributeError, TypeError):
-            g = getattr(frame, "f_globals", None) or {}
-            module_name = g.get("__name__", "") if isinstance(g, dict) else ""
 
-    if isinstance(module_name, str) and "pyopnsense" in module_name:
-        return True
-
-    # Bound-method detection via frame locals
+    # Bound-method detection via frame locals: prefer explicit type check
+    frame = getattr(coro, "cr_frame", None)
     if frame:
         with contextlib.suppress(AttributeError, TypeError):
             locs = getattr(frame, "f_locals", {}) or {}
@@ -206,7 +263,7 @@ def _is_pyopnsense_background_coro(coro: Any) -> bool:
 
 
 def _ensure_async_create_task_mock(real, side_effect):
-    """Ensure ``real.async_create_task`` is a MagicMock with the given side_effect.
+    """Ensure `real.async_create_task` is a MagicMock with the given side_effect.
 
     Attempt three strategies in order (matching the original logic):
     1. Direct assignment: real.async_create_task = MagicMock(side_effect=...)
@@ -294,13 +351,11 @@ def _ensure_hass_compat(hass_obj: Any) -> None:
         def _async_get_known_entry(entry_id: str):
             return cfg._entries.get(entry_id)
 
-        # Prefer direct assignment but silently tolerate objects that disallow
-        # attribute setting (e.g., some MagicMock configurations).
         with contextlib.suppress(Exception):
             cfg.async_get_known_entry = _async_get_known_entry
-        # Best-effort fallback using object.__setattr__ if direct assignment fails.
-        with contextlib.suppress(Exception):
-            object.__setattr__(cfg, "async_get_known_entry", _async_get_known_entry)
+        if getattr(cfg, "async_get_known_entry", None) is not _async_get_known_entry:
+            with contextlib.suppress(Exception):
+                object.__setattr__(cfg, "async_get_known_entry", _async_get_known_entry)
 
 
 @pytest.fixture
@@ -332,11 +387,7 @@ def coordinator_capture(coordinator_factory: Callable[..., Any]):
 
 @pytest.fixture
 async def make_client():
-    """Return a factory that constructs an OPNsenseClient for tests.
-
-    This mirrors the local helper used in some test modules but exposes it as a
-    fixture so tests can request it via parameters for consistency.
-    """
+    """Return a factory that constructs an OPNsenseClient for tests."""
 
     clients: list[pyopnsense.OPNsenseClient] = []
 
@@ -400,10 +451,6 @@ def fake_flow_client(fake_client_factory):
     Usage:
       client_cls = fake_flow_client()           # returns class (legacy behavior)
       inst = fake_flow_client(runtime=True)     # returns a prepared instance
-
-    The fixture preserves the previous signature but accepts an extra
-    `runtime` flag. When `runtime=True` the returned object is an instance
-    whose `async_close` sets `_closed = True` when awaited.
     """
 
     def _make(
@@ -432,6 +479,240 @@ def fake_flow_client(fake_client_factory):
         return inst
 
     return _make
+
+
+@pytest.fixture
+def patch_asyncio_sleep(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Patch asyncio.sleep with an AsyncMock and return the mock.
+
+    Tests that need to avoid real sleeps or assert sleep calls can request
+    this fixture to get a ready-to-use spy.
+    """
+    spy = AsyncMock(return_value=None)
+    monkeypatch.setattr(asyncio, "sleep", spy)
+    return spy
+
+
+@pytest.fixture
+def patch_async_create_clientsession(monkeypatch: pytest.MonkeyPatch):
+    """Return a helper that patches config_flow.async_create_clientsession.
+
+    Usage:
+        patch_async_create_clientsession(lambda *a, **k: MagicMock())
+    """
+
+    def _patch(factory=lambda *a, **k: MagicMock()):
+        monkeypatch.setattr(
+            "custom_components.opnsense.config_flow.async_create_clientsession",
+            factory,
+            raising=False,
+        )
+
+        return factory
+
+    return _patch
+
+
+@pytest.fixture
+def patch_registry_async_get(monkeypatch: pytest.MonkeyPatch):
+    """Return a helper to patch device/entity registry async_get functions.
+
+    Usage:
+        patch_registry_async_get(device_reg=my_dev_reg, entity_reg=my_ent_reg)
+    """
+
+    def _patch(device_reg=None, entity_reg=None):
+        if device_reg is not None:
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    _init_mod.dr, "async_get", lambda hass: device_reg, raising=False
+                )
+            # Fallback: also try patching by import path in case the direct
+            # attribute access is not available in some test environments.
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    "custom_components.opnsense.dr.async_get",
+                    lambda hass: device_reg,
+                    raising=False,
+                )
+        if entity_reg is not None:
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    _init_mod.er, "async_get", lambda hass: entity_reg, raising=False
+                )
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    "custom_components.opnsense.er.async_get",
+                    lambda hass: entity_reg,
+                    raising=False,
+                )
+
+    return _patch
+
+
+@pytest.fixture
+def patch_registry_entries(monkeypatch: pytest.MonkeyPatch):
+    """Helper to patch async_entries_for_config_entry for entity/device registries.
+
+    Usage:
+        patch_registry_entries(entity_entries=lambda reg, entry_id: [...], device_entries=lambda reg, entry_id: [...])
+    """
+
+    def _patch(entity_entries=None, device_entries=None):
+        # Patch the imported module attributes when available, fall back to string paths.
+        if entity_entries is not None:
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    _init_mod.er, "async_entries_for_config_entry", entity_entries, raising=False
+                )
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    "custom_components.opnsense.er.async_entries_for_config_entry",
+                    entity_entries,
+                    raising=False,
+                )
+        if device_entries is not None:
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    _init_mod.dr, "async_entries_for_config_entry", device_entries, raising=False
+                )
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    "custom_components.opnsense.dr.async_entries_for_config_entry",
+                    device_entries,
+                    raising=False,
+                )
+
+    return _patch
+
+
+@pytest.fixture
+def patch_opnsense_client(monkeypatch: pytest.MonkeyPatch):
+    """Return a helper to patch one or more module-level OPNsenseClient targets.
+
+    Usage:
+        patch_opnsense_client([
+            "custom_components.opnsense.config_flow.OPNsenseClient",
+            "custom_components.opnsense.__init__.OPNsenseClient",
+        ], client_cls)
+
+    """
+
+    def _patch(targets: list[str], client_factory: object):
+        for t in targets:
+            monkeypatch.setattr(t, client_factory, raising=False)
+        return client_factory
+
+    return _patch
+
+
+@pytest.fixture
+def patch_init_opnsense_client(monkeypatch: pytest.MonkeyPatch):
+    """Helper to patch the integration module's OPNsenseClient target directly.
+
+    Usage:
+        patch_init_opnsense_client(lambda **k: fake_client())
+    """
+
+    def _patch(client_factory: object):
+        # Wrap the provided client_factory so that calling OPNsenseClient(...)
+        # always returns an instance. Some tests pass a factory that returns
+        # a client class (not an instance), so we detect that case and
+        # instantiate it with the same args.
+        def _wrapper(*args, **kwargs):
+            res = client_factory(*args, **kwargs)
+            # If the factory returned a class, instantiate it.
+            try:
+                if inspect.isclass(res):
+                    return res(*args, **kwargs)
+            except (TypeError, AttributeError):
+                # If something unexpected happens inspecting/instantiating,
+                # fall back to returning the result as-is.
+                pass
+            return res
+
+        # Patch the imported integration module object for consistency across tests
+        monkeypatch.setattr(_init_mod, "OPNsenseClient", _wrapper, raising=False)
+        return client_factory
+
+    return _patch
+
+
+@pytest.fixture
+def patch_cf_opnsense_client(monkeypatch: pytest.MonkeyPatch):
+    """Convenience helper to patch the config_flow OPNsenseClient target.
+
+    Usage: patch_cf_opnsense_client(client_cls_or_factory)
+    """
+
+    def _patch(client_factory: object):
+        # Patch both the module object and the import path string for resilience.
+        with contextlib.suppress(Exception):
+            monkeypatch.setattr(
+                "custom_components.opnsense.config_flow.OPNsenseClient",
+                client_factory,
+                raising=False,
+            )
+        with contextlib.suppress(Exception):
+            monkeypatch.setattr(
+                importlib.import_module("custom_components.opnsense.config_flow"),
+                "OPNsenseClient",
+                client_factory,
+                raising=False,
+            )
+        return client_factory
+
+    return _patch
+
+
+@pytest.fixture
+def patch_issue_registry(monkeypatch: pytest.MonkeyPatch):
+    """Helper to patch async_create_issue and async_delete_issue across modules.
+
+    Usage: patch_issue_registry(create_fn=..., delete_fn=...)
+    """
+
+    def _patch(create_fn=None, delete_fn=None):
+        if create_fn is not None:
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(_init_mod.ir, "async_create_issue", create_fn, raising=False)
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    "custom_components.opnsense.ir.async_create_issue", create_fn, raising=False
+                )
+        if delete_fn is not None:
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(_init_mod.ir, "async_delete_issue", delete_fn, raising=False)
+            with contextlib.suppress(Exception):
+                monkeypatch.setattr(
+                    "custom_components.opnsense.ir.async_delete_issue", delete_fn, raising=False
+                )
+
+    return _patch
+
+
+@pytest.fixture
+def patch_services_get_clients(monkeypatch: pytest.MonkeyPatch):
+    """Helper to patch services._get_clients across module/import paths.
+
+    Usage: patch_services_get_clients(fake_get_coroutine)
+    """
+
+    def _patch(fake_get):
+        with contextlib.suppress(Exception):
+            monkeypatch.setattr(
+                "custom_components.opnsense.services._get_clients", fake_get, raising=False
+            )
+        with contextlib.suppress(Exception):
+            monkeypatch.setattr(
+                importlib.import_module("custom_components.opnsense.services"),
+                "_get_clients",
+                fake_get,
+                raising=False,
+            )
+        return fake_get
+
+    return _patch
 
 
 @pytest.fixture
@@ -505,8 +786,6 @@ def ph_hass(request, hass=None):
             # back to returning the coroutine so callers can decide.
             return coro
 
-    # helper _ensure_async_create_task_mock moved to module top-level
-
     # If pytest injected a `hass` fixture, prefer it (but avoid advancing
     # async-generator fixtures here). This lets pytest supply the real
     # PHCC hass instance when available without calling getfixturevalue.
@@ -549,11 +828,21 @@ def ph_hass(request, hass=None):
     m = MagicMock()
     m.config_entries = MagicMock()
     m.data = {}
-    # Minimal services API expected by tests/services
-    m.services = MagicMock()
-    m.services.async_register = MagicMock()
-    m.services.async_services = MagicMock(return_value={})
-    m.services.async_clear = MagicMock()
+
+    class _Services:
+        def __init__(self):
+            self._reg: dict[str, dict[str, Any]] = {}
+
+        def async_register(self, domain: str, service: str, service_func, schema=None, **_):
+            self._reg.setdefault(domain, {})[service] = service_func
+
+        def async_services(self) -> dict[str, dict[str, Any]]:
+            return {d: dict(svcs) for d, svcs in self._reg.items()}
+
+        def async_clear(self) -> None:
+            self._reg.clear()
+
+    m.services = _Services()
     # Mirror HomeAssistant API used by the integration/tests.
     m.async_create_task = MagicMock(side_effect=_schedule_or_return)
     # provide a loop wrapper that cancels scheduled timer handles immediately
@@ -974,7 +1263,7 @@ def _patch_homeassistant_stop(monkeypatch):
                 # Log for diagnostics then swallow this specific error during tests.
                 logger.debug(
                     "HomeAssistant.stop suppressed during test teardown: Event loop is closed",
-                    exc_info=err,
+                    exc_info=True,
                 )
                 return None
             raise
@@ -997,10 +1286,33 @@ def _patch_asyncio_create_task(monkeypatch, request):
     # cases we should not replace `pyopnsense.asyncio.create_task` so the real behavior is
     # preserved for the test.
     try:
+        # Marker-based opt-out (existing behavior)
         if getattr(request, "node", None) and request.node.get_closest_marker(
             "no_patch_create_task"
         ):
             return
+
+        # File-path based opt-out: skip patching for tests that exercise
+        # pyopnsense internals directly (for example `tests/test_pyopnsense.py`)
+        # since those tests may rely on real task scheduling. Only skip
+        # when a running event loop is available; if there is no running
+        # loop at the time the fixture runs, leave our patch in place so
+        # object construction that calls create_task doesn't raise.
+        fspath = getattr(request, "fspath", None)
+        # request.node may provide a fspath attribute in some pytest versions
+        if fspath is None and getattr(request, "node", None) is not None:
+            fspath = getattr(request.node, "fspath", None)
+        if fspath and "test_pyopnsense.py" in str(fspath):
+            try:
+                # If there is a running loop, tests can rely on real scheduling
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop right now; keep our patch to avoid RuntimeError
+                pass
+            else:
+                # Running loop present: skip patching to allow real scheduling
+                return
+
     except (AttributeError, TypeError):
         # If we cannot determine the requesting test, continue with patching.
         pass

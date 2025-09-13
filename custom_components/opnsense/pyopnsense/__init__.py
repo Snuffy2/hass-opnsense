@@ -36,7 +36,12 @@ def _log_errors(func: Callable) -> Any:
         except asyncio.CancelledError:
             raise
         except (TimeoutError, aiohttp.ServerTimeoutError) as e:
-            _LOGGER.warning("Timeout Error in %s. Will retry. %s", func.__name__.strip("_"), e)
+            _LOGGER.warning(
+                "Timeout Error in %s. %s%s",
+                func.__name__.strip("_"),
+                "Will retry. " if not self._initial else "",
+                e,
+            )
             if self._initial:
                 raise
         except Exception as e:
@@ -287,20 +292,26 @@ $toreturn["real"] = json_encode($toreturn_real);
             stack = inspect.stack()
             calling_function = stack[1].function.strip("_") if len(stack) > 1 else "Unknown"
             _LOGGER.warning(
-                "Connection Error running exec_php script for %s. %s: %s. Will retry",
+                "Connection Error running exec_php script for %s. %s: %s%s",
                 calling_function,
                 type(e).__name__,
                 e,
+                ". Will retry" if not self._initial else "",
             )
+            if self._initial:
+                raise
         except ssl.SSLError as e:
             stack = inspect.stack()
             calling_function = stack[1].function.strip("_") if len(stack) > 1 else "Unknown"
             _LOGGER.warning(
-                "SSL Connection Error running exec_php script for %s. %s: %s. Will retry",
+                "SSL Connection Error running exec_php script for %s. %s: %s%s",
                 calling_function,
                 type(e).__name__,
                 e,
+                ". Will retry" if not self._initial else "",
             )
+            if self._initial:
+                raise
         return {}
 
     @_log_errors

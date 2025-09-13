@@ -160,7 +160,13 @@ def test_log_and_set_error_sets_base(caplog):
 
 
 @pytest.mark.asyncio
-async def test_get_dt_entries_sorts_and_includes_selected(monkeypatch, fake_client):
+async def test_get_dt_entries_sorts_and_includes_selected(
+    monkeypatch,
+    fake_client,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
+    hass_with_running_loop,
+):
     """Ensure _get_dt_entries returns selected devices first and ARP entries sorted by IP."""
 
     # Create a client class via fixture and attach a get_arp_table implementation
@@ -174,15 +180,12 @@ async def test_get_dt_entries_sorts_and_includes_selected(monkeypatch, fake_clie
         ]
 
     setattr(client_cls, "get_arp_table", _get_arp_table)
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
+    patch_cf_opnsense_client(client_cls)
 
     # Patch async_create_clientsession on the module under test to avoid real network I/O
-    def _fake_create_clientsession(*args, **kwargs):
-        return MagicMock()
+    patch_async_create_clientsession(lambda *args, **kwargs: MagicMock())
 
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", _fake_create_clientsession)
-
-    hass = MagicMock()
+    hass = hass_with_running_loop
     config = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
     selected = ["aa:bb:cc:00:00:01"]
     res = await cf_mod._get_dt_entries(hass=hass, config=config, selected_devices=selected)
@@ -341,7 +344,9 @@ async def test_validate_input_maps_socket_and_protocol(monkeypatch, exc, expecte
 
 
 @pytest.mark.asyncio
-async def test_get_dt_entries_handles_empty_and_skips_empty_mac(monkeypatch):
+async def test_get_dt_entries_handles_empty_and_skips_empty_mac(
+    monkeypatch, patch_async_create_clientsession, patch_cf_opnsense_client
+):
     """_get_dt_entries should return selected devices when arp_table empty, and skip entries with empty mac."""
 
     class C1:
@@ -356,9 +361,9 @@ async def test_get_dt_entries_handles_empty_and_skips_empty_mac(monkeypatch):
             ]
 
     # patch async_create_clientsession to avoid aiohttp use
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
 
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", lambda *a, **k: C1())
+    patch_cf_opnsense_client(lambda *a, **k: C1())
     res1 = await cf_mod._get_dt_entries(
         hass=MagicMock(),
         config={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
@@ -366,7 +371,7 @@ async def test_get_dt_entries_handles_empty_and_skips_empty_mac(monkeypatch):
     )
     assert "sel1" in res1
 
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", lambda *a, **k: C2())
+    patch_cf_opnsense_client(lambda *a, **k: C2())
     res2 = await cf_mod._get_dt_entries(
         hass=MagicMock(),
         config={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
@@ -524,18 +529,24 @@ async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_e
     ],
 )
 async def test_validate_input_user_respects_granular_flag_for_plugin_check(
-    monkeypatch, granular_flag, config_step, expected_called, fake_flow_client, ph_hass
+    monkeypatch,
+    granular_flag,
+    config_step,
+    expected_called,
+    fake_flow_client,
+    ph_hass,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
 ):
     """Plugin check not required for config step of user.
 
     Otherwise, plugin check is required if granular sync options is enabled
     """
-    # Use shared fake_flow_client fixture to supply a FakeClient class
     client_cls = fake_flow_client()
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
+    patch_cf_opnsense_client(client_cls)
 
     # avoid real network sessions
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
 
     user_input = {
         cf_mod.CONF_URL: "https://host.example",
@@ -667,16 +678,20 @@ async def test_async_step_reconfigure_calls_update_and_abort(monkeypatch, ph_has
 
 @pytest.mark.asyncio
 async def test_handle_user_input_plugin_missing_and_missing_device(
-    monkeypatch, ph_hass, fake_flow_client
+    monkeypatch,
+    ph_hass,
+    fake_flow_client,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
 ):
     """Test _handle_user_input raising PluginMissing and MissingDeviceUniqueID using fixture."""
     # Prepare base user_input
     ui = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
 
     client_cls = fake_flow_client(plugin_installed=False)
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
+    patch_cf_opnsense_client(client_cls)
     # Avoid real network sessions
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
 
     # First: granular sync set and a plugin-required item -> PluginMissing
     ui_with_plugin = dict(ui)
@@ -691,7 +706,7 @@ async def test_handle_user_input_plugin_missing_and_missing_device(
 
     # Now produce a client that returns empty device id to trigger MissingDeviceUniqueID
     client_cls2 = fake_flow_client(device_id="")
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls2)
+    patch_cf_opnsense_client(client_cls2)
 
     with pytest.raises(cf_mod.MissingDeviceUniqueID):
         await cf_mod._handle_user_input(hass=ph_hass, user_input=ui, config_step="user")
@@ -708,7 +723,14 @@ async def test_handle_user_input_plugin_missing_and_missing_device(
     ],
 )
 async def test_granular_sync_flow_plugin_check(
-    monkeypatch, flow_type, require_plugin, expected_called, fake_flow_client, ph_hass
+    monkeypatch,
+    flow_type,
+    require_plugin,
+    expected_called,
+    fake_flow_client,
+    ph_hass,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
 ):
     """Test plugin check behavior when granular sync is enabled and granular items are set.
 
@@ -716,10 +738,9 @@ async def test_granular_sync_flow_plugin_check(
     - If any SYNC_ITEMS_REQUIRING_PLUGIN is True -> is_plugin_installed should be called.
     - If none are True -> is_plugin_installed should NOT be called.
     """
-    # Use shared fake_flow_client fixture
     client_cls = fake_flow_client()
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
+    patch_cf_opnsense_client(client_cls)
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
 
     # Build a user_input payload for granular sync where items in SYNC_ITEMS_REQUIRING_PLUGIN are toggled
     # Start with all granular items as False, then set one plugin-required item True if require_plugin

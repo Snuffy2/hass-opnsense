@@ -39,14 +39,15 @@ def mk_sensor(
     key: str,
     name: str | None = None,
     desc_attrs: dict | None = None,
+    hass: object | None = None,
 ):
     """Create and initialize a sensor for tests.
 
     This helper mirrors the common setup used in many tests: it creates a
-    MagicMock entity description with ``key`` and optional ``name``,
-    instantiates the sensor class, stubs ``hass`` and ``async_write_ha_state``,
-    sets ``entity_id`` (either the provided name or derived from the key),
-    and invokes ``_handle_coordinator_update()`` so the sensor is ready for
+    MagicMock entity description with `key` and optional `name`,
+    instantiates the sensor class, stubs `hass` and `async_write_ha_state`,
+    sets `entity_id` (either the provided name or derived from the key),
+    and invokes `_handle_coordinator_update()` so the sensor is ready for
     assertions.
     """
     desc = MagicMock()
@@ -57,7 +58,7 @@ def mk_sensor(
             setattr(desc, k, v)
 
     s = cls(config_entry=entry, coordinator=coordinator, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass if hass is not None else MagicMock()
     s.entity_id = name or f"sensor.{key.split('.')[-1]}"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -75,7 +76,9 @@ def mk_sensor(
         (OPNsenseStaticKeySensor, {}, "telemetry.nonexistent"),
     ],
 )
-def test_sensor_unavailable_variants_parameterized(cls, coord_data, desc_key, make_config_entry):
+def test_sensor_unavailable_variants_parameterized(
+    cls, coord_data, desc_key, make_config_entry, hass_without_loop
+):
     """Parameterised tests asserting sensors become unavailable for edge-case inputs."""
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     coord.data = coord_data
@@ -87,7 +90,7 @@ def test_sensor_unavailable_variants_parameterized(cls, coord_data, desc_key, ma
     desc.name = "Param Test"
 
     s = cls(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.param_unavailable"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -134,7 +137,9 @@ async def test_static_key_sensor_cpu_and_boot_and_certificates(make_config_entry
         ({"carp_interfaces": [{"subnet": "1.2.3.4", "interface": "lan0"}]}, "1.2.3.4"),
     ],
 )
-def test_carp_sensor_unavailable_variants(coord_data, desc_subnet, make_config_entry):
+def test_carp_sensor_unavailable_variants(
+    coord_data, desc_subnet, make_config_entry, hass_without_loop
+):
     """Parameterised unavailable variants for CARP sensor."""
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     coord.data = coord_data
@@ -145,14 +150,14 @@ def test_carp_sensor_unavailable_variants(coord_data, desc_subnet, make_config_e
     desc.name = "CARP"
 
     s = OPNsenseCarpInterfaceSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.carp_unavailable"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
     assert s.available is False
 
 
-def test_carp_sensor_state_wrong_type(make_config_entry):
+def test_carp_sensor_state_wrong_type(make_config_entry, hass_without_loop):
     """CARP sensor should be unavailable when coordinator.data is not a mapping (e.g., list)."""
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     # use a list to ensure isinstance(state, MutableMapping) is False
@@ -164,7 +169,7 @@ def test_carp_sensor_state_wrong_type(make_config_entry):
     desc.name = "CARP WrongType"
 
     s = OPNsenseCarpInterfaceSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.carp_wrongtype"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -182,7 +187,9 @@ def test_carp_sensor_state_wrong_type(make_config_entry):
         ("dhcp_leases.all", OPNsenseDHCPLeasesSensor),
     ],
 )
-def test_sensors_unavailable_on_non_mapping_state(desc_key, cls, make_config_entry):
+def test_sensors_unavailable_on_non_mapping_state(
+    desc_key, cls, make_config_entry, hass_without_loop
+):
     """Sensors should mark themselves unavailable when coordinator.data is not a mapping."""
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     # provide a non-mapping value (list) to trigger the isinstance guard
@@ -194,7 +201,7 @@ def test_sensors_unavailable_on_non_mapping_state(desc_key, cls, make_config_ent
     desc.name = "NonMappingState"
 
     s = cls(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.unavailable"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -213,7 +220,13 @@ def test_sensors_unavailable_on_non_mapping_state(desc_key, cls, make_config_ent
     ],
 )
 def test_gateway_sensor_value_parsing(
-    prop_name, input_value, expected_available, expected_value, expect_down_icon, make_config_entry
+    prop_name,
+    input_value,
+    expected_available,
+    expected_value,
+    expect_down_icon,
+    make_config_entry,
+    hass_without_loop,
 ):
     """Parameterized checks for gateway value parsing and availability."""
     entry = make_config_entry()
@@ -228,7 +241,7 @@ def test_gateway_sensor_value_parsing(
     desc.name = "Gateway Test"
 
     s = OPNsenseGatewaySensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.gw_test"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -247,7 +260,7 @@ def test_gateway_sensor_value_parsing(
                 assert s.icon != "mdi:close-network-outline"
 
 
-def test_gateway_sensor_missing_and_missing_prop(make_config_entry):
+def test_gateway_sensor_missing_and_missing_prop(make_config_entry, hass_without_loop):
     """Gateway sensor should be unavailable when gateway missing or property missing."""
     entry = make_config_entry()
 
@@ -258,7 +271,7 @@ def test_gateway_sensor_missing_and_missing_prop(make_config_entry):
     desc1.key = "gateway.missing.status"
     desc1.name = "GW Missing"
     s1 = OPNsenseGatewaySensor(config_entry=entry, coordinator=coord1, entity_description=desc1)
-    s1.hass = MagicMock()
+    s1.hass = hass_without_loop
     s1.entity_id = "sensor.gw_missing"
     s1.async_write_ha_state = lambda: None
     s1._handle_coordinator_update()
@@ -271,7 +284,7 @@ def test_gateway_sensor_missing_and_missing_prop(make_config_entry):
     desc2.key = "gateway.gw1.delay"
     desc2.name = "GW NoProp"
     s2 = OPNsenseGatewaySensor(config_entry=entry, coordinator=coord2, entity_description=desc2)
-    s2.hass = MagicMock()
+    s2.hass = hass_without_loop
     s2.entity_id = "sensor.gw_noprop"
     s2.async_write_ha_state = lambda: None
     s2._handle_coordinator_update()
@@ -305,7 +318,7 @@ def test_gateway_sensor_missing_and_missing_prop(make_config_entry):
     ],
 )
 def test_carp_sensor_attributes_and_icon(
-    carp_entry, expected_value, expect_down_icon, expect_keys, make_config_entry
+    carp_entry, expected_value, expect_down_icon, expect_keys, make_config_entry, hass_without_loop
 ):
     """Parameterized attribute and icon checks for CARP sensor."""
     entry = make_config_entry()
@@ -318,7 +331,7 @@ def test_carp_sensor_attributes_and_icon(
     desc.name = "CARP Test"
 
     s = OPNsenseCarpInterfaceSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.carp_param"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -363,7 +376,9 @@ def test_carp_sensor_attributes_and_icon(
         ),
     ],
 )
-def test_compiled_sensor_variants(desc_key, cls, main_check, extra_check, make_config_entry):
+def test_compiled_sensor_variants(
+    desc_key, cls, main_check, extra_check, make_config_entry, hass_without_loop
+):
     """Table-driven checks for several sensor types using a common sample state."""
     state = {
         "carp_interfaces": [
@@ -395,7 +410,7 @@ def test_compiled_sensor_variants(desc_key, cls, main_check, extra_check, make_c
     desc.name = "Test"
 
     s = cls(config_entry=entry, coordinator=coordinator, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.test"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -465,6 +480,7 @@ def test_vpn_sensor_variants(
     expect_clients,
     expect_extra_keys,
     make_config_entry,
+    hass_without_loop,
 ):
     """Parameterised tests for OPNsenseVPNSensor to hit key branches in the update handler."""
     entry = make_config_entry()
@@ -477,7 +493,7 @@ def test_vpn_sensor_variants(
     desc.name = "VPN Test"
 
     s = OPNsenseVPNSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.vpn_test"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -499,7 +515,9 @@ def test_vpn_sensor_variants(
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, ZeroDivisionError])
-def test_vpn_sensor_handles_exceptions_from_instance_get(exc_type, make_config_entry):
+def test_vpn_sensor_handles_exceptions_from_instance_get(
+    exc_type, make_config_entry, hass_without_loop
+):
     """VPNSensor should mark itself unavailable when instance.get() raises common exceptions.
 
     We simulate broken instance objects by providing an object with a `get` method
@@ -524,7 +542,7 @@ def test_vpn_sensor_handles_exceptions_from_instance_get(exc_type, make_config_e
     desc.name = "VPN Broken"
 
     s = OPNsenseVPNSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.vpn_broken"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -549,7 +567,12 @@ def test_vpn_sensor_handles_exceptions_from_instance_get(exc_type, make_config_e
     ],
 )
 def test_temp_sensor_basic_variants(
-    coord_data, expected_available, expected_value, expect_device, make_config_entry
+    coord_data,
+    expected_available,
+    expected_value,
+    expect_device,
+    make_config_entry,
+    hass_without_loop,
 ):
     """Temp sensor should handle non-mapping/missing and successful value extraction."""
     entry = make_config_entry()
@@ -562,7 +585,7 @@ def test_temp_sensor_basic_variants(
     desc.name = "Temp Test"
 
     s = OPNsenseTempSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.temp_test"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -575,8 +598,11 @@ def test_temp_sensor_basic_variants(
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, ZeroDivisionError])
-def test_temp_sensor_handles_index_exceptions(exc_type, make_config_entry):
+def test_temp_sensor_handles_index_exceptions(exc_type, make_config_entry, hass_without_loop):
     """Temp sensor should mark itself unavailable when indexing temp raises exceptions."""
+    # use shared hass fixture proxy to avoid mutating global ph_hass.loop
+    # (injected by pytest)
+    # added hass_without_loop for entity.hass
 
     class BrokenTemp:
         def __init__(self, exc):
@@ -600,7 +626,7 @@ def test_temp_sensor_handles_index_exceptions(exc_type, make_config_entry):
     desc.name = "Temp Broken"
 
     s = OPNsenseTempSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.temp_broken"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -628,18 +654,14 @@ def test_temp_sensor_handles_index_exceptions(exc_type, make_config_entry):
         ),
     ],
 )
-def test_vpn_sensor_icon_variants(desc_key, state, expect_close_icon, make_config_entry):
+def test_vpn_sensor_icon_variants(
+    desc_key, state, expect_close_icon, make_config_entry, hass_without_loop
+):
     """Verify VPNSensor.icon for status up/down and fallback to description icon for non-status."""
     entry = make_config_entry()
 
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     coord.data = state
-
-    desc = MagicMock()
-    desc.key = desc_key
-    desc.name = "VPN Icon Test"
-    # supply a fallback icon for non-status case
-    desc.icon = "mdi:custom-icon"
 
     s = mk_sensor(
         OPNsenseVPNSensor,
@@ -648,6 +670,7 @@ def test_vpn_sensor_icon_variants(desc_key, state, expect_close_icon, make_confi
         desc_key,
         name="sensor.vpn_icon",
         desc_attrs={"icon": "mdi:custom-icon"},
+        hass=hass_without_loop,
     )
 
     if expect_close_icon:
@@ -656,7 +679,7 @@ def test_vpn_sensor_icon_variants(desc_key, state, expect_close_icon, make_confi
         assert s.icon != "mdi:close-network-outline"
 
 
-def test_vpn_server_clients_extra_attributes_included(make_config_entry):
+def test_vpn_server_clients_extra_attributes_included(make_config_entry, hass_without_loop):
     """Servers with client entries should populate clients extra_state_attributes including bytes fields."""
     entry = make_config_entry()
 
@@ -691,6 +714,7 @@ def test_vpn_server_clients_extra_attributes_included(make_config_entry):
         coord,
         "openvpn.servers.uuid1.status",
         name="sensor.vpn_server_clients",
+        hass=hass_without_loop,
     )
 
     assert s.available is True
@@ -703,7 +727,7 @@ def test_vpn_server_clients_extra_attributes_included(make_config_entry):
     assert client0.get("bytes_recv") == 200
 
 
-def test_wireguard_client_connected_servers_property(make_config_entry):
+def test_wireguard_client_connected_servers_property(make_config_entry, hass_without_loop):
     """Wireguard client instance with connected_servers should expose that property when enabled."""
     entry = make_config_entry()
 
@@ -716,11 +740,14 @@ def test_wireguard_client_connected_servers_property(make_config_entry):
     desc.key = "wireguard.clients.c1.connected_servers"
     desc.name = "WG Connected Servers"
 
-    s = OPNsenseVPNSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
-    s.entity_id = "sensor.wg_conn_servers"
-    s.async_write_ha_state = lambda: None
-    s._handle_coordinator_update()
+    s = mk_sensor(
+        OPNsenseVPNSensor,
+        entry,
+        coord,
+        "wireguard.clients.c1.connected_servers",
+        name="sensor.wg_conn_servers",
+        hass=hass_without_loop,
+    )
 
     assert s.available is True
     assert s.native_value == 3
@@ -820,13 +847,13 @@ def test_interface_status_icon_down_added(make_config_entry):
     desc.key = "interface.lan.status"
     desc.name = "LAN Status Down"
 
-    s = sensor_module.OPNsenseInterfaceSensor(
-        config_entry=entry, coordinator=coord, entity_description=desc
+    s = mk_sensor(
+        sensor_module.OPNsenseInterfaceSensor,
+        entry,
+        coord,
+        "interface.lan.status",
+        name="sensor.lan_status_down",
     )
-    s.hass = MagicMock()
-    s.entity_id = "sensor.lan_status_down"
-    s.async_write_ha_state = lambda: None
-    s._handle_coordinator_update()
     assert s.icon == "mdi:close-network-outline"
 
 
@@ -926,6 +953,7 @@ def test_static_cpu_zero_variants(
     expected_available: bool,
     expected_value: int | None,
     make_config_entry,
+    hass_without_loop,
 ) -> None:
     """Zero CPU total should mark sensor unavailable unless previous value exists.
 
@@ -941,7 +969,7 @@ def test_static_cpu_zero_variants(
     desc.name = "CPU Total"
 
     sensor = OPNsenseStaticKeySensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    sensor.hass = MagicMock()
+    sensor.hass = hass_without_loop
     sensor.entity_id = "sensor.cpu_total"
     sensor.async_write_ha_state = lambda: None
     if previous is not None:
@@ -953,7 +981,7 @@ def test_static_cpu_zero_variants(
         assert sensor.native_value == expected_value
 
 
-def test_gateway_empty_string_unavailable(make_config_entry):
+def test_gateway_empty_string_unavailable(make_config_entry, hass_without_loop):
     """Gateway sensor should be unavailable for empty status strings."""
     state = {"gateways": {"gw1": {"name": "gw1", "status": ""}}}
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
@@ -965,14 +993,14 @@ def test_gateway_empty_string_unavailable(make_config_entry):
     desc.name = "Gateway Status"
 
     s = OPNsenseGatewaySensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.gw_empty"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
     assert s.available is False
 
 
-def test_interface_status_icon_up(make_config_entry):
+def test_interface_status_icon_up(make_config_entry, hass_without_loop):
     """Interface status sensor shows an 'up' icon when status is up."""
     state = {"interfaces": {"lan": {"name": "LAN", "status": "up", "interface": "lan0"}}}
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
@@ -984,7 +1012,7 @@ def test_interface_status_icon_up(make_config_entry):
     desc.name = "LAN Status"
 
     s = OPNsenseInterfaceSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.lan_status_up"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -1000,7 +1028,9 @@ def test_interface_status_icon_up(make_config_entry):
         (None, {"lan": "LAN"}),
     ],
 )
-def test_dhcp_leases_all_non_mapping(leases_val, lease_interfaces_val, make_config_entry):
+def test_dhcp_leases_all_non_mapping(
+    leases_val, lease_interfaces_val, make_config_entry, hass_without_loop
+):
     """DHCP Leases 'all' sensor should be unavailable when leases or lease_interfaces are not mappings."""
     entry = make_config_entry()
 
@@ -1012,7 +1042,7 @@ def test_dhcp_leases_all_non_mapping(leases_val, lease_interfaces_val, make_conf
     desc.name = "DHCP All"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_all"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -1020,7 +1050,7 @@ def test_dhcp_leases_all_non_mapping(leases_val, lease_interfaces_val, make_conf
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, ZeroDivisionError])
-def test_dhcp_leases_handles_exceptions(exc_type, make_config_entry):
+def test_dhcp_leases_handles_exceptions(exc_type, make_config_entry, hass_without_loop):
     """DHCP Leases 'all' sensor should mark itself unavailable when iterating leases raises exceptions.
 
     We simulate a broken lease object whose `.get` method raises the requested exception to
@@ -1050,7 +1080,7 @@ def test_dhcp_leases_handles_exceptions(exc_type, make_config_entry):
     desc.name = "DHCP Broken Iteration"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_broken"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -1058,7 +1088,7 @@ def test_dhcp_leases_handles_exceptions(exc_type, make_config_entry):
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, ZeroDivisionError])
-def test_dhcp_lease_interfaces_items_raises(exc_type, make_config_entry):
+def test_dhcp_lease_interfaces_items_raises(exc_type, make_config_entry, hass_without_loop):
     """Ensure exceptions raised by lease_interfaces.items() are caught and sensor becomes unavailable."""
 
     class BrokenLeaseInterfaces(dict):
@@ -1080,7 +1110,7 @@ def test_dhcp_lease_interfaces_items_raises(exc_type, make_config_entry):
     desc.name = "DHCP Broken LeaseInterfaces"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_broken_items"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
@@ -1088,7 +1118,7 @@ def test_dhcp_lease_interfaces_items_raises(exc_type, make_config_entry):
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, ZeroDivisionError])
-def test_dhcp_leases_iterable_raises_on_iter(exc_type, make_config_entry):
+def test_dhcp_leases_iterable_raises_on_iter(exc_type, make_config_entry, hass_without_loop):
     """Ensure exceptions raised while iterating the leases list are caught and sensor becomes unavailable."""
 
     class BrokenLeaseList(list):
@@ -1110,14 +1140,14 @@ def test_dhcp_leases_iterable_raises_on_iter(exc_type, make_config_entry):
     desc.name = "DHCP Broken Iterable"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_broken_iter"
     s.async_write_ha_state = lambda: None
     s._handle_coordinator_update()
     assert s.available is False
 
 
-def test_dhcp_leases_inner_except_writes_unavailable(make_config_entry):
+def test_dhcp_leases_inner_except_writes_unavailable(make_config_entry, hass_without_loop):
     """Verify the inner except block sets available False and calls async_write_ha_state.
 
     This test replaces the instance's async_write_ha_state with a collector that records
@@ -1144,7 +1174,7 @@ def test_dhcp_leases_inner_except_writes_unavailable(make_config_entry):
     desc.name = "DHCP Inner Except Collector"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_inner_collector"
 
     writes: list[bool] = []
@@ -1161,7 +1191,7 @@ def test_dhcp_leases_inner_except_writes_unavailable(make_config_entry):
     assert any(w is False for w in writes), f"expected a False write captured, got {writes}"
 
 
-def test_dhcp_leases_items_except_writes_unavailable(make_config_entry):
+def test_dhcp_leases_items_except_writes_unavailable(make_config_entry, hass_without_loop):
     """Verify exceptions from lease_interfaces.items() cause unavailable state and write."""
 
     class BrokenLeaseInterfaces(dict):
@@ -1182,7 +1212,7 @@ def test_dhcp_leases_items_except_writes_unavailable(make_config_entry):
     desc.name = "DHCP Items Except Collector"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_items_collector"
 
     writes: list[bool] = []
@@ -1198,7 +1228,9 @@ def test_dhcp_leases_items_except_writes_unavailable(make_config_entry):
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, ZeroDivisionError])
-def test_dhcp_leases_per_interface_handles_exceptions(exc_type, make_config_entry):
+def test_dhcp_leases_per_interface_handles_exceptions(
+    exc_type, make_config_entry, hass_without_loop
+):
     """Ensure per-interface DHCP leases exception paths mark sensor unavailable and write state.
 
     This exercises the `else` branch where a specific interface's leases are summed and an
@@ -1221,7 +1253,7 @@ def test_dhcp_leases_per_interface_handles_exceptions(exc_type, make_config_entr
     desc.name = "DHCP Per-Interface Broken"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_per_if_broken"
 
     writes: list[bool] = []
@@ -1236,7 +1268,7 @@ def test_dhcp_leases_per_interface_handles_exceptions(exc_type, make_config_entr
     assert any(w is False for w in writes), f"expected a False write captured, got {writes}"
 
 
-def test_dhcp_leases_coverage_tracer(make_config_entry):
+def test_dhcp_leases_coverage_tracer(make_config_entry, hass_without_loop):
     """Trigger the BrokenLease path and assert the except-branch observable behavior.
 
     Instead of introspecting source lines, exercise the same failure mode used by
@@ -1257,7 +1289,7 @@ def test_dhcp_leases_coverage_tracer(make_config_entry):
     desc.name = "DHCP Per-Interface Collector"
 
     s = OPNsenseDHCPLeasesSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "sensor.dhcp_per_if_collector"
 
     writes: list[bool] = []
@@ -1296,7 +1328,7 @@ def _setup_entry_with_all_syncs(state: dict, make_config_entry):
 
 
 @pytest.mark.asyncio
-async def test_compile_and_handle_many_entities(make_config_entry):
+async def test_compile_and_handle_many_entities(make_config_entry, ph_hass):
     """Compile a complex state and verify many sensor branches are handled."""
     # craft a rich state to exercise many branches
     state = {
@@ -1402,7 +1434,7 @@ async def test_compile_and_handle_many_entities(make_config_entry):
     # Exercise each entity's update handler
     failures: list[str] = []
     for i, ent in enumerate(created):
-        ent.hass = MagicMock()
+        ent.hass = ph_hass
         ent.entity_id = f"sensor.test_{i}"
         ent.async_write_ha_state = lambda: None
         try:
@@ -1672,7 +1704,7 @@ def test_dhcp_per_interface_numeric_count(make_config_entry):
 
 
 @pytest.mark.asyncio
-async def test_compile_vpn_sensors_and_exercise_handlers(make_config_entry):
+async def test_compile_vpn_sensors_and_exercise_handlers(make_config_entry, ph_hass):
     """Compile VPN sensors for both openvpn and wireguard and exercise handlers for all properties."""
     entry = make_config_entry()
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
@@ -1731,7 +1763,8 @@ async def test_compile_vpn_sensors_and_exercise_handlers(make_config_entry):
             s = OPNsenseVPNSensor(config_entry=entry, coordinator=coord, entity_description=desc)
         else:
             continue
-        s.hass = MagicMock()
+
+        s.hass = ph_hass
         s.entity_id = f"sensor.{desc.key.replace('.', '_')}"
         s.async_write_ha_state = lambda: None
         try:
