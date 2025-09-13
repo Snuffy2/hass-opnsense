@@ -5,7 +5,8 @@ and options flow behaviors such as device tracker handling.
 """
 
 import importlib
-from unittest.mock import MagicMock
+import socket
+from unittest.mock import AsyncMock, MagicMock
 import xmlrpc.client
 
 import aiohttp
@@ -159,7 +160,13 @@ def test_log_and_set_error_sets_base(caplog):
 
 
 @pytest.mark.asyncio
-async def test_get_dt_entries_sorts_and_includes_selected(monkeypatch, fake_client):
+async def test_get_dt_entries_sorts_and_includes_selected(
+    monkeypatch,
+    fake_client,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
+    hass_with_running_loop,
+):
     """Ensure _get_dt_entries returns selected devices first and ARP entries sorted by IP."""
 
     # Create a client class via fixture and attach a get_arp_table implementation
@@ -173,15 +180,12 @@ async def test_get_dt_entries_sorts_and_includes_selected(monkeypatch, fake_clie
         ]
 
     setattr(client_cls, "get_arp_table", _get_arp_table)
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
+    patch_cf_opnsense_client(client_cls)
 
     # Patch async_create_clientsession on the module under test to avoid real network I/O
-    def _fake_create_clientsession(*args, **kwargs):
-        return MagicMock()
+    patch_async_create_clientsession(lambda *args, **kwargs: MagicMock())
 
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", _fake_create_clientsession)
-
-    hass = MagicMock()
+    hass = hass_with_running_loop
     config = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
     selected = ["aa:bb:cc:00:00:01"]
     res = await cf_mod._get_dt_entries(hass=hass, config=config, selected_devices=selected)
@@ -190,7 +194,7 @@ async def test_get_dt_entries_sorts_and_includes_selected(monkeypatch, fake_clie
     keys = list(res.keys())
     assert "aa:bb:cc:00:00:01" in keys
     assert "11:22:33:44:55:66" in keys
-    # Selected device appears first
+    # Smallest IP-labeled entry appears first after sort
     assert keys[0] == "11:22:33:44:55:66"
     # IP-labeled entries are sorted numerically (10.0.0.5 before 192.168.1.10 < 192.168.1.20)
     vals = list(res.values())
@@ -247,20 +251,18 @@ def test_async_get_options_flow_returns_options_flow():
 
 
 @pytest.mark.asyncio
-async def test_options_flow_init_with_user_triggers_update():
+async def test_options_flow_init_with_user_triggers_update(ph_hass):
     """Submitting user input to async_step_init should update entry and create entry."""
     cfg = MagicMock()
     cfg.data = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
     cfg.options = {cf_mod.CONF_DEVICE_TRACKER_ENABLED: False}
 
     flow = cf_mod.OPNsenseOptionsFlow(cfg)
-    flow.hass = MagicMock()
-    flow.hass.config_entries = MagicMock()
-    flow.hass.config_entries.async_update_entry = MagicMock()
-    # set a handler so flow._config_entry_id property is available during the test
+    flow.hass = ph_hass
+    # ensure options flow has a handler and config_entries helpers available
     flow.handler = "opnsense"
-    # ensure async_get_known_entry returns our cfg when accessed
     flow.hass.config_entries.async_get_known_entry = MagicMock(return_value=cfg)
+    flow.hass.config_entries.async_update_entry = MagicMock()
 
     # populate internals to avoid Home Assistant property lookups in this unit test
     flow._config = dict(cfg.data)
@@ -276,15 +278,147 @@ async def test_options_flow_init_with_user_triggers_update():
 
 
 @pytest.mark.asyncio
-async def test_options_flow_granular_sync_calls_validate_and_updates(monkeypatch):
+async def test_handle_user_input_raises_unknown_firmware_via_compare(monkeypatch, ph_hass):
+    """If awesomeversion comparison fails inside _handle_user_input it should raise UnknownFirmware."""
+
+    # create a fake client that returns a firmware string and minimal methods used
+    class FakeClient:
+        async def get_host_firmware_version(self):
+            return "x"
+
+        async def set_use_snake_case(self, initial=True):
+            return None
+
+        async def is_plugin_installed(self):
+            return True
+
+        async def get_system_info(self):
+            return {"name": "r"}
+
+        async def get_device_unique_id(self):
+            return "devid"
+
+    async def _get_client(user_input, hass):
+        return FakeClient()
+
+    monkeypatch.setattr(cf_mod, "_get_client", _get_client)
+
+    # make _validate_firmware_version raise the AwesomeVersionCompareException used in the module
+    def _raise_compare(v):
+        raise cf_mod.awesomeversion.exceptions.AwesomeVersionCompareException
+
+    monkeypatch.setattr(cf_mod, "_validate_firmware_version", _raise_compare)
+
+    with pytest.raises(cf_mod.UnknownFirmware):
+        await cf_mod._handle_user_input(
+            hass=ph_hass,
+            user_input={
+                cf_mod.CONF_URL: "https://x",
+                cf_mod.CONF_USERNAME: "u",
+                cf_mod.CONF_PASSWORD: "p",
+            },
+            config_step="user",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc, expected_base",
+    [
+        (socket.gaierror("gai"), "cannot_connect"),
+        (xmlrpc.client.ProtocolError("u", 500, "500 Server Error", {}), "cannot_connect"),
+    ],
+)
+async def test_validate_input_maps_socket_and_protocol(monkeypatch, exc, expected_base):
+    """validate_input should map socket.gaierror and non-redirect ProtocolError to cannot_connect."""
+
+    async def _raiser(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(cf_mod, "_handle_user_input", _raiser)
+    errors = {}
+    res = await cf_mod.validate_input(
+        hass=MagicMock(), user_input={}, config_step="user", errors=errors
+    )
+    assert res.get("base") == expected_base
+
+
+@pytest.mark.asyncio
+async def test_get_dt_entries_handles_empty_and_skips_empty_mac(
+    monkeypatch, patch_async_create_clientsession, patch_cf_opnsense_client
+):
+    """_get_dt_entries should return selected devices when arp_table empty, and skip entries with empty mac."""
+
+    class C1:
+        async def get_arp_table(self, resolve_hostnames=True):
+            return []
+
+    class C2:
+        async def get_arp_table(self, resolve_hostnames=True):
+            return [
+                {"mac": "", "hostname": "h", "ip": "1.2.3.4"},
+                {"mac": "aa:bb:cc:dd:ee:ff", "hostname": "", "ip": "10.0.0.1"},
+            ]
+
+    # patch async_create_clientsession to avoid aiohttp use
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
+
+    patch_cf_opnsense_client(lambda *a, **k: C1())
+    res1 = await cf_mod._get_dt_entries(
+        hass=MagicMock(),
+        config={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
+        selected_devices=["sel1"],
+    )
+    assert "sel1" in res1
+
+    patch_cf_opnsense_client(lambda *a, **k: C2())
+    res2 = await cf_mod._get_dt_entries(
+        hass=MagicMock(),
+        config={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
+        selected_devices=[],
+    )
+    # empty-mac entry is skipped; the good mac appears
+    assert "aa:bb:cc:dd:ee:ff" in res2
+
+
+@pytest.mark.asyncio
+async def test_options_flow_init_routes_to_granular_and_device_tracker(monkeypatch, ph_hass):
+    """async_step_init should route to granular sync when flag set and to device_tracker when enabled."""
+    cfg = MagicMock()
+    cfg.data = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
+    cfg.options = {}
+    # emulate a real config_entry handler presence
+    cfg.handler = "opnsense"
+
+    # Avoid patching OptionsFlow.config_entry (brittle across HA versions).
+    # Instead set the flow handler and make hass.config_entries return our cfg
+    # so OptionsFlow can resolve the config entry during tests.
+    flow = cf_mod.OPNsenseOptionsFlow(cfg)
+    flow.hass = ph_hass
+    flow.handler = "opnsense"
+    # Ensure the hass config_entries API returns our cfg when requested by the flow.
+    ph_hass.config_entries.async_get_known_entry = MagicMock(return_value=cfg)
+
+    # granular path
+    flow.async_step_granular_sync = AsyncMock(return_value={"type": "create_entry"})
+    _ = await flow.async_step_init(user_input={cf_mod.CONF_GRANULAR_SYNC_OPTIONS: True})
+    flow.async_step_granular_sync.assert_awaited()
+
+    # device tracker path
+    flow.async_step_device_tracker = AsyncMock(return_value={"type": "create_entry"})
+    _ = await flow.async_step_init(user_input={cf_mod.CONF_DEVICE_TRACKER_ENABLED: True})
+    flow.async_step_device_tracker.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_options_flow_granular_sync_calls_validate_and_updates(monkeypatch, ph_hass):
     """async_step_granular_sync should call validate_input and update entry when no errors."""
     cfg = MagicMock()
     cfg.data = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
     cfg.options = {cf_mod.CONF_DEVICE_TRACKER_ENABLED: False}
 
     flow = cf_mod.OPNsenseOptionsFlow(cfg)
-    flow.hass = MagicMock()
-    flow.hass.config_entries = MagicMock()
+    flow.hass = ph_hass
     flow.hass.config_entries.async_update_entry = MagicMock()
 
     # monkeypatch validate_input to return no errors
@@ -309,7 +443,9 @@ async def test_options_flow_granular_sync_calls_validate_and_updates(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_device_tracker_shows_form_when_no_user_input(monkeypatch, make_config_entry):
+async def test_device_tracker_shows_form_when_no_user_input(
+    monkeypatch, make_config_entry, ph_hass
+):
     """async_step_device_tracker should show form containing data_schema when called without user_input."""
     cfg = make_config_entry(
         data={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
@@ -317,7 +453,7 @@ async def test_device_tracker_shows_form_when_no_user_input(monkeypatch, make_co
     )
 
     flow = cf_mod.OPNsenseOptionsFlow(cfg)
-    flow.hass = MagicMock()
+    flow.hass = ph_hass
 
     # monkeypatch _get_dt_entries to return an ordered dict-like mapping
     async def fake_get_dt_entries(hass, config, selected_devices):
@@ -339,7 +475,7 @@ async def test_device_tracker_shows_form_when_no_user_input(monkeypatch, make_co
 
 
 @pytest.mark.asyncio
-async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_entry):
+async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_entry, ph_hass):
     """When user submits manual devices, they should be parsed and saved to options."""
     # Build a fake config_entry using shared factory
     config_entry = make_config_entry(
@@ -352,9 +488,7 @@ async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_e
     )
 
     flow = cf_mod.OPNsenseOptionsFlow(config_entry)
-    # attach hass with config_entries.update stub
-    flow.hass = MagicMock()
-    flow.hass.config_entries = MagicMock()
+    flow.hass = ph_hass
     flow.hass.config_entries.async_update_entry = MagicMock()
     # make the flow aware of its handler so config_entry property works during tests
     flow.handler = "opnsense"
@@ -395,18 +529,24 @@ async def test_options_flow_device_tracker_user_input(monkeypatch, make_config_e
     ],
 )
 async def test_validate_input_user_respects_granular_flag_for_plugin_check(
-    monkeypatch, granular_flag, config_step, expected_called, fake_flow_client
+    monkeypatch,
+    granular_flag,
+    config_step,
+    expected_called,
+    fake_flow_client,
+    ph_hass,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
 ):
     """Plugin check not required for config step of user.
 
     Otherwise, plugin check is required if granular sync options is enabled
     """
-    # Use shared fake_flow_client fixture to supply a FakeClient class
     client_cls = fake_flow_client()
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
+    patch_cf_opnsense_client(client_cls)
 
     # avoid real network sessions
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
 
     user_input = {
         cf_mod.CONF_URL: "https://host.example",
@@ -418,7 +558,7 @@ async def test_validate_input_user_respects_granular_flag_for_plugin_check(
 
     # Create a real config flow and stub methods that interact with Home Assistant internals
     flow = cf_mod.OPNsenseConfigFlow()
-    flow.hass = MagicMock()
+    flow.hass = ph_hass
 
     async def _noop(*args, **kwargs):
         return None
@@ -469,6 +609,110 @@ async def test_validate_input_user_respects_granular_flag_for_plugin_check(
 
 
 @pytest.mark.asyncio
+async def test_async_step_user_granular_and_create_entry(monkeypatch, ph_hass):
+    """Test async_step_user routes to granular when flag set and creates entry otherwise."""
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = ph_hass
+
+    # monkeypatch validate_input to return no errors
+    async def _no_errors(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(cf_mod, "validate_input", _no_errors)
+
+    # If granular flag True, should call async_step_granular_sync; monkeypatch that
+    flow.async_step_granular_sync = AsyncMock(return_value={"type": "create_entry"})
+
+    # Prevent base class from mutating mappingproxy context during unit test
+    flow.async_set_unique_id = AsyncMock()
+    flow._abort_if_unique_id_configured = lambda: None
+
+    user_input = {
+        cf_mod.CONF_URL: "https://x",
+        cf_mod.CONF_USERNAME: "u",
+        cf_mod.CONF_PASSWORD: "p",
+        cf_mod.CONF_DEVICE_UNIQUE_ID: "id",
+        cf_mod.CONF_NAME: "name",
+        cf_mod.CONF_GRANULAR_SYNC_OPTIONS: True,
+    }
+
+    res = await flow.async_step_user(user_input=user_input)
+    assert res["type"] == "create_entry"
+
+    # Now granular False -> should create entry directly
+    user_input[cf_mod.CONF_GRANULAR_SYNC_OPTIONS] = False
+    res2 = await flow.async_step_user(user_input=user_input)
+    assert res2["type"] == "create_entry"
+
+
+@pytest.mark.asyncio
+async def test_async_step_reconfigure_calls_update_and_abort(monkeypatch, ph_hass):
+    """Ensure reconfigure path calls update/reload/abort when validate_input ok."""
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = ph_hass
+
+    # create a fake reconfigure entry
+    re = MagicMock()
+    re.data = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
+
+    flow._get_reconfigure_entry = lambda: re
+
+    async def _no_errors(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(cf_mod, "validate_input", _no_errors)
+
+    # stub async_set_unique_id and _abort_if_unique_id_mismatch to avoid base class behavior
+    flow.async_set_unique_id = AsyncMock()
+    flow._abort_if_unique_id_mismatch = lambda: None
+
+    # stub the method on the instance to return sentinel
+    def _sentinel_update_reload_and_abort(*args, **kwargs):
+        return {"type": "abort"}
+
+    flow.async_update_reload_and_abort = _sentinel_update_reload_and_abort
+
+    res = await flow.async_step_reconfigure(user_input={cf_mod.CONF_URL: "https://x"})
+    assert res["type"] == "abort"
+
+
+@pytest.mark.asyncio
+async def test_handle_user_input_plugin_missing_and_missing_device(
+    monkeypatch,
+    ph_hass,
+    fake_flow_client,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
+):
+    """Test _handle_user_input raising PluginMissing and MissingDeviceUniqueID using fixture."""
+    # Prepare base user_input
+    ui = {cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"}
+
+    client_cls = fake_flow_client(plugin_installed=False)
+    patch_cf_opnsense_client(client_cls)
+    # Avoid real network sessions
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
+
+    # First: granular sync set and a plugin-required item -> PluginMissing
+    ui_with_plugin = dict(ui)
+    ui_with_plugin[cf_mod.CONF_GRANULAR_SYNC_OPTIONS] = True
+    key = next(iter(cf_mod.SYNC_ITEMS_REQUIRING_PLUGIN))
+    ui_with_plugin[key] = True
+
+    with pytest.raises(cf_mod.PluginMissing):
+        await cf_mod._handle_user_input(
+            hass=ph_hass, user_input=ui_with_plugin, config_step="granular_sync"
+        )
+
+    # Now produce a client that returns empty device id to trigger MissingDeviceUniqueID
+    client_cls2 = fake_flow_client(device_id="")
+    patch_cf_opnsense_client(client_cls2)
+
+    with pytest.raises(cf_mod.MissingDeviceUniqueID):
+        await cf_mod._handle_user_input(hass=ph_hass, user_input=ui, config_step="user")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "flow_type, require_plugin, expected_called",
     [
@@ -479,7 +723,14 @@ async def test_validate_input_user_respects_granular_flag_for_plugin_check(
     ],
 )
 async def test_granular_sync_flow_plugin_check(
-    monkeypatch, flow_type, require_plugin, expected_called, fake_flow_client
+    monkeypatch,
+    flow_type,
+    require_plugin,
+    expected_called,
+    fake_flow_client,
+    ph_hass,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
 ):
     """Test plugin check behavior when granular sync is enabled and granular items are set.
 
@@ -487,10 +738,9 @@ async def test_granular_sync_flow_plugin_check(
     - If any SYNC_ITEMS_REQUIRING_PLUGIN is True -> is_plugin_installed should be called.
     - If none are True -> is_plugin_installed should NOT be called.
     """
-    # Use shared fake_flow_client fixture
     client_cls = fake_flow_client()
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
+    patch_cf_opnsense_client(client_cls)
+    patch_async_create_clientsession(lambda *a, **k: MagicMock())
 
     # Build a user_input payload for granular sync where items in SYNC_ITEMS_REQUIRING_PLUGIN are toggled
     # Start with all granular items as False, then set one plugin-required item True if require_plugin
@@ -503,7 +753,7 @@ async def test_granular_sync_flow_plugin_check(
     if flow_type == "config":
         # Prepare a config flow and populate internal config
         flow = cf_mod.OPNsenseConfigFlow()
-        flow.hass = MagicMock()
+        flow.hass = ph_hass
         flow._config = {
             cf_mod.CONF_URL: "https://host.example",
             cf_mod.CONF_USERNAME: "user",
@@ -523,7 +773,7 @@ async def test_granular_sync_flow_plugin_check(
         }
         cfg.options = {cf_mod.CONF_DEVICE_TRACKER_ENABLED: False}
         flow = cf_mod.OPNsenseOptionsFlow(cfg)
-        flow.hass = MagicMock()
+        flow.hass = ph_hass
         # emulate HA internals required by the options flow methods in tests
         flow.handler = "opnsense"
         flow.hass.config_entries = MagicMock()

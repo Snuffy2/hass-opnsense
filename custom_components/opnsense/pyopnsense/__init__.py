@@ -36,7 +36,12 @@ def _log_errors(func: Callable) -> Any:
         except asyncio.CancelledError:
             raise
         except (TimeoutError, aiohttp.ServerTimeoutError) as e:
-            _LOGGER.warning("Timeout Error in %s. Will retry. %s", func.__name__.strip("_"), e)
+            _LOGGER.warning(
+                "Timeout Error in %s. %s%s",
+                func.__name__.strip("_"),
+                "Will retry. " if not self._initial else "",
+                e,
+            )
             if self._initial:
                 raise
         except Exception as e:
@@ -143,6 +148,14 @@ def timestamp_to_datetime(timestamp: int | None) -> datetime | None:
         int(timestamp),
         tz=timezone(datetime.now().astimezone().utcoffset() or timedelta()),
     )
+
+
+def _parse_lease_ends(ends_value: str) -> datetime | None:
+    """Parse an ISC `ends` string (YYYY/MM/DD HH:MM:SS) into a tz-aware datetime."""
+    if not ends_value:
+        return None
+    dt: datetime = datetime.strptime(ends_value, "%Y/%m/%d %H:%M:%S")
+    return dt.replace(tzinfo=timezone(datetime.now().astimezone().utcoffset() or timedelta()))
 
 
 class VoucherServerError(Exception):
@@ -279,20 +292,26 @@ $toreturn["real"] = json_encode($toreturn_real);
             stack = inspect.stack()
             calling_function = stack[1].function.strip("_") if len(stack) > 1 else "Unknown"
             _LOGGER.warning(
-                "Connection Error running exec_php script for %s. %s: %s. Will retry",
+                "Connection Error running exec_php script for %s. %s: %s%s",
                 calling_function,
                 type(e).__name__,
                 e,
+                ". Will retry" if not self._initial else "",
             )
+            if self._initial:
+                raise
         except ssl.SSLError as e:
             stack = inspect.stack()
             calling_function = stack[1].function.strip("_") if len(stack) > 1 else "Unknown"
             _LOGGER.warning(
-                "SSL Connection Error running exec_php script for %s. %s: %s. Will retry",
+                "SSL Connection Error running exec_php script for %s. %s: %s%s",
                 calling_function,
                 type(e).__name__,
                 e,
+                ". Will retry" if not self._initial else "",
             )
+            if self._initial:
+                raise
         return {}
 
     @_log_errors
@@ -1169,11 +1188,8 @@ $toreturn = [
             lease["type"] = lease_info.get("type", None)
             lease["mac"] = lease_info.get("mac", None)
             if lease_info.get("ends", None):
-                dt: datetime = datetime.strptime(lease_info.get("ends", None), "%Y/%m/%d %H:%M:%S")
-                lease["expires"] = dt.replace(
-                    tzinfo=timezone(datetime.now().astimezone().utcoffset() or timedelta())
-                )
-                if lease["expires"] < datetime.now().astimezone():
+                lease["expires"] = _parse_lease_ends(lease_info.get("ends", None))
+                if lease["expires"] and lease["expires"] < datetime.now().astimezone():
                     continue
             else:
                 lease["expires"] = lease_info.get("ends", None)

@@ -4,8 +4,6 @@ These tests validate switch compilation helpers, entity behavior, and
 async setup flows for the integration's switch platform.
 """
 
-import asyncio
-import contextlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -36,7 +34,16 @@ from custom_components.opnsense.switch import (
     _compile_vpn_switches,
 )
 from homeassistant.components.switch import SwitchEntityDescription
-from homeassistant.core import HomeAssistant
+
+
+def _safe_entity_id(domain: str, key_or_uid: str | None) -> str:
+    """Build a safe Home Assistant entity_id by replacing dots with underscores.
+
+    If key_or_uid is None, return a domain-only placeholder.
+    """
+    if not key_or_uid:
+        return f"{domain}.unknown"
+    return f"{domain}.{key_or_uid.replace('.', '_')}"
 
 
 def make_coord(data):
@@ -114,8 +121,7 @@ async def test_switch_toggle_variants(
     assert len(ents) >= 1
     ent = ents[0]
 
-    hass = ph_hass
-    ent.hass = hass
+    ent.hass = ph_hass
     ent.coordinator = make_coord(state)
     # prefer unique id if present, otherwise fall back to entity_description.key
     unique = getattr(ent, "_attr_unique_id", None)
@@ -331,7 +337,10 @@ async def test_unbound_and_vpn_variations(coordinator, ph_hass, make_config_entr
         assert vpn.is_on is bool(inst.get("enabled"))
 
 
-def test_delay_update_setter(monkeypatch, coordinator, make_config_entry):
+@pytest.mark.asyncio
+async def test_delay_update_setter(
+    patch_async_call_later, coordinator, make_config_entry, hass_with_running_loop
+) -> None:
     """Delay update setter captures and removes scheduled removers correctly."""
     desc = SwitchEntityDescription(key="x", name="DelayTest")
     config_entry = make_config_entry(
@@ -342,51 +351,26 @@ def test_delay_update_setter(monkeypatch, coordinator, make_config_entry):
     ent = OPNsenseFilterSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    # synchronous test: use a plain hass-like object with a dedicated loop
-    hass_local = MagicMock(spec=HomeAssistant)
-    loop = asyncio.new_event_loop()
-    try:
-        hass_local.loop = loop
-        hass_local.data = {}
-        ent.hass = hass_local
-        called = {"removed": False}
-
-        def fake_async_call_later(*args, **kwargs):
-            def remover():
-                called["removed"] = True
-
-            return remover
-
-        monkeypatch.setattr(
-            "custom_components.opnsense.switch.async_call_later", fake_async_call_later
-        )
-
-        ent.delay_update = True
-        assert ent.delay_update is True
-        # ensure async_call_later returned remover was captured
-        assert callable(getattr(ent, "_delay_update_remove", None))
-        ent.delay_update = False
-        assert called["removed"] is True
-    finally:
-        # make sure we close the loop created for this test
-        with contextlib.suppress(RuntimeError):
-            loop.close()
+    # synchronous test: use the shared hass fixture wired to the running loop
+    hass_local = hass_with_running_loop
+    ent.hass = hass_local
+    ent.delay_update = True
+    assert ent.delay_update is True
+    # ensure async_call_later returned remover was captured
+    assert callable(getattr(ent, "_delay_update_remove", None))
+    ent.delay_update = False
+    # The remover returned by the fixture calls the stored action which clears
+    # the delay flag; assert the flag is cleared and the internal remover reset.
+    assert ent.delay_update is False
+    assert ent._delay_update_remove is None
+    # no manual loop to close when using pytest-asyncio
 
 
 @pytest.mark.asyncio
 async def test_vpn_turn_on_off_calls_client_and_sets_delay(
-    monkeypatch, coordinator, ph_hass, make_config_entry
+    patch_async_call_later, coordinator, ph_hass, make_config_entry
 ):
     """VPN switch should call toggle_vpn_instance, update state, and enable delay_update."""
-
-    # replace async_call_later so tests don't schedule real callbacks
-    def fake_async_call_later(hass, delay, action):
-        def remover():
-            return None
-
-        return remover
-
-    monkeypatch.setattr("custom_components.opnsense.switch.async_call_later", fake_async_call_later)
 
     desc = SwitchEntityDescription(key="openvpn.clients.c1", name="VPNC")
     coord = make_coord({"openvpn": {"clients": {"c1": {"enabled": False, "name": "C1"}}}})
@@ -432,11 +416,6 @@ async def test_vpn_turn_on_off_noops_when_preconditions_fail(
     monkeypatch, coordinator, ph_hass, make_config_entry
 ):
     """VPN async_turn_on/async_turn_off should be no-ops when preconditions are not met."""
-    # replace async_call_later to avoid scheduling
-    monkeypatch.setattr(
-        "custom_components.opnsense.switch.async_call_later",
-        lambda hass, delay, action: (lambda: None),
-    )
 
     desc = SwitchEntityDescription(key="openvpn.clients.c2", name="VPNC2")
     coord = make_coord({"openvpn": {"clients": {"c2": {"enabled": True, "name": "C2"}}}})
@@ -474,7 +453,7 @@ async def test_vpn_turn_on_off_noops_when_preconditions_fail(
     ],
 )
 async def test_vpn_async_turn_off_variations(
-    monkeypatch,
+    patch_async_call_later,
     coordinator,
     ph_hass,
     caplog,
@@ -485,11 +464,6 @@ async def test_vpn_async_turn_off_variations(
     make_config_entry,
 ):
     """Parameterize async_turn_off behavior for success, failure, and missing client."""
-    # avoid scheduling real async_call_later during tests
-    monkeypatch.setattr(
-        "custom_components.opnsense.switch.async_call_later",
-        lambda hass, delay, action: (lambda: None),
-    )
 
     desc = SwitchEntityDescription(key="openvpn.clients.cx", name="VPNCX")
     coord = make_coord({"openvpn": {"clients": {"cx": {"enabled": True, "name": "CX"}}}})
@@ -741,76 +715,68 @@ async def test_async_setup_entry_missing_state(
 @pytest.mark.parametrize("kind", ["filter", "nat", "service"])
 @pytest.mark.asyncio
 async def test_switch_handle_error_sets_unavailable(
-    kind: str, coordinator, make_config_entry
+    kind: str, coordinator, make_config_entry, hass_with_running_loop
 ) -> None:
     """When underlying rule/service lookups return non-mapping values, switch becomes unavailable."""
-    hass_local = MagicMock(spec=HomeAssistant)
-    loop = asyncio.new_event_loop()
-    try:
-        hass_local.loop = loop
-        hass_local.data = {}
+    hass_local = hass_with_running_loop
 
-        if kind == "filter":
-            # compile one valid filter entity then monkeypatch to produce error
-            config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
-            setattr(config_entry.runtime_data, COORDINATOR, coordinator)
-            state = {"config": {"filter": {"rule": [{"descr": "Good", "created": {"time": "t1"}}]}}}
-            coordinator.data = state
-            ent = (await _compile_filter_switches(config_entry, coordinator, state))[0]
-            ent.hass = hass_local
-            ent.coordinator = make_coord(state)
-            ent.entity_id = f"switch.{ent._attr_unique_id}"
-            ent.async_write_ha_state = lambda: None
+    if kind == "filter":
+        # compile one valid filter entity then monkeypatch to produce error
+        config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+        setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+        state = {"config": {"filter": {"rule": [{"descr": "Good", "created": {"time": "t1"}}]}}}
+        coordinator.data = state
+        ent = (await _compile_filter_switches(config_entry, coordinator, state))[0]
+        ent.hass = hass_local
+        ent.coordinator = make_coord(state)
+        ent.entity_id = f"switch.{ent._attr_unique_id}"
+        ent.async_write_ha_state = lambda: None
 
-            def _fake_get_rule_filter() -> Any:
-                return 5
+        def _fake_get_rule_filter() -> Any:
+            return 5
 
-            ent._opnsense_get_rule = _fake_get_rule_filter
-        elif kind == "nat":
-            desc = SwitchEntityDescription(key="nat_port_forward.abc", name="NAT")
-            config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
-            setattr(config_entry.runtime_data, COORDINATOR, coordinator)
-            ent = OPNsenseNatSwitch(
-                config_entry=config_entry,
-                coordinator=coordinator,
-                entity_description=desc,
-            )
-            ent.hass = hass_local
-            ent.coordinator = make_coord({})
-            ent.entity_id = "switch.nat"
-            ent.async_write_ha_state = lambda: None
+        ent._opnsense_get_rule = _fake_get_rule_filter
+    elif kind == "nat":
+        desc = SwitchEntityDescription(key="nat_port_forward.abc", name="NAT")
+        config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+        setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+        ent = OPNsenseNatSwitch(
+            config_entry=config_entry,
+            coordinator=coordinator,
+            entity_description=desc,
+        )
+        ent.hass = hass_local
+        ent.coordinator = make_coord({})
+        ent.entity_id = "switch.nat"
+        ent.async_write_ha_state = lambda: None
 
-            def _fake_get_rule_nat() -> Any:
-                return 123
+        def _fake_get_rule_nat() -> Any:
+            return 123
 
-            ent._opnsense_get_rule = _fake_get_rule_nat
-        else:  # service
-            desc = SwitchEntityDescription(key="service.svc1.status", name="Svc")
-            config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
-            setattr(config_entry.runtime_data, COORDINATOR, coordinator)
-            ent = OPNsenseServiceSwitch(
-                config_entry=config_entry,
-                coordinator=coordinator,
-                entity_description=desc,
-            )
-            ent.hass = hass_local
-            ent.coordinator = make_coord({})
-            ent.entity_id = "switch.svc"
-            ent.async_write_ha_state = lambda: None
+        ent._opnsense_get_rule = _fake_get_rule_nat
+    else:  # service
+        desc = SwitchEntityDescription(key="service.svc1.status", name="Svc")
+        config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+        setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+        ent = OPNsenseServiceSwitch(
+            config_entry=config_entry,
+            coordinator=coordinator,
+            entity_description=desc,
+        )
+        ent.hass = hass_local
+        ent.coordinator = make_coord({})
+        ent.entity_id = "switch.svc"
+        ent.async_write_ha_state = lambda: None
 
-            def _fake_get_service() -> Any:
-                return 5
+        def _fake_get_service() -> Any:
+            return 5
 
-            ent._opnsense_get_service = _fake_get_service
+        ent._opnsense_get_service = _fake_get_service
 
-        # Exercise the update logic; ensure the handler did not raise and
-        # availability is reported as a boolean (handlers may early-return).
-        ent._handle_coordinator_update()
-        assert isinstance(ent.available, bool)
-    finally:
-        # make sure we close the loop created for this test
-        with contextlib.suppress(RuntimeError):
-            loop.close()
+    # Exercise the update logic; ensure the handler did not raise and
+    # availability is reported as a boolean (handlers may early-return).
+    ent._handle_coordinator_update()
+    assert isinstance(ent.available, bool)
 
 
 def test_entity_icons(make_config_entry):
@@ -853,6 +819,48 @@ def test_entity_icons(make_config_entry):
     s_ent._attr_is_on = True
     s_ent._available = True
     assert s_ent.icon == "mdi:application-cog"
+
+
+def test_entity_icons_when_off_or_unavailable(make_config_entry):
+    """Icons should fall back to default when entity is off or unavailable."""
+    # filter off -> default icon (None)
+    f_desc = SwitchEntityDescription(key="filter.t2", name="Filter2")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, None)
+    f_ent = OPNsenseFilterSwitch(
+        config_entry=config_entry,
+        coordinator=make_coord({}),
+        entity_description=f_desc,
+    )
+    f_ent._attr_is_on = False
+    f_ent._available = True
+    assert f_ent.icon is None
+
+    # nat unavailable -> default icon (None)
+    n_desc = SwitchEntityDescription(key="nat_port_forward.t2", name="NAT2")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, None)
+    n_ent = OPNsenseNatSwitch(
+        config_entry=config_entry,
+        coordinator=make_coord({}),
+        entity_description=n_desc,
+    )
+    n_ent._attr_is_on = True
+    n_ent._available = False
+    assert n_ent.icon is None
+
+    # service off -> default icon (None)
+    s_desc = SwitchEntityDescription(key="service.s2.status", name="Svc2")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, None)
+    s_ent = OPNsenseServiceSwitch(
+        config_entry=config_entry,
+        coordinator=make_coord({}),
+        entity_description=s_desc,
+    )
+    s_ent._attr_is_on = False
+    s_ent._available = True
+    assert s_ent.icon is None
 
 
 @pytest.mark.parametrize(
@@ -978,7 +986,7 @@ async def test_vpn_toggle_parametrized(
         ent._client.toggle_vpn_instance.assert_awaited_once()
 
 
-def test_reset_delay_calls_existing_remover(monkeypatch, make_config_entry):
+def test_reset_delay_calls_existing_remover(patch_async_call_later, monkeypatch, make_config_entry):
     """Resetting delay should call any existing remover and replace it."""
     desc = SwitchEntityDescription(key="filter.t1", name="Filter")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -997,7 +1005,9 @@ def test_reset_delay_calls_existing_remover(monkeypatch, make_config_entry):
         called["new_removed"] = True
 
     ent._delay_update_remove = old_remover
-    # monkeypatch async_call_later to return new_remover
+    # This test needs a specific replacer so override the fixture-provided
+    # async_call_later to return `new_remover` (instead of the default
+    # remover returned by the fixture).
     monkeypatch.setattr(
         "custom_components.opnsense.switch.async_call_later",
         lambda hass, delay, action: new_remover,
@@ -1100,6 +1110,40 @@ async def test_async_setup_entry_respects_config_flags(
     await switch_mod.async_setup_entry(hass, config_entry, fake_add_entities)
     # since only unbound is enabled, expect 1 entity
     assert calls.get("len") == 1
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_all_flags_disabled(coordinator, ph_hass, make_config_entry):
+    """When all feature flags are disabled, no entities should be added."""
+    calls = {}
+
+    def fake_add_entities(entities):
+        calls["len"] = len(entities)
+
+    config_entry = make_config_entry(
+        data={
+            CONF_DEVICE_UNIQUE_ID: "dev1",
+            CONF_SYNC_FILTERS_AND_NAT: False,
+            CONF_SYNC_SERVICES: False,
+            CONF_SYNC_VPN: False,
+            CONF_SYNC_UNBOUND: False,
+        }
+    )
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    coordinator.data = {}
+    await switch_mod.async_setup_entry(ph_hass, config_entry, fake_add_entities)
+    assert calls.get("len", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_compile_service_switches_non_list_returns_empty(coordinator, make_config_entry):
+    """Service compile helper returns [] when services is not a list."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    state = {"services": {"not": "a list"}}
+    coordinator.data = state
+    ents = await _compile_service_switches(config_entry, coordinator, state)
+    assert ents == []
 
 
 @pytest.mark.asyncio
@@ -1494,9 +1538,382 @@ def test_vpn_instance_key_parsing(coordinator, make_config_entry):
     assert ent._uuid == "c1"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "compile_fn,state,expected_count,expected_suffix",
+    [
+        (_compile_static_unbound_switches, None, 0, None),
+        (
+            _compile_port_forward_switches,
+            {
+                "config": {
+                    "nat": {
+                        "rule": [
+                            {"descr": "no-created"},
+                            {"descr": "ok", "created": {"time": "p9"}},
+                        ]
+                    }
+                }
+            },
+            1,
+            ".p9",
+        ),
+        (
+            _compile_nat_outbound_switches,
+            {
+                "config": {
+                    "nat": {
+                        "outbound": {
+                            "rule": [
+                                ["not", "a", "dict"],
+                                {"descr": "empty", "created": {"time": ""}},
+                                {"descr": "good", "created": {"time": "o9"}},
+                            ]
+                        }
+                    }
+                }
+            },
+            1,
+            ".o9",
+        ),
+        (_compile_port_forward_switches, {"config": {"nat": {"rule": {"not": "a list"}}}}, 0, None),
+        (
+            _compile_filter_switches,
+            {
+                "config": {
+                    "filter": {
+                        "rule": [
+                            {"descr": "Anti-Lockout Rule", "created": {"time": "a1"}},
+                            {"associated-rule-id": "x", "created": {"time": "a2"}},
+                            {"descr": "Good", "created": {"time": "g2"}},
+                        ]
+                    }
+                }
+            },
+            1,
+            ".g2",
+        ),
+    ],
+)
+async def test_compile_helper_variants(
+    coordinator, make_config_entry, compile_fn, state, expected_count, expected_suffix
+):
+    """Parametrized compile helper tests for various bad/edge inputs."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1", "url": "http://example"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    coordinator.data = state
+    ents = await compile_fn(config_entry, coordinator, state)
+    assert len(ents) == expected_count
+    if expected_count and expected_suffix:
+        assert ents[0].entity_description.key.endswith(expected_suffix)
+
+
+@pytest.mark.asyncio
+async def test_compile_port_forward_skips_missing_tracker(coordinator, make_config_entry):
+    """Port forward entries missing created.time should be skipped."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1", "url": "http://example"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    # rule without created -> should be skipped
+    state = {
+        "config": {
+            "nat": {"rule": [{"descr": "no-created"}, {"descr": "ok", "created": {"time": "p9"}}]}
+        }
+    }
+    coordinator.data = state
+    ents = await _compile_port_forward_switches(config_entry, coordinator, state)
+    assert len(ents) == 1
+    assert ents[0].entity_description.key.endswith(".p9")
+
+
+@pytest.mark.asyncio
+async def test_compile_nat_outbound_handles_non_dict_and_empty_tracker(
+    coordinator, make_config_entry
+):
+    """Outbound NAT compile should skip non-dict and empty-tracker rules."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1", "url": "http://example"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    state = {
+        "config": {
+            "nat": {
+                "outbound": {
+                    "rule": [
+                        ["not", "a", "dict"],
+                        {"descr": "empty", "created": {"time": ""}},
+                        {"descr": "good", "created": {"time": "o9"}},
+                    ]
+                }
+            }
+        }
+    }
+    coordinator.data = state
+    ents = await _compile_nat_outbound_switches(config_entry, coordinator, state)
+    assert len(ents) == 1
+    assert ents[0].entity_description.key.endswith(".o9")
+
+
+def test_filter_handle_no_rule_sets_unavailable(coordinator, make_config_entry):
+    """Filter handler marks entity unavailable when its rule is not found."""
+    desc = SwitchEntityDescription(key="filter.missing_tracker", name="FilterMiss")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    ent = OPNsenseFilterSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    # coordinator returns no rules
+    coordinator.data = {"config": {"filter": {"rule": []}}}
+    ent.coordinator = make_coord(coordinator.data)
+    ent.async_write_ha_state = lambda: None
+    ent._handle_coordinator_update()
+    assert ent.available is False
+
+
+def test_delay_setter_no_remover(monkeypatch, coordinator, make_config_entry, hass_without_loop):
+    """Setting delay_update False when no remover is present should be safe."""
+    desc = SwitchEntityDescription(key="filter.tno", name="NoRemover")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    ent = OPNsenseFilterSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    ent.hass = hass_without_loop
+    # provide minimal HA identity for entity write operations
+    ent.entity_id = "switch.filter_test"
+    ent.async_write_ha_state = lambda: None
+    # ensure no remover set
+    ent._delay_update_remove = None
+    ent.delay_update = False
+    assert ent.delay_update is False
+
+
+def test_nat_get_rule_non_mapping(coordinator, make_config_entry):
+    """_NAT get_rule should return None when coordinator.data is not a mapping."""
+    desc = SwitchEntityDescription(key=f"{ATTR_NAT_OUTBOUND}.x1", name="ObTest")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    ent = OPNsenseNatSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    # coordinator.data is None
+    coordinator.data = None
+    ent.coordinator = make_coord(coordinator.data)
+    assert ent._opnsense_get_rule() is None
+
+
+@pytest.mark.asyncio
+async def test_compile_filter_skips_associated_and_anti_lockout(coordinator, make_config_entry):
+    """Filter compilation should skip anti-lockout and associated-rule-id entries."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1", "url": "http://example"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    state = {
+        "config": {
+            "filter": {
+                "rule": [
+                    {"descr": "Anti-Lockout Rule", "created": {"time": "a1"}},
+                    {"associated-rule-id": "x", "created": {"time": "a2"}},
+                    {"descr": "Good", "created": {"time": "g2"}},
+                ]
+            }
+        }
+    }
+    coordinator.data = state
+    ents = await _compile_filter_switches(config_entry, coordinator, state)
+    assert len(ents) == 1
+    assert ents[0].entity_description.key.endswith(".g2")
+
+
+@pytest.mark.asyncio
+async def test_compile_port_forward_rules_not_list_returns_empty(coordinator, make_config_entry):
+    """If nat.rule is not a list, port forward compile should return []."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1", "url": "http://example"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    state = {"config": {"nat": {"rule": {"not": "a list"}}}}
+    coordinator.data = state
+    res = await _compile_port_forward_switches(config_entry, coordinator, state)
+    assert res == []
+
+
+def test_reset_delay_triggers_clear(
+    patch_async_call_later, coordinator, make_config_entry, hass_without_loop
+):
+    """Invoking the stored remover should execute the _clear action and unset flags."""
+    desc = SwitchEntityDescription(key="filter.clear", name="ClearTest")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    ent = OPNsenseFilterSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    ent.hass = hass_without_loop
+    # ensure entity_id present for HA entity operations
+    ent.entity_id = _safe_entity_id(
+        "switch", getattr(ent, "_attr_unique_id", None) or ent.entity_description.key
+    )
+    ent.async_write_ha_state = lambda: None
+
+    ent.delay_update = True
+    assert ent._delay_update_remove is not None
+    # calling the remover should clear the delay flag
+    ent._delay_update_remove()
+    assert ent.delay_update is False
+
+
+def test_service_get_service_returns_none_when_not_found(coordinator, make_config_entry):
+    """_opnsense_get_service should return None when the service id isn't present."""
+    desc = SwitchEntityDescription(key="service.missing.status", name="SvcMiss")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    coordinator.data = {"services": [{"id": "other", "name": "o"}]}
+    ent = OPNsenseServiceSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    ent.coordinator = make_coord(coordinator.data)
+    assert ent._opnsense_get_service() is None
+
+
+@pytest.mark.asyncio
+async def test_unbound_no_client_noop(coordinator, ph_hass, make_config_entry):
+    """Unbound async_turn_on/off should return early when no client is attached."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1", "url": "http://example"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    coordinator.data = {"unbound_blocklist": {"enabled": "0"}}
+    ent = (await _compile_static_unbound_switches(config_entry, coordinator, coordinator.data))[0]
+    ent.hass = ph_hass
+    ent.coordinator = make_coord(coordinator.data)
+    ent.async_write_ha_state = lambda: None
+    ent._client = None
+    # should not raise
+    await ent.async_turn_on()
+    await ent.async_turn_off()
+
+
+@pytest.mark.asyncio
+async def test_nat_no_rule_or_client_noop(coordinator, make_config_entry):
+    """NAT async_turn_on/off should no-op when no rule or client is attached."""
+    desc = SwitchEntityDescription(key="nat_port_forward.none", name="NoRule")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    ent = OPNsenseNatSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    ent._rule = None
+    ent._client = None
+    # should not raise
+    await ent.async_turn_on()
+    await ent.async_turn_off()
+
+
+@pytest.mark.asyncio
+async def test_filter_async_turn_on_off_calls_client_and_sets_delay(
+    coordinator, make_config_entry, ph_hass, patch_async_call_later
+):
+    """Turning filter switch on/off should call client methods and set delay_update."""
+
+    desc = SwitchEntityDescription(key="filter.t1", name="FilterTest")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    ent = OPNsenseFilterSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    # provide a rule and a client
+    ent._rule = {"created": {"time": "t1"}, "disabled": "0"}
+    client = AsyncMock()
+    client.enable_filter_rule_by_created_time = AsyncMock(return_value=True)
+    client.disable_filter_rule_by_created_time = AsyncMock(return_value=True)
+    ent._client = client
+    ent.hass = ph_hass
+    ent.entity_id = "switch.filter_test"
+
+    await ent.async_turn_on()
+    client.enable_filter_rule_by_created_time.assert_awaited_once_with(ent._tracker)
+    assert ent._attr_is_on is True
+
+    await ent.async_turn_off()
+    client.disable_filter_rule_by_created_time.assert_awaited_once_with(ent._tracker)
+    assert ent._attr_is_on is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rule_type,method_enable,method_disable,key_prefix",
+    [
+        (
+            ATTR_NAT_PORT_FORWARD,
+            "enable_nat_port_forward_rule_by_created_time",
+            "disable_nat_port_forward_rule_by_created_time",
+            "nat_port_forward",
+        ),
+        (
+            ATTR_NAT_OUTBOUND,
+            "enable_nat_outbound_rule_by_created_time",
+            "disable_nat_outbound_rule_by_created_time",
+            "nat_outbound",
+        ),
+    ],
+)
+async def test_nat_async_turn_on_off_calls_correct_client_method(
+    coordinator,
+    make_config_entry,
+    rule_type,
+    method_enable,
+    method_disable,
+    key_prefix,
+    ph_hass,
+    patch_async_call_later,
+):
+    """NAT switch should choose the correct client method for port-forward vs outbound rules."""
+
+    desc = SwitchEntityDescription(key=f"{key_prefix}.r1", name="NatTest")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    ent = OPNsenseNatSwitch(
+        config_entry=config_entry, coordinator=coordinator, entity_description=desc
+    )
+    # make rule present and a client with expected methods
+    ent._rule = {"created": {"time": "r1"}}
+    client = AsyncMock()
+    setattr(client, method_enable, AsyncMock(return_value=True))
+    setattr(client, method_disable, AsyncMock(return_value=True))
+    ent._client = client
+    ent.hass = ph_hass
+    # Home Assistant object_id must not contain dots; replace them so ph_hass accepts the entity_id
+    ent.entity_id = f"switch.{desc.key.replace('.', '_')}"
+
+    await ent.async_turn_on()
+    getattr(client, method_enable).assert_awaited_once_with(ent._tracker)
+    assert ent._attr_is_on is True
+
+    await ent.async_turn_off()
+    getattr(client, method_disable).assert_awaited_once_with(ent._tracker)
+    assert ent._attr_is_on is False
+
+
+def test_vpn_handle_coordinator_update_sets_icon_and_attributes(
+    coordinator, make_config_entry, ph_hass
+):
+    """VPN switch should populate extra_state_attributes and have the expected icon when on."""
+    # build a coordinator state with a server instance that has multiple properties
+    state = {
+        "wireguard": {
+            "servers": {"s1": {"enabled": True, "name": "WG1", "pubkey": "pk", "clients": ["c1"]}}
+        }
+    }
+    coord = make_coord(state)
+    desc = SwitchEntityDescription(key="wireguard.servers.s1", name="WGServer")
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(config_entry.runtime_data, COORDINATOR, coord)
+    ent = OPNsenseVPNSwitch(config_entry=config_entry, coordinator=coord, entity_description=desc)
+    ent.coordinator = coord
+    ent.hass = ph_hass
+    ent.async_write_ha_state = lambda: None
+    ent._handle_coordinator_update()
+    # should be available and on
+    assert ent.available is True
+    assert ent.is_on is True
+    assert ent.icon == "mdi:folder-key-network"
+    # extra attributes should include name and pubkey
+    assert ent.extra_state_attributes.get("name") == "WG1"
+    assert ent.extra_state_attributes.get("pubkey") == "pk"
+
+
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
 def test_filter_handle_exceptions_sets_unavailable(
-    exc_type, coordinator, make_config_entry
+    exc_type, coordinator, make_config_entry, ph_hass
 ) -> None:
     """Filter handler should mark entity unavailable when .get raises common exceptions."""
     desc = SwitchEntityDescription(key="filter.ex", name="FilterEx")
@@ -1506,7 +1923,7 @@ def test_filter_handle_exceptions_sets_unavailable(
     ent = OPNsenseFilterSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = ph_hass
     ent.coordinator = make_coord({})
     ent.entity_id = f"switch.{ent._attr_unique_id}"
     ent.async_write_ha_state = lambda: None
@@ -1531,7 +1948,9 @@ def test_filter_handle_exceptions_sets_unavailable(
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
-def test_nat_handle_exceptions_sets_unavailable(exc_type, coordinator, make_config_entry) -> None:
+def test_nat_handle_exceptions_sets_unavailable(
+    exc_type, coordinator, make_config_entry, ph_hass
+) -> None:
     """NAT handler should mark entity unavailable when membership check raises exceptions."""
     desc = SwitchEntityDescription(key="nat_port_forward.ex", name="NATEx")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -1540,9 +1959,9 @@ def test_nat_handle_exceptions_sets_unavailable(exc_type, coordinator, make_conf
     ent = OPNsenseNatSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = ph_hass
     ent.coordinator = make_coord({})
-    ent.entity_id = f"switch.{ent.entity_description.key}"
+    ent.entity_id = _safe_entity_id("switch", ent.entity_description.key)
     ent.async_write_ha_state = lambda: None
 
     # create a mapping whose __contains__ raises the exception when checking 'disabled'
@@ -1559,7 +1978,9 @@ def test_nat_handle_exceptions_sets_unavailable(exc_type, coordinator, make_conf
 
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
-def test_vpn_handle_exceptions_sets_unavailable(exc_type, coordinator, make_config_entry) -> None:
+def test_vpn_handle_exceptions_sets_unavailable(
+    exc_type, coordinator, make_config_entry, ph_hass
+) -> None:
     """VPN handler should mark entity unavailable when instance indexing raises exceptions."""
     desc = SwitchEntityDescription(key="openvpn.clients.ex", name="VPNEx")
     config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
@@ -1568,7 +1989,7 @@ def test_vpn_handle_exceptions_sets_unavailable(exc_type, coordinator, make_conf
     ent = OPNsenseVPNSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = ph_hass
     ent.entity_id = f"switch.{ent.entity_description.key}"
     ent.async_write_ha_state = lambda: None
 
@@ -1591,7 +2012,7 @@ def test_vpn_handle_exceptions_sets_unavailable(exc_type, coordinator, make_conf
 
 @pytest.mark.parametrize("exc_type", [TypeError, KeyError, AttributeError])
 def test_service_handle_exceptions_sets_unavailable(
-    exc_type, coordinator, make_config_entry
+    exc_type, coordinator, make_config_entry, hass_with_running_loop
 ) -> None:
     """Service handler should mark entity unavailable when indexing raises exceptions."""
     desc = SwitchEntityDescription(key="service.svcx.status", name="SvcEx")
@@ -1601,7 +2022,7 @@ def test_service_handle_exceptions_sets_unavailable(
     ent = OPNsenseServiceSwitch(
         config_entry=config_entry, coordinator=coordinator, entity_description=desc
     )
-    ent.hass = MagicMock(spec=HomeAssistant)
+    ent.hass = hass_with_running_loop
     ent.entity_id = f"switch.{ent.entity_description.key}"
     ent.async_write_ha_state = lambda: None
 

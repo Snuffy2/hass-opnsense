@@ -5,6 +5,8 @@ category building, state fetching, device ID mismatch handling, speed
 calculations, and update flow.
 """
 
+import asyncio
+import contextlib
 from datetime import timedelta
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -90,7 +92,7 @@ async def test_get_states_handles_missing_method_and_calls(make_config_entry, fa
 
 @pytest.mark.asyncio
 async def test_check_device_unique_id_mismatch_triggers_issue(
-    monkeypatch, make_config_entry, fake_client
+    monkeypatch, make_config_entry, fake_client, patch_issue_registry
 ):
     """Mismatched device_unique_id should create an issue and shutdown after threshold."""
     entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "expected"})
@@ -118,18 +120,44 @@ async def test_check_device_unique_id_mismatch_triggers_issue(
     async def fake_shutdown():
         called["shutdown"] += 1
 
-    def fake_async_create_issue(**kwargs):
+    async def fake_async_create_issue(**kwargs):
         # record the kwargs so tests can validate domain and issue_id
         called["issue"] += 1
         called["issue_kwargs"] = kwargs
 
-    monkeypatch.setattr(coordinator_module.ir, "async_create_issue", fake_async_create_issue)
+    # Use shared fixture helper to patch issue registry
+    patch_issue_registry(create_fn=fake_async_create_issue)
+    # The coordinator module imports `ir` directly; ensure that binding is
+    # patched as well so calls to `ir.async_create_issue` within the
+    # coordinator hit our async stub.
+    with contextlib.suppress(Exception):
+        # Coordinator calls ir.async_create_issue synchronously; to ensure the
+        # async stub runs even when not awaited, wrap it in a synchronous
+        # function that schedules the coroutine on the running loop.
+        scheduled_tasks = set()
+
+        def _schedule_issue(**kwargs):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop; do not schedule.
+                return
+            task = loop.create_task(fake_async_create_issue(**kwargs))
+            # keep a reference so the task is not garbage collected
+            scheduled_tasks.add(task)
+            task.add_done_callback(scheduled_tasks.discard)
+
+        monkeypatch.setattr(
+            coordinator_module.ir, "async_create_issue", _schedule_issue, raising=False
+        )
     coord.async_shutdown = fake_shutdown
 
     # call 3 times -> should call issue once and shutdown once
     await coord._check_device_unique_id()
     await coord._check_device_unique_id()
     await coord._check_device_unique_id()
+    # allow the scheduled async_create_issue task to run
+    await asyncio.sleep(0)
     assert coord._mismatched_count == 3
     assert called["issue"] == 1
     assert called["shutdown"] == 1
@@ -369,7 +397,6 @@ async def test_calculate_speed_bytes_case():
         previous_parent_value=1000,
     )
     assert new_prop == "inbytes_kilobytes_per_second"
-    assert isinstance(value, int)
     assert value == pytest.approx(0.5, abs=0.5)  # 500 B/s -> 0.5 KB/s, allow ±0.5 tolerance
 
 

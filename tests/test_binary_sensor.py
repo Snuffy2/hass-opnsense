@@ -122,7 +122,13 @@ async def test_async_setup_entry_creates_only_notices_when_notices_enabled(make_
     ],
 )
 def test_carp_sensor_update_paths_param(
-    coord_data, expect_write_called, expect_available, expect_is_on, expect_extra, make_config_entry
+    coord_data,
+    expect_write_called,
+    expect_available,
+    expect_is_on,
+    expect_extra,
+    make_config_entry,
+    hass_without_loop,
 ):
     """Parameterized tests for CARP status sensor update paths.
 
@@ -142,7 +148,7 @@ def test_carp_sensor_update_paths_param(
     def write():
         write_called["val"] = True
 
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "binary_sensor.carp"
     # only replace writer when we expect to observe a call, else set a no-op
     s.async_write_ha_state = write if expect_write_called else lambda: None
@@ -186,6 +192,7 @@ def test_pending_notices_sensor_update_paths_param(
     expect_is_on,
     expect_pending,
     make_config_entry,
+    hass_without_loop,
 ):
     """Parameterized tests for pending notices sensor update paths.
 
@@ -201,7 +208,7 @@ def test_pending_notices_sensor_update_paths_param(
     s = OPNsensePendingNoticesPresentBinarySensor(
         config_entry=entry, coordinator=coord, entity_description=desc
     )
-    s.hass = MagicMock()
+    s.hass = hass_without_loop
     s.entity_id = "binary_sensor.notices"
 
     write_called = {"val": False}

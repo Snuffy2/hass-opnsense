@@ -11,15 +11,14 @@ import pytest
 from custom_components.opnsense import services as services_mod
 from custom_components.opnsense.const import DOMAIN
 from custom_components.opnsense.pyopnsense import VoucherServerError
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 
 
 @pytest.mark.asyncio
-async def test_get_clients_single_and_multiple(monkeypatch):
+async def test_get_clients_single_and_multiple(monkeypatch, hass_with_running_loop):
     """_get_clients returns clients from hass.data and supports filtering."""
     # use a plain hass-like object so .data is a real dict
-    hass_local = MagicMock(spec=HomeAssistant)
+    hass_local = hass_with_running_loop
     client = MagicMock()
     client.name = "one"
     hass_local.data = {DOMAIN: {"e1": client}}
@@ -54,12 +53,12 @@ async def test_get_clients_single_and_multiple(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_clients_registry_errors_are_ignored(monkeypatch):
+async def test_get_clients_registry_errors_are_ignored(monkeypatch, hass_with_running_loop):
     """Verify that _get_clients returns all configured clients even when registry lookups raise exceptions.
 
     Device or entity registry lookups may raise exceptions; ensure these are ignored.
     """
-    hass_local = MagicMock(spec=HomeAssistant)
+    hass_local = hass_with_running_loop
     c1, c2 = MagicMock(name="c1"), MagicMock(name="c2")
     hass_local.data = {DOMAIN: {"e1": c1, "e2": c2}}
 
@@ -76,7 +75,9 @@ async def test_get_clients_registry_errors_are_ignored(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_service_start_stop_restart_success_and_failure(monkeypatch, ph_hass):
+async def test_service_start_stop_restart_success_and_failure(
+    monkeypatch, ph_hass, patch_services_get_clients
+):
     """Start/stop/restart service handlers call client methods correctly."""
     hass = ph_hass
     hass.data = {}
@@ -102,7 +103,8 @@ async def test_service_start_stop_restart_success_and_failure(monkeypatch, ph_ha
     async def fake_get(*args, **kwargs):
         return [c1, c2]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get)
+    # use shared fixture to patch services._get_clients
+    patch_services_get_clients(fake_get)
     # start should succeed because c2 returns True
     await services_mod._service_start_service(hass, call)
     # stop should succeed
@@ -142,14 +144,16 @@ async def test_service_start_stop_restart_success_and_failure(monkeypatch, ph_ha
 
 
 @pytest.mark.asyncio
-async def test_service_restart_only_if_running_and_reload_interface(monkeypatch, ph_hass):
+async def test_service_restart_only_if_running_and_reload_interface(
+    monkeypatch, ph_hass, patch_services_get_clients, hass_with_running_loop
+):
     """Restart service honors only_if_running and reload_interface behavior."""
     c1 = MagicMock()
     c1.name = "c1"
     c1.restart_service_if_running = AsyncMock(return_value=True)
     c1.restart_service = AsyncMock(return_value=True)
     c1.reload_interface = AsyncMock(return_value=True)
-    hass = ph_hass
+    hass = hass_with_running_loop
     hass.data = {}
     hass.data[DOMAIN] = {"e1": c1}
     call = MagicMock()
@@ -158,7 +162,7 @@ async def test_service_restart_only_if_running_and_reload_interface(monkeypatch,
     async def fake_get(*args, **kwargs):
         return [c1]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get)
+    patch_services_get_clients(fake_get)
     # should not raise
     await services_mod._service_restart_service(hass, call)
     c1.restart_service_if_running.assert_awaited_once_with("svc")
@@ -172,7 +176,7 @@ async def test_service_restart_only_if_running_and_reload_interface(monkeypatch,
     async def fake_get_single(*args, **kwargs):
         return [c1]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get_single)
+    patch_services_get_clients(fake_get_single)
 
     with pytest.raises(ServiceValidationError):
         await services_mod._service_restart_service(hass, call)
@@ -199,7 +203,7 @@ async def test_service_restart_only_if_running_and_reload_interface(monkeypatch,
     ],
 )
 async def test_service_start_stop_restart_failure_variants(
-    monkeypatch, ph_hass, method_name, method_attr
+    monkeypatch, ph_hass, patch_services_get_clients, method_name, method_attr
 ):
     """Parameterized failure tests for start/stop/restart service handlers.
 
@@ -220,7 +224,7 @@ async def test_service_start_stop_restart_failure_variants(
     async def fake_get(*args, **kwargs):
         return [ok_client, bad_client]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get)
+    patch_services_get_clients(fake_get)
     call = MagicMock()
     call.data = {"service_id": "svc"}
 
@@ -230,7 +234,95 @@ async def test_service_start_stop_restart_failure_variants(
 
 
 @pytest.mark.asyncio
-async def test_generate_vouchers_success_and_server_error(monkeypatch, ph_hass):
+@pytest.mark.parametrize(
+    "method_name,method_attr",
+    [
+        ("_service_start_service", "start_service"),
+        ("_service_stop_service", "stop_service"),
+        ("_service_restart_service", "restart_service"),
+    ],
+)
+async def test_service_failure_when_first_client_false_then_true(
+    monkeypatch, ph_hass, patch_services_get_clients, method_name, method_attr
+):
+    """If the first client returns False and a later client returns True, overall should fail.
+
+    This exercises the 'if success is None or success' path that prevents updating success
+    once it becomes False.
+    """
+    hass = ph_hass
+    hass.data = {}
+
+    first_bad = MagicMock()
+    first_bad.name = "first_bad"
+    setattr(first_bad, method_attr, AsyncMock(return_value=False))
+
+    later_good = MagicMock()
+    later_good.name = "later_good"
+    setattr(later_good, method_attr, AsyncMock(return_value=True))
+
+    async def fake_get(*args, **kwargs):
+        return [first_bad, later_good]
+
+    patch_services_get_clients(fake_get)
+    call = MagicMock()
+    call.data = {"service_id": "svc"}
+
+    handler = getattr(services_mod, method_name)
+    with pytest.raises(ServiceValidationError):
+        await handler(hass, call)
+
+
+@pytest.mark.asyncio
+async def test_reload_interface_fails_when_first_false_then_true(
+    monkeypatch, ph_hass, patch_services_get_clients
+):
+    """reload_interface should raise when first client returns False even if later client returns True."""
+    c1 = MagicMock()
+    c1.name = "c1"
+    c1.reload_interface = AsyncMock(return_value=False)
+
+    c2 = MagicMock()
+    c2.name = "c2"
+    c2.reload_interface = AsyncMock(return_value=True)
+
+    async def fake_get(*args, **kwargs):
+        return [c1, c2]
+
+    patch_services_get_clients(fake_get)
+    hass = ph_hass
+    hass.data = {DOMAIN: {"e1": c1, "e2": c2}}
+    call = MagicMock()
+    call.data = {"interface": "igb0"}
+
+    with pytest.raises(ServiceValidationError):
+        await services_mod._service_reload_interface(hass, call)
+
+
+@pytest.mark.asyncio
+async def test_generate_vouchers_skips_non_list(monkeypatch, ph_hass, patch_services_get_clients):
+    """If client.generate_vouchers returns a non-list, it should be skipped and return empty vouchers."""
+    c = MagicMock()
+    c.name = "svc"
+    c.generate_vouchers = AsyncMock(return_value={"not": "a list"})
+
+    async def fake_get(*args, **kwargs):
+        return [c]
+
+    patch_services_get_clients(fake_get)
+    hass = ph_hass
+    hass.data = {DOMAIN: {"e1": c}}
+    call = MagicMock()
+    call.data = {"validity": "1", "expirytime": "2", "count": "1", "vouchergroup": "g"}
+
+    resp = await services_mod._service_generate_vouchers(hass, call)
+    assert resp == {"vouchers": []}
+
+
+@pytest.mark.asyncio
+async def test_generate_vouchers_success_and_server_error(
+    monkeypatch, ph_hass, patch_services_get_clients
+):
     """Generating vouchers returns assembled list and handles server errors."""
     hass = ph_hass
     hass.data = {}
@@ -246,7 +338,7 @@ async def test_generate_vouchers_success_and_server_error(monkeypatch, ph_hass):
     async def fake_get(*args, **kwargs):
         return [c1]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get)
+    patch_services_get_clients(fake_get)
     resp = await services_mod._service_generate_vouchers(hass, call)
     assert "vouchers" in resp and isinstance(resp["vouchers"], list)
     # confirm client name was injected into voucher entries
@@ -259,7 +351,7 @@ async def test_generate_vouchers_success_and_server_error(monkeypatch, ph_hass):
 
 
 @pytest.mark.asyncio
-async def test_kill_states_success_and_failure(monkeypatch, ph_hass):
+async def test_kill_states_success_and_failure(monkeypatch, ph_hass, patch_services_get_clients):
     """Killing states returns dropped state counts and handles failures."""
     hass = ph_hass
     hass.data = {}
@@ -273,7 +365,7 @@ async def test_kill_states_success_and_failure(monkeypatch, ph_hass):
     async def fake_get(*args, **kwargs):
         return [c1]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get)
+    patch_services_get_clients(fake_get)
     resp = await services_mod._service_kill_states(hass, call)
     # Expect a payload containing the client name and dropped_states value
     expected = {"dropped_states": [{"client_name": "c1", "dropped_states": 5}]}
@@ -286,22 +378,22 @@ async def test_kill_states_success_and_failure(monkeypatch, ph_hass):
 
 
 @pytest.mark.asyncio
-async def test_get_clients_no_data_returns_empty():
+async def test_get_clients_no_data_returns_empty(hass_with_running_loop):
     """_get_clients returns an empty list when hass.data has no domain."""
-    hass = MagicMock(spec=HomeAssistant)
+    hass = hass_with_running_loop
     hass.data = {}
     res = await services_mod._get_clients(hass)
     assert res == []
 
 
 @pytest.fixture
-def fake_get_empty(monkeypatch):
+def fake_get_empty(monkeypatch, patch_services_get_clients):
     """Fixture that monkeypatches services_mod._get_clients to return an empty list."""
 
     async def _fake_get_empty(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(services_mod, "_get_clients", _fake_get_empty)
+    patch_services_get_clients(_fake_get_empty)
     return _fake_get_empty
 
 
@@ -345,7 +437,9 @@ async def test_stop_service_no_clients_raises(ph_hass, fake_get_empty):
 
 
 @pytest.mark.asyncio
-async def test_close_send_wol_and_system_calls(monkeypatch):
+async def test_close_send_wol_and_system_calls(
+    monkeypatch, patch_services_get_clients, hass_with_running_loop
+):
     """Close/send_wol/system calls are forwarded to clients."""
     # single client that should receive calls
     c = MagicMock()
@@ -358,9 +452,9 @@ async def test_close_send_wol_and_system_calls(monkeypatch):
     async def fake_get(*args, **kwargs):
         return [c]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get)
+    patch_services_get_clients(fake_get)
 
-    hass = MagicMock(spec=HomeAssistant)
+    hass = hass_with_running_loop
     hass.data = {DOMAIN: {"e1": c}}
 
     # close notice
@@ -385,7 +479,9 @@ async def test_close_send_wol_and_system_calls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_toggle_alias_success_and_failure(monkeypatch):
+async def test_toggle_alias_success_and_failure(
+    monkeypatch, patch_services_get_clients, hass_with_running_loop
+):
     """Toggle alias success and failure paths raise or not appropriately."""
     # success path
     c1 = MagicMock()
@@ -395,8 +491,8 @@ async def test_toggle_alias_success_and_failure(monkeypatch):
     async def fake_get_ok(*args, **kwargs):
         return [c1]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get_ok)
-    hass = MagicMock(spec=HomeAssistant)
+    patch_services_get_clients(fake_get_ok)
+    hass = hass_with_running_loop
     hass.data = {DOMAIN: {"e1": c1}}
     call = MagicMock()
     call.data = {"alias": "a1", "toggle_on_off": "on"}
@@ -411,7 +507,70 @@ async def test_toggle_alias_success_and_failure(monkeypatch):
     async def fake_get_fail(*args, **kwargs):
         return [c2]
 
-    monkeypatch.setattr(services_mod, "_get_clients", fake_get_fail)
+    patch_services_get_clients(fake_get_fail)
     hass.data = {DOMAIN: {"e2": c2}}
     with pytest.raises(ServiceValidationError):
         await services_mod._service_toggle_alias(hass, call)
+
+
+@pytest.mark.asyncio
+async def test_async_setup_services_registers_all(ph_hass):
+    """Calling async_setup_services should register all expected services."""
+    hass = ph_hass
+    # Ensure domain not already registered for a clean start
+    if DOMAIN in hass.services.async_services():
+        hass.services.async_clear()
+
+    await services_mod.async_setup_services(hass)
+
+    svc_map = hass.services.async_services().get(DOMAIN, {})
+    expected = [
+        services_mod.SERVICE_CLOSE_NOTICE,
+        services_mod.SERVICE_START_SERVICE,
+        services_mod.SERVICE_STOP_SERVICE,
+        services_mod.SERVICE_RESTART_SERVICE,
+        services_mod.SERVICE_SYSTEM_HALT,
+        services_mod.SERVICE_SYSTEM_REBOOT,
+        services_mod.SERVICE_SEND_WOL,
+        services_mod.SERVICE_RELOAD_INTERFACE,
+        services_mod.SERVICE_GENERATE_VOUCHERS,
+        services_mod.SERVICE_KILL_STATES,
+        services_mod.SERVICE_TOGGLE_ALIAS,
+    ]
+
+    for name in expected:
+        assert name in svc_map
+
+
+@pytest.mark.asyncio
+async def test_generate_vouchers_with_non_mapping_and_multiple_clients(
+    monkeypatch, ph_hass, patch_services_get_clients
+):
+    """Ensure generate_vouchers handles non-mapping voucher entries and merges multiple clients."""
+    hass = ph_hass
+    hass.data = {}
+
+    # client that returns mapping vouchers
+    c1 = MagicMock()
+    c1.name = "svc1"
+    c1.generate_vouchers = AsyncMock(return_value=[{"code": "A1"}])
+
+    # client that returns a non-mapping voucher (string)
+    c2 = MagicMock()
+    c2.name = "svc2"
+    c2.generate_vouchers = AsyncMock(return_value=["rawvoucher"])
+
+    async def fake_get(*args, **kwargs):
+        return [c1, c2]
+
+    patch_services_get_clients(fake_get)
+
+    call = MagicMock()
+    call.data = {"validity": "1", "expirytime": "2", "count": "2", "vouchergroup": "g1"}
+
+    resp = await services_mod._service_generate_vouchers(hass, call)
+    assert "vouchers" in resp and isinstance(resp["vouchers"], list)
+    # ensure mapping voucher had client injected
+    assert any(isinstance(v, dict) and v.get("client") == "svc1" for v in resp["vouchers"])
+    # ensure non-mapping voucher is carried through as-is
+    assert any(v == "rawvoucher" for v in resp["vouchers"])

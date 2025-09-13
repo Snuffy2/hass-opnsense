@@ -1,47 +1,47 @@
 # See https://pre-commit.com for more information
 # See https://pre-commit.com/hooks.html for more hooks
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
+-   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      - id: trailing-whitespace
+    -   id: trailing-whitespace
         exclude: '.*\.md$'
-      - id: end-of-file-fixer
+    -   id: end-of-file-fixer
         exclude: '.*\.md$'
-      - id: check-yaml
-      - id: check-toml
-      - id: check-added-large-files
-  - repo: https://github.com/rhysd/actionlint
+    -   id: check-yaml
+    -   id: check-toml
+    -   id: check-added-large-files
+-   repo: https://github.com/rhysd/actionlint
     rev: v1.7.7
     hooks:
-      - id: actionlint
+    -   id: actionlint
     # Note: shellcheck cannot directly parse YAML; actionlint extracts workflow
     # shell blocks and calls shellcheck when available.
-  - repo: https://github.com/shellcheck-py/shellcheck-py
+-   repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
     hooks:
-      - id: shellcheck
+    -   id: shellcheck
         # Match by detected shell file type (extensions or shebang)
         types: [shell]
         args: ['-x']
-  - repo: https://github.com/codespell-project/codespell
+-   repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
     hooks:
-      - id: codespell
+    -   id: codespell
         additional_dependencies:
-          - tomli
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.12
+        -   tomli
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.0
     hooks:
       # Run the linter.
-      - id: ruff-check
+    -   id: ruff-check
         args: [--fix]
       # Run the formatter.
-      - id: ruff-format
-  - repo: https://gitlab.com/vojko.pribudic.foss/pre-commit-update
+    -   id: ruff-format
+-   repo: https://gitlab.com/vojko.pribudic.foss/pre-commit-update
     rev: v0.8.0
     hooks:
-      - id: pre-commit-update
+    -   id: pre-commit-update
 
 ci:
   autofix_commit_msg: |

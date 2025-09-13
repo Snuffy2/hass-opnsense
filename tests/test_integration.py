@@ -17,8 +17,7 @@ the project-wide conftest which currently overrides the hass fixture.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import MutableMapping
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,93 +32,31 @@ from custom_components.opnsense.const import (
     CONF_GRANULAR_SYNC_OPTIONS,
     CONF_MANUAL_DEVICES,
 )
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_NAME, CONF_PASSWORD, CONF_URL, CONF_USERNAME, CONF_VERIFY_SSL
+from homeassistant.loader import Integration
+from tests.conftest import map_hass_components_to_custom_components
 
 homeassistant = pytest.importorskip("homeassistant")
 
 
-class _FakeFlowClient:
-    """Fake client used during config & options flows.
+# Map `homeassistant.components.opnsense.*` to local `custom_components.opnsense.*`
+@pytest.fixture(scope="module", autouse=True)
+def _map_hass_components_module():
+    """Map HA components to local custom_components for this module and restore after tests.
 
-    It implements only the async methods the flows invoke.
+    Calling the mapper at import time mutates sys.modules for the whole pytest
+    session which can leak state into other tests. Use a module-scoped autouse
+    fixture to scope the mapping and ensure cleanup by invoking the returned
+    package module's `_cleanup()` in a finally block.
     """
-
-    def __init__(self, device_id: str = "dev-flow", firmware: str = "25.1") -> None:
-        self._device_id = device_id
-        self._firmware = firmware
-
-    async def get_host_firmware_version(self) -> str:
-        return self._firmware
-
-    async def set_use_snake_case(self, initial: bool = False) -> None:
-        """No-op used by config flow validation path."""
-        return
-
-    async def is_plugin_installed(self) -> bool:  # for SYNC_ITEMS_REQUIRING_PLUGIN path
-        return True
-
-    async def get_system_info(self) -> MutableMapping[str, Any]:
-        return {"name": "OPNsenseTest"}
-
-    async def get_device_unique_id(self) -> str:
-        return self._device_id
-
-    async def get_arp_table(self, resolve_hostnames: bool = False) -> list[dict[str, Any]]:
-        # Used by options flow device tracker step
-        return [
-            {"mac": "aa:bb:cc:dd:ee:ff", "hostname": "host1", "ip": "192.168.1.10"},
-            {"mac": "11:22:33:44:55:66", "hostname": "", "ip": "192.168.1.11"},
-        ]
-
-
-class _FakeRuntimeClient:
-    """Fake client used during async_setup_entry (main integration path)."""
-
-    def __init__(self, device_id: str = "dev-runtime", firmware: str = "25.1") -> None:
-        self._device_id = device_id
-        self._firmware = firmware
-        self._closed = False
-
-    async def get_device_unique_id(self) -> str:  # used by setup & coordinator
-        return self._device_id
-
-    async def get_host_firmware_version(self) -> str:  # used by setup & coordinator
-        return self._firmware
-
-    async def async_close(self) -> bool:
-        self._closed = True
-        return True
-
-    async def set_use_snake_case(
-        self, initial: bool = False
-    ) -> None:  # called during coordinator _async_setup
-        # Accept the optional `initial` flag like the production client. No-op for tests.
-        return None
-
-    async def reset_query_counts(self) -> None:
-        return None
-
-    async def get_query_counts(self) -> tuple[int, int]:
-        return (0, 0)
-
-    async def get_system_info(self):  # first refresh path
-        return {"name": "sys"}
-
-
-class _FakeCoordinator:
-    """Minimal coordinator stand‑in used for async_setup_entry tests."""
-
-    def __init__(self, **kwargs: Any) -> None:  # pragma: no cover - simple init
-        # capture flags we care about for assertions if needed
-        self._device_tracker = kwargs.get("device_tracker_coordinator", False)
-        self._refreshed = False
-
-    async def async_config_entry_first_refresh(self) -> bool:
-        self._refreshed = True
-        return True
-
-    async def async_shutdown(self) -> bool:  # pragma: no cover - not used in happy path
-        return True
+    pkg = map_hass_components_to_custom_components()
+    try:
+        yield
+    finally:
+        cleanup = getattr(pkg, "_cleanup", None)
+        if callable(cleanup):
+            cleanup()
 
 
 def _make_basic_user_input() -> dict[str, Any]:
@@ -133,64 +70,27 @@ def _make_basic_user_input() -> dict[str, Any]:
     }
 
 
-def _build_mock_hass() -> Any:
-    """Construct a lightweight hass stand‑in with required attributes."""
-    hass = MagicMock()
-    hass.data = {}
-
-    # config_entries API surface used inside tests
-    class _Cfg:
-        def __init__(self) -> None:
-            self._entries: dict[str, Any] = {}
-
-        def async_update_entry(
-            self,
-            entry,
-            data=None,
-            options=None,
-            version=None,
-            unique_id=None,
-            **kwargs,
-        ):
-            # Bypass ConfigEntry attribute protections using object.__setattr__
-            if data is not None:
-                object.__setattr__(entry, "data", data)
-            if options is not None:
-                object.__setattr__(entry, "options", options)
-            if unique_id is not None:
-                object.__setattr__(entry, "unique_id", unique_id)
-            if version is not None:
-                object.__setattr__(entry, "version", version)
-            return True
-
-        async def async_forward_entry_setups(self, entry, platforms):  # pragma: no cover
-            return True
-
-        async def async_unload_platforms(self, entry, platforms):  # pragma: no cover
-            return True
-
-        async def async_reload(self, entry_id):  # pragma: no cover - reload path not asserted
-            return None
-
-    hass.config_entries = _Cfg()
-    hass.async_create_task = MagicMock(side_effect=lambda coro: asyncio.create_task(coro))
-    return hass
-
-
 @pytest.mark.asyncio
-async def test_e2e_basic_config_flow_and_setup(monkeypatch, make_config_entry):
+async def test_e2e_basic_config_flow_and_setup(
+    monkeypatch,
+    make_config_entry,
+    coordinator_capture,
+    coordinator,
+    fake_flow_client,
+    ph_hass,
+    patch_registry_async_get,
+    patch_async_create_clientsession,
+    patch_cf_opnsense_client,
+    patch_init_opnsense_client,
+):
     """E2E: basic config flow (single step) followed by entry setup."""
 
     # Patch client for config flow
-    monkeypatch.setattr(
-        cf_mod, "OPNsenseClient", lambda **k: _FakeFlowClient(device_id="dev-basic")
-    )
-    monkeypatch.setattr(
-        cf_mod, "async_create_clientsession", lambda **k: MagicMock(), raising=False
-    )
+    patch_cf_opnsense_client(lambda **k: fake_flow_client(device_id="dev-basic")())
+    patch_async_create_clientsession(lambda **k: MagicMock())
 
     flow = cf_mod.OPNsenseConfigFlow()
-    hass = _build_mock_hass()
+    hass = ph_hass
     flow.hass = hass
 
     # Bypass HA flow unique-id internals (we don't implement hass.config_entries.flow)
@@ -209,10 +109,13 @@ async def test_e2e_basic_config_flow_and_setup(monkeypatch, make_config_entry):
     assert data[CONF_NAME] == "MyRouter"
 
     # Now patch runtime client & coordinator and call async_setup_entry
+    patch_init_opnsense_client(lambda **k: fake_flow_client(device_id="dev-basic", runtime=True))
+    # Use the provided coordinator_capture fixture factory to create coordinators
     monkeypatch.setattr(
-        init_mod, "OPNsenseClient", lambda **k: _FakeRuntimeClient(device_id="dev-basic")
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(),
     )
-    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", _FakeCoordinator)
 
     # Build ConfigEntry using MockConfigEntry for better parity
     entry = make_config_entry(
@@ -225,8 +128,15 @@ async def test_e2e_basic_config_flow_and_setup(monkeypatch, make_config_entry):
     # Provide stubs expected by integration (update listener registration returns unsubscribe)
     entry.add_update_listener = lambda f: (lambda: None)
     entry.async_on_unload = lambda x: None
-    hass.data = {}
 
+    # Mark entry as loaded in this lightweight harness to allow forward setups
+    object.__setattr__(entry, "state", ConfigEntryState.LOADED)
+
+    # Avoid Home Assistant's loader attempting to import platforms in this test
+    # by stubbing out async_forward_entry_setups which is invoked by the
+    # integration's async_setup_entry. The integration's internal setup
+    # behavior is still exercised up to that call.
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=None)
     ok = await init_mod.async_setup_entry(hass, entry)
     assert ok is True
     # hass.data should contain stored client under domain/entry_id
@@ -239,7 +149,15 @@ async def test_e2e_basic_config_flow_and_setup(monkeypatch, make_config_entry):
 
 @pytest.mark.asyncio
 async def test_e2e_granular_sync_and_options_device_tracker(
-    monkeypatch, make_config_entry, coordinator_capture
+    monkeypatch,
+    make_config_entry,
+    coordinator_capture,
+    coordinator,
+    fake_flow_client,
+    ph_hass,
+    patch_async_create_clientsession,
+    patch_init_opnsense_client,
+    patch_cf_opnsense_client,
 ):
     """E2E: multi-step config flow (granular sync) + options enabling device tracker list.
 
@@ -250,14 +168,18 @@ async def test_e2e_granular_sync_and_options_device_tracker(
     - subsequent async_setup_entry honors device tracker enabled (coordinator instantiated twice)
     """
 
-    # Patch flow client
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", lambda **k: _FakeFlowClient(device_id="dev-gran"))
-    monkeypatch.setattr(
-        cf_mod, "async_create_clientsession", lambda **k: MagicMock(), raising=False
-    )
+    # Patch flow client - wrap fixture instance to supply get_arp_table used by options flow
+    def _make_flow(device_id: str = "dev-gran"):
+        inst = fake_flow_client(device_id=device_id, plugin_installed=True)()
+        inst.get_arp_table = AsyncMock(return_value=[])
+        return inst
+
+    # Use shared fixture to patch config_flow's OPNsenseClient
+    patch_cf_opnsense_client(lambda **k: _make_flow())
+    patch_async_create_clientsession(lambda **k: MagicMock())
 
     flow = cf_mod.OPNsenseConfigFlow()
-    hass = _build_mock_hass()
+    hass = ph_hass
     flow.hass = hass
 
     async def _noop_unique_id(*a, **k):  # redefined for this test context
@@ -291,9 +213,8 @@ async def test_e2e_granular_sync_and_options_device_tracker(
 
     # Add to fake hass store so options flow update calls can mutate it
     hass.data.setdefault(init_mod.DOMAIN, {})
-    # Provide async_get_known_entry for options flow compatibility
-    if not hasattr(hass.config_entries, "async_get_known_entry"):
-        hass.config_entries.async_get_known_entry = lambda entry_id: entry
+    # Mark entry as loaded so forward setup won't raise
+    object.__setattr__(entry, "state", ConfigEntryState.LOADED)
 
     # Options flow path
     opt_flow = cf_mod.OPNsenseConfigFlow.async_get_options_flow(
@@ -335,12 +256,13 @@ async def test_e2e_granular_sync_and_options_device_tracker(
     assert {"aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66", "77:88:99:aa:bb:cc"}.issubset(devices_set)
     assert entry.options.get(CONF_DEVICE_TRACKER_ENABLED) is True
 
-    # Patch runtime setup components (client + coordinator) to count device tracker coordinator instantiation
+    # Patch runtime setup components (client + coordinator) using shared runtime-client factory
+    patch_init_opnsense_client(lambda **k: fake_flow_client(device_id="dev-gran", runtime=True))
+    # Use coordinator_capture to create Coordinator instances and capture them
     monkeypatch.setattr(
-        init_mod, "OPNsenseClient", lambda **k: _FakeRuntimeClient(device_id="dev-gran")
-    )
-    monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(_FakeCoordinator)
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        coordinator_capture.factory(),
     )
 
     ok = await init_mod.async_setup_entry(hass, entry)
@@ -351,7 +273,18 @@ async def test_e2e_granular_sync_and_options_device_tracker(
 
 
 @pytest.mark.asyncio
-async def test_e2e_reload_and_unload(monkeypatch, make_config_entry):
+async def test_e2e_reload_and_unload(
+    monkeypatch,
+    make_config_entry,
+    coordinator,
+    fake_flow_client,
+    ph_hass,
+    patch_registry_async_get,
+    patch_async_create_clientsession,
+    patch_init_opnsense_client,
+    patch_registry_entries,
+    patch_cf_opnsense_client,
+):
     """E2E: validate update-listener triggered reload and full unload cleanup.
 
     Steps:
@@ -361,13 +294,11 @@ async def test_e2e_reload_and_unload(monkeypatch, make_config_entry):
     """
 
     # Patch config flow client
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", lambda **k: _FakeFlowClient(device_id="dev-rel"))
-    monkeypatch.setattr(
-        cf_mod, "async_create_clientsession", lambda **k: MagicMock(), raising=False
-    )
+    patch_cf_opnsense_client(lambda **k: fake_flow_client(device_id="dev-rel")())
+    patch_async_create_clientsession(lambda **k: MagicMock())
 
     flow = cf_mod.OPNsenseConfigFlow()
-    hass = _build_mock_hass()
+    hass = ph_hass
     flow.hass = hass
 
     async def _noop_unique_id(*a, **k):
@@ -380,9 +311,9 @@ async def test_e2e_reload_and_unload(monkeypatch, make_config_entry):
     data = result["data"]
 
     # Runtime path patches
-    runtime_client = _FakeRuntimeClient(device_id="dev-rel")
-    monkeypatch.setattr(init_mod, "OPNsenseClient", lambda **k: runtime_client)
-    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", _FakeCoordinator)
+    runtime_client = fake_flow_client(device_id="dev-rel", runtime=True)
+    patch_init_opnsense_client(lambda **k: runtime_client)
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", lambda **k: coordinator)
 
     # Provide unload platforms async method
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
@@ -400,19 +331,27 @@ async def test_e2e_reload_and_unload(monkeypatch, make_config_entry):
     entry.async_on_unload = lambda x: None
 
     # Setup
+    # Ensure loader/integrations cache exists and register entry so
+    # hass.config_entries.async_forward_entry_setups and async_update_entry
+    # do not raise in the test harness.
+    # Mark entry as loaded so forward setup won't raise
+    object.__setattr__(entry, "state", ConfigEntryState.LOADED)
+    try:
+        pkg_path = Path(__file__).resolve().parents[1] / "custom_components" / "opnsense"
+        integrations_cache = hass.data.setdefault("integrations", {})
+        integrations_cache["opnsense"] = Integration(
+            hass, "custom_components.opnsense", pkg_path, {}, None
+        )
+    except Exception:  # noqa: BLE001
+        pass
     ok = await init_mod.async_setup_entry(hass, entry)
     assert ok is True
     assert entry.entry_id in hass.data[init_mod.DOMAIN]
 
     # Patch registries for update listener (return no entities/devices)
-    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: MagicMock())
-    monkeypatch.setattr(
-        init_mod.er, "async_entries_for_config_entry", lambda registry, config_entry_id: []
-    )
-    monkeypatch.setattr(init_mod.dr, "async_get", lambda hass: MagicMock())
-    monkeypatch.setattr(
-        init_mod.dr, "async_entries_for_config_entry", lambda registry, config_entry_id: []
-    )
+    patch_registry_async_get(device_reg=MagicMock(), entity_reg=MagicMock())
+    patch_registry_entries(entity_entries=lambda registry, config_entry_id: [])
+    patch_registry_entries(device_entries=lambda registry, config_entry_id: [])
 
     # Trigger update listener -> should schedule reload
     setattr(entry.runtime_data, init_mod.SHOULD_RELOAD, True)
@@ -428,7 +367,15 @@ async def test_e2e_reload_and_unload(monkeypatch, make_config_entry):
 
 
 @pytest.mark.asyncio
-async def test_e2e_full_migration_chain(monkeypatch, make_config_entry):
+async def test_e2e_full_migration_chain(
+    monkeypatch,
+    make_config_entry,
+    ph_hass,
+    patch_registry_async_get,
+    patch_async_create_clientsession,
+    patch_init_opnsense_client,
+    patch_registry_entries,
+):
     """E2E: exercise async_migrate_entry path from version 1 -> 4.
 
     Verifies:
@@ -437,8 +384,7 @@ async def test_e2e_full_migration_chain(monkeypatch, make_config_entry):
     - v3->4 transforms telemetry-related sensor unique ids and removes *_connected_client_count
     """
 
-    # Build hass mock with update_entry bypass logic
-    hass = _build_mock_hass()
+    hass = ph_hass
 
     # Fake device & entity registry implementations
     class FakeDevice:
@@ -510,17 +456,10 @@ async def test_e2e_full_migration_chain(monkeypatch, make_config_entry):
     fake_entity_reg = FakeEntityRegistry()
 
     # Monkeypatch registry access/functions used in migration helpers
-    monkeypatch.setattr(init_mod.dr, "async_get", lambda hass: fake_device_reg)
-    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: fake_entity_reg)
-    monkeypatch.setattr(
-        init_mod.dr,
-        "async_entries_for_config_entry",
-        lambda registry, config_entry_id: list(fake_device_reg._devices),
-    )
-    monkeypatch.setattr(
-        init_mod.er,
-        "async_entries_for_config_entry",
-        lambda registry, config_entry_id: list(fake_entity_reg._entities.values()),
+    patch_registry_async_get(device_reg=fake_device_reg, entity_reg=fake_entity_reg)
+    patch_registry_entries(
+        device_entries=lambda registry, config_entry_id: list(fake_device_reg._devices),
+        entity_entries=lambda registry, config_entry_id: list(fake_entity_reg._entities.values()),
     )
 
     # Patch client used during migrations (v2->3 get_device_unique_id, v3->4 get_telemetry)
@@ -534,10 +473,8 @@ async def test_e2e_full_migration_chain(monkeypatch, make_config_entry):
         async def get_telemetry(self) -> dict[str, Any]:
             return {"filesystems": []}  # keep simple to avoid extra branches
 
-    monkeypatch.setattr(init_mod, "OPNsenseClient", lambda **k: _MigClient())
-    monkeypatch.setattr(
-        init_mod, "async_create_clientsession", lambda **k: MagicMock(), raising=False
-    )
+    patch_init_opnsense_client(lambda **k: _MigClient())
+    patch_async_create_clientsession(lambda **k: MagicMock())
 
     # Build legacy v1 entry (tls_insecure True, missing verify_ssl)
     entry = make_config_entry(
@@ -556,6 +493,8 @@ async def test_e2e_full_migration_chain(monkeypatch, make_config_entry):
     )
 
     # Run full migration
+    # `ph_hass` supplies a simple config_entries backing store; tests
+    # no longer need to manually register the entry in `_entries`.
     ok = await init_mod.async_migrate_entry(hass, entry)
     assert ok is True
     assert entry.version == 4
