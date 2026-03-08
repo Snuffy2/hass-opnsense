@@ -31,6 +31,7 @@ from .const import (
     CONF_SYNC_GATEWAYS,
     CONF_SYNC_INTERFACES,
     CONF_SYNC_TELEMETRY,
+    CONF_SYNC_VNSTAT,
     CONF_SYNC_VPN,
     COORDINATOR,
     COUNT,
@@ -74,6 +75,65 @@ async def _compile_static_certificate_sensors(
             entity_description=static_sensor,
         )
         entities.append(entity)
+    return entities
+
+
+async def _compile_vnstat_sensors(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+    state: MutableMapping[str, Any],
+) -> list:
+    """Compile per-interface vnStat sensors."""
+    if not isinstance(state, MutableMapping):
+        return []
+    vnstat_interfaces = dict_get(state, "vnstat.interfaces", {}) or {}
+    if not isinstance(vnstat_interfaces, MutableMapping):
+        return []
+
+    metric_defs: dict[str, dict[str, Any]] = {
+        "vnstat_today": {
+            "state_class": SensorStateClass.TOTAL_INCREASING,
+            "icon": "mdi:calendar-today",
+        },
+        "vnstat_this_month": {
+            "state_class": SensorStateClass.TOTAL_INCREASING,
+            "icon": "mdi:calendar-month",
+        },
+        "vnstat_yesterday_total": {
+            "state_class": SensorStateClass.MEASUREMENT,
+            "icon": "mdi:calendar-arrow-left",
+        },
+        "vnstat_last_month_total": {
+            "state_class": SensorStateClass.MEASUREMENT,
+            "icon": "mdi:calendar-text",
+        },
+        "vnstat_last_hour_total": {
+            "state_class": SensorStateClass.MEASUREMENT,
+            "icon": "mdi:clock-time-four-outline",
+        },
+    }
+
+    entities: list = []
+    for interface_name in vnstat_interfaces:
+        if not isinstance(interface_name, str):
+            continue
+        for metric_name, metric_def in metric_defs.items():
+            entity = OPNsenseVnstatSensor(
+                config_entry=config_entry,
+                coordinator=coordinator,
+                entity_description=SensorEntityDescription(
+                    key=f"vnstat.{interface_name}.{metric_name}",
+                    name=f"{interface_name} {metric_name}",
+                    native_unit_of_measurement=UnitOfInformation.BYTES,
+                    device_class=SensorDeviceClass.DATA_SIZE,
+                    icon=metric_def["icon"],
+                    state_class=metric_def["state_class"],
+                    suggested_display_precision=1,
+                    suggested_unit_of_measurement=UnitOfInformation.GIBIBYTES,
+                    entity_registry_enabled_default=False,
+                ),
+            )
+            entities.append(entity)
     return entities
 
 
@@ -463,6 +523,8 @@ async def async_setup_entry(
         entities.extend(await _compile_static_telemetry_sensors(config_entry, coordinator))
         entities.extend(await _compile_filesystem_sensors(config_entry, coordinator, state))
         entities.extend(await _compile_temperature_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_VNSTAT, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_vnstat_sensors(config_entry, coordinator, state))
     if config.get(CONF_SYNC_CERTIFICATES, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_static_certificate_sensors(config_entry, coordinator))
     if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION_VALUE):
@@ -576,6 +638,50 @@ class OPNsenseStaticKeySensor(OPNsenseSensor):
             certs = self._get_opnsense_state_value(self.entity_description.key)
             if isinstance(certs, MutableMapping):
                 self._attr_extra_state_attributes = dict(certs)
+
+        self.async_write_ha_state()
+
+
+class OPNsenseVnstatSensor(OPNsenseSensor):
+    """Class for OPNsense vnStat sensors."""
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        state: dict[str, Any] = self.coordinator.data
+        if not isinstance(state, MutableMapping):
+            self._available = False
+            self.async_write_ha_state()
+            return
+
+        key_parts = self.entity_description.key.split(".")
+        if len(key_parts) != 3:
+            self._available = False
+            self.async_write_ha_state()
+            return
+        _, interface_name, metric_name = key_parts
+
+        metric = dict_get(state, f"vnstat.interfaces.{interface_name}.metrics.{metric_name}", {})
+        if not isinstance(metric, MutableMapping):
+            self._available = False
+            self.async_write_ha_state()
+            return
+
+        total = metric.get("total_bytes")
+        if not isinstance(total, int):
+            self._available = False
+            self.async_write_ha_state()
+            return
+
+        self._available = True
+        self._attr_native_value = total
+
+        self._attr_extra_state_attributes = {"interface": interface_name}
+        rx_bytes = metric.get("rx_bytes")
+        tx_bytes = metric.get("tx_bytes")
+        if isinstance(rx_bytes, int):
+            self._attr_extra_state_attributes["rx_bytes"] = rx_bytes
+        if isinstance(tx_bytes, int):
+            self._attr_extra_state_attributes["tx_bytes"] = tx_bytes
 
         self.async_write_ha_state()
 
