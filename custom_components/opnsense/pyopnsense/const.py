@@ -5,6 +5,8 @@ from typing import Any
 from dateutil.tz import gettz
 
 DEFAULT_TIMEOUT = 60
+DEFAULT_PLUGIN_CACHE_TTL_SECONDS = 6 * 60 * 60
+MIN_PLUGIN_CACHE_TTL_SECONDS = 60
 
 AMBIGUOUS_TZINFOS: dict[str, Any] = {
     "ACST": gettz("Australia/Darwin"),  # Australian Central Standard Time

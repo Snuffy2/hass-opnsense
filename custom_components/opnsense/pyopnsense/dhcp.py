@@ -57,12 +57,13 @@ class DHCPMixin(PyOPNsenseClientProtocol):
         """
         if opnsense_tz is None:
             opnsense_tz = await self._get_opnsense_timezone()
-        leases_raw: list = (
-            await self._get_kea_dhcpv4_leases(opnsense_tz=opnsense_tz)
-            + await self._get_isc_dhcpv4_leases(opnsense_tz=opnsense_tz)
-            + await self._get_isc_dhcpv6_leases(opnsense_tz=opnsense_tz)
-            + await self._get_dnsmasq_leases(opnsense_tz=opnsense_tz)
-        )
+        leases_raw: list = await self._get_kea_dhcpv4_leases(opnsense_tz=opnsense_tz)
+        if await self.is_named_plugin_installed("os-isc-dhcp"):
+            leases_raw += await self._get_isc_dhcpv4_leases(opnsense_tz=opnsense_tz)
+            leases_raw += await self._get_isc_dhcpv6_leases(opnsense_tz=opnsense_tz)
+        else:
+            _LOGGER.debug("ISC DHCP plugin not installed, skipping ISC lease retrieval")
+        leases_raw += await self._get_dnsmasq_leases(opnsense_tz=opnsense_tz)
         # TODO: Add Kea dhcpv6 leases if API ever gets added
 
         # _LOGGER.debug(f"[get_dhcp_leases] leases_raw: {leases_raw}")
@@ -322,8 +323,8 @@ class DHCPMixin(PyOPNsenseClientProtocol):
 
 
         """
-        if not await self._get_check("/api/dhcpv4/service/status"):
-            _LOGGER.debug("ISC DHCPv4 plugin/service not available, skipping lease retrieval")
+        if not await self.is_named_plugin_installed("os-isc-dhcp"):
+            _LOGGER.debug("ISC DHCPv4 plugin not installed, skipping lease retrieval")
             return []
         if self._use_snake_case:
             response = await self._safe_dict_get("/api/dhcpv4/leases/search_lease")
@@ -387,8 +388,8 @@ class DHCPMixin(PyOPNsenseClientProtocol):
 
 
         """
-        if not await self._get_check("/api/dhcpv6/service/status"):
-            _LOGGER.debug("ISC DHCPv6 plugin/service not available, skipping lease retrieval")
+        if not await self.is_named_plugin_installed("os-isc-dhcp"):
+            _LOGGER.debug("ISC DHCPv6 plugin not installed, skipping lease retrieval")
             return []
         if self._use_snake_case:
             response = await self._safe_dict_get("/api/dhcpv6/leases/search_lease")

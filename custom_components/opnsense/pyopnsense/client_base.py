@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import MutableMapping
+from datetime import datetime
 from functools import partial
 import inspect
 import json
@@ -14,7 +15,7 @@ import xmlrpc.client
 import aiohttp
 import awesomeversion
 
-from .const import DEFAULT_TIMEOUT
+from .const import DEFAULT_PLUGIN_CACHE_TTL_SECONDS, DEFAULT_TIMEOUT, MIN_PLUGIN_CACHE_TTL_SECONDS
 from .exceptions import UnknownFirmware
 from .helpers import _LOGGER, _xmlrpc_timeout
 
@@ -75,8 +76,15 @@ class ClientBaseMixin:
         self._session: aiohttp.ClientSession = session
         self._initial = initial
         self._firmware_version: str | None = None
-        self._plugin_installed: bool | None = None
         self._plugin_deprecated: bool | None = None
+        self._installed_plugins: set[str] | None = None
+        self._installed_plugins_updated_at: datetime | None = None
+        requested_ttl = self._opts.get("plugin_cache_ttl_seconds", DEFAULT_PLUGIN_CACHE_TTL_SECONDS)
+        try:
+            ttl_seconds = int(requested_ttl)
+        except (TypeError, ValueError):
+            ttl_seconds = DEFAULT_PLUGIN_CACHE_TTL_SECONDS
+        self._plugin_cache_ttl_seconds = max(ttl_seconds, MIN_PLUGIN_CACHE_TTL_SECONDS)
         self._use_snake_case: bool = True
         self._xmlrpc_query_count = 0
         self._rest_api_query_count = 0
@@ -724,48 +732,6 @@ $toreturn["real"] = json_encode($toreturn_real);
         """
         result = await self._post(path=path, payload=payload)
         return result if isinstance(result, list) else []
-
-    async def _get_check(self, path: str) -> bool:
-        """Check if the given API path is accessible.
-
-        Parameters
-        ----------
-        path : str
-            API endpoint path to call on the OPNsense host.
-
-        Returns
-        -------
-        bool
-        True when the endpoint responds successfully; otherwise False.
-
-
-        """
-        # /api/<module>/<controller>/<command>/[<param1>/[<param2>/...]]
-        self._rest_api_query_count += 1
-        url: str = f"{self._url}{path}"
-        _LOGGER.debug("[get_check] url: %s", url)
-        try:
-            async with self._session.get(
-                url,
-                auth=aiohttp.BasicAuth(self._username, self._password),
-                timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
-                ssl=self._verify_ssl,
-            ) as response:
-                _LOGGER.debug("[get_check] Response %s: %s", response.status, response.reason)
-                if response.ok:
-                    return True
-                if response.status == 403:
-                    _LOGGER.error(
-                        "Permission Error in get_check. Path: %s. Ensure the OPNsense user connected to HA has appropriate access. Recommend full admin access",
-                        url,
-                    )
-                return False
-        except (aiohttp.ClientError, TimeoutError) as e:
-            _LOGGER.error("Client error. %s: %s", type(e).__name__, e)
-            if self._initial:
-                raise
-
-        return False
 
     async def async_close(self) -> None:
         """Cancel all running background tasks and clear the request queue."""
