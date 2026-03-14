@@ -127,9 +127,7 @@ Either at the time of install or in the integration options, Granular Sync Optio
 At minimum, the following permissions are required:
 
 * Lobby: Dashboard
-
 * Status: Interfaces
-
 * System: Firmware
 
 [The list of what other permissions are needed for the Granular Sync Options and for the Actions can be reviewed here.](granular_permissions.md)
@@ -156,54 +154,38 @@ At minimum, the following permissions are required:
 
 ## Entities
 
-Many entities are created by `hass-opnsense` for statistics etc. Due to the volume of entities, many are disabled by default. If something is missing, be sure to review the disabled entities as it is probably there.
+Many entities are created by `hass-opnsense` for statistics etc. Due to the volume of entities, **many are disabled by default**. If something is missing, be sure to review the disabled entities as it is probably there.
 
 ### Binary Sensor
 
 * CARP Status (enabled/disabled)
-
 * System Notices present (the circle icon in the upper right of the UI)
-
 * Firmware updates available
 
 ### Sensor
 
 * System details (name, version, temp, boottime, etc.)
-
 * pfstate details
-
 * CPU details (usage, load, cores)
-
 * mbuf details
-
 * Memory details
-
 * Filesystem usage
-
-* Interface details (status, stats, pps, kbs, etc. [speeds are based on the `Scan Interval (seconds)` config option])
-
+* Interface details (status, stats, pps, kbs, etc.) *[speeds are based on the `Scan Interval (seconds)` config option]*
 * Gateways details (status, delay, stddev, loss)
-
 * CARP Interface status
-
 * DHCP Leases
-
-* VPN server stats and Wireguard client stats
-
+* OpenVPN and Wireguard server and client stats
 * Certificates
-
+* vnStat Metrics
 * Speedtest last and average results (download, upload, latency)
 
 ### Switch
 
-All of the switches are disabled by default
+**All of the switches are disabled by default**
 
 * Firewall Rules - enable/disable rules
-
 * NAT Rules - enable/disable rules
-
-* Services - start/stop services (services must be enabled before they can be started)
-
+* Services - start/stop services
 * VPN Servers and Clients - enable/disable instances
 
 ### Device Tracker
@@ -216,66 +198,20 @@ Also note that if `AdGuard Home` is being used, DNS queries may get throttled ca
 
 ## Actions _(Services)_
 
-```
-action: opnsense.close_notice
-data:
-  # default is to clear all notices
-  # id: <some id>
+* **opnsense.close_notice:** Close any open notices
+* **opnsense.system_halt:** Halt the OPNsense system
+* **opnsense.system_reboot:** Reboot the OPNsense system
+* **opnsense.start_service:** Start an OPNsense service
+* **opnsense.stop_service:** Stop an OPNsense service
+* **opnsense.restart_service:** Restart an OPNsense service
+* **opnsense.send_wol:** Send a Wake-on-LAN magic packet
+* **opnsense.reload_interface:** Reload an OPNsense interface
+* **opnsense.kill_states:** Kill all states for an IP address
+* **opnsense.run_speedtest:** Run a speed test and return action response data
+* **opnsense.get_vnstat_metrics:** Get vnStat metrics and return action response data
+* **opnsense.generate_vouchers:** Generate Captive Portal vouchers
+* **opnsense.toggle_alias:** Toggle, enable, or disable an alias
 
-action: opnsense.system_halt
-
-action: opnsense.system_reboot
-
-action: opnsense.start_service
-data:
-  service_name: "dpinger"
-
-action: opnsense.stop_service
-data:
-  service_name: "dpinger"
-
-action: opnsense.restart_service
-data:
-  service_name: "dpinger"
-  # only_if_running: false
-
-action: opnsense.send_wol
-data:
-  interface: lan
-  mac: "B9:7B:A6:46:B3:8B"
-
-action: opnsense.reload_interface
-data:
-  interface: wan
-
-action: opnsense.kill_states
-data:
-  ip_address: 192.168.0.100
-# Will optionally return the number of states dropped for each client
-
-action: opnsense.run_speedtest
-# Returns speedtest results as action response data
-
-action: opnsense.get_vnstat_metrics
-data:
-  period: "hourly" # hourly|daily|monthly|yearly
-# Returns parsed vnStat endpoint data as action response data
-
-action: opnsense.generate_vouchers
-data:
-  validity: "14400"  # seconds
-  expirytime: "2419200" # seconds. 0 for never
-  count: 1
-  vouchergroup: Home Assistant
-  voucher_server: Voucher Server # Only needed if more than 1 Voucher Server
-# Returns the vouchers as action response data
-
-action: opnsense.toggle_alias
-data:
-  alias: "iphones"
-  toggle_on_off: "toggle"
-
-```
 [How to use <ins>action response data</ins> in an HA script or automation](https://www.home-assistant.io/docs/scripts/perform-actions/#use-templates-to-handle-response-data)
 
 ## Known Issues
@@ -283,10 +219,6 @@ data:
 ### Hardware Changes
 
 If you partially or fully change the <ins>OPNsense</ins> hardware, it will require a removal and reinstall of this integration. This is to ensure changed interfaces, services, gateways, etc. are accounted for and don't leave duplicate or non-functioning entities. 
-
-### AdGuard Home
-
-As mentioned [here](https://github.com/travisghansen/hass-opnsense/issues/22) using AdGuard Home can lead to problems with the plugin. Setting the Ratelimit in AdGuard Home to 0 will resolve this problem.
 
 [commits-shield]: https://img.shields.io/github/last-commit/travisghansen/hass-opnsense?style=for-the-badge
 [commits]: https://github.com/travisghansen/hass-opnsense/commits/main
