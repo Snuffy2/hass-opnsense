@@ -236,6 +236,7 @@ async def test_restore_last_state_and_device_info(monkeypatch, coordinator, make
 
     # fake last state with attributes including isoformat time
     last_state = MagicMock()
+    last_state.state = "home"
     last_state.attributes = {
         "last_known_hostname": "oldhost",
         "last_known_ip": "9.9.9.9",
@@ -252,6 +253,9 @@ async def test_restore_last_state_and_device_info(monkeypatch, coordinator, make
     assert ent._last_known_ip == "9.9.9.9"
     assert ent.extra_state_attributes.get("interface") == "lan0"
     assert "last_known_connected_time" in ent.extra_state_attributes
+    assert isinstance(ent._last_known_connected_time, datetime)
+    assert ent.is_connected is True
+    assert ent.available is True
 
     # device_info should include the mac connection and via_device tuple
     devinfo = ent.device_info
@@ -313,29 +317,32 @@ async def test_async_setup_entry_state_not_mapping(ph_hass, coordinator, make_co
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_removes_previous_mac(
+async def test_async_setup_entry_preserves_previous_mac_in_auto_mode(
     monkeypatch, ph_hass, coordinator, make_config_entry, fake_reg_factory
 ):
-    """Setup removes previously tracked MAC addresses when reconfiguring."""
-    # previous tracked macs include an old mac that should be removed via device registry
+    """Setup keeps previously tracked MAC addresses when tracker is in auto mode."""
     coordinator.data = {"arp_table": []}
     entry = make_config_entry(
         data={dt_mod.TRACKED_MACS: ["old:mac:1"], pkg.CONF_DEVICE_UNIQUE_ID: "dev1"},
+        options={dt_mod.CONF_DEVICE_TRACKER_ENABLED: True},
         entry_id="e_rm",
     )
     setattr(entry.runtime_data, dt_mod.DEVICE_TRACKER_COORDINATOR, coordinator)
     hass = ph_hass
     hass.data = {}
 
-    # use shared fake registry fixture: simulate device present and removal
     fake = fake_reg_factory(device_exists=True, device_id="dev_to_remove")
     monkeypatch.setattr(dt_mod, "async_get_dev_reg", lambda hass: fake, raising=False)
 
     hass.config_entries.async_update_entry = MagicMock()
 
-    await dt_mod.async_setup_entry(hass, entry, lambda x: None)
-    assert fake.removed is True
-    assert hass.config_entries.async_update_entry.called
+    added = []
+    await dt_mod.async_setup_entry(hass, entry, added.extend)
+
+    assert fake.removed is False
+    assert len(added) == 1
+    assert added[0].mac_address == "old:mac:1"
+    assert not hass.config_entries.async_update_entry.called
 
 
 def test_handle_coordinator_update_expires_positive(coordinator, make_config_entry):

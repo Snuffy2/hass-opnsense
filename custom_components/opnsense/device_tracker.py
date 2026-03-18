@@ -9,6 +9,7 @@ from typing import Any
 from homeassistant.components.device_tracker import SourceType
 from homeassistant.components.device_tracker.config_entry import ScannerEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_HOME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
@@ -36,6 +37,40 @@ from .helpers import dict_get
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
+def _normalize_mac_address(mac: Any) -> str | None:
+    """Normalize a MAC address for case-insensitive comparisons and IDs."""
+    if not isinstance(mac, str):
+        return None
+    normalized = mac.strip().lower()
+    return normalized or None
+
+
+def _normalized_unique_macs(mac_addresses: list[Any]) -> list[str]:
+    """Return a de-duplicated list of normalized MAC addresses preserving order."""
+    normalized: list[str] = []
+    for mac in mac_addresses:
+        normalized_mac = _normalize_mac_address(mac)
+        if normalized_mac and normalized_mac not in normalized:
+            normalized.append(normalized_mac)
+    return normalized
+
+
+def _device_from_arp(
+    mac_address: str, arp_by_mac: dict[str, MutableMapping[str, Any]]
+) -> MutableMapping[str, Any]:
+    """Build a tracked device record using ARP metadata when available."""
+    device: MutableMapping[str, Any] = {"mac": mac_address}
+    arp_entry = arp_by_mac.get(mac_address, {})
+    try:
+        for attr in ("hostname", "manufacturer"):
+            value = arp_entry.get(attr, None)
+            if value:
+                device[attr] = value
+    except (TypeError, KeyError, AttributeError):
+        pass
+    return device
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -45,7 +80,7 @@ async def async_setup_entry(
 
     dev_reg = async_get_dev_reg(hass)
 
-    previous_mac_addresses: list = config_entry.data.get(TRACKED_MACS, [])
+    previous_mac_addresses = _normalized_unique_macs(config_entry.data.get(TRACKED_MACS, []))
     coordinator: OPNsenseDataUpdateCoordinator = getattr(
         config_entry.runtime_data, DEVICE_TRACKER_COORDINATOR
     )
@@ -53,54 +88,43 @@ async def async_setup_entry(
     if not isinstance(state, MutableMapping):
         _LOGGER.error("Missing state data in device tracker async_setup_entry")
         return
+
     enabled_default = False
     entities: list = []
-    mac_addresses: list = []
 
     # use configured mac addresses if setup, otherwise create an entity per arp entry
     arp_entries = dict_get(state, "arp_table")
     if not isinstance(arp_entries, list):
         arp_entries = []
-    devices: list = []
-    mac_addresses = []
-    configured_mac_addresses = config_entry.options.get(CONF_DEVICES, [])
-    if configured_mac_addresses and config_entry.options.get(
+
+    arp_by_mac: dict[str, MutableMapping[str, Any]] = {}
+    for arp_entry in arp_entries:
+        normalized_arp_mac = _normalize_mac_address(arp_entry.get("mac", None))
+        if normalized_arp_mac and normalized_arp_mac not in arp_by_mac:
+            arp_by_mac[normalized_arp_mac] = arp_entry
+
+    device_tracker_enabled = config_entry.options.get(
         CONF_DEVICE_TRACKER_ENABLED, DEFAULT_DEVICE_TRACKER_ENABLED
-    ):
+    )
+    configured_mac_addresses = _normalized_unique_macs(config_entry.options.get(CONF_DEVICES, []))
+    is_configured_mode = bool(configured_mac_addresses and device_tracker_enabled)
+
+    mac_addresses: list[str] = []
+    if is_configured_mode:
         _LOGGER.debug(
             "[device_tracker async_setup_entry] configured_mac_addresses: %s",
             configured_mac_addresses,
         )
         enabled_default = True
         mac_addresses = configured_mac_addresses
-        for mac_address in mac_addresses:
-            device: MutableMapping[str, Any] = {"mac": mac_address}
-            for arp_entry in arp_entries:
-                if mac_address == arp_entry.get("mac", ""):
-                    try:
-                        for attr in ("hostname", "manufacturer"):
-                            value = arp_entry.get(attr, None)
-                            if value:
-                                device.update({attr: value})
-                    except (TypeError, KeyError, AttributeError):
-                        pass
+    elif device_tracker_enabled:
+        # Preserve previously tracked devices so they remain tracked across HA restarts.
+        mac_addresses = list(arp_by_mac)
+        for previous_mac in previous_mac_addresses:
+            if previous_mac not in mac_addresses:
+                mac_addresses.append(previous_mac)
 
-            devices.append(device)
-    elif config_entry.options.get(CONF_DEVICE_TRACKER_ENABLED, DEFAULT_DEVICE_TRACKER_ENABLED):
-        for arp_entry in arp_entries:
-            mac_address = arp_entry.get("mac", None)
-            if mac_address and mac_address not in mac_addresses:
-                device = {"mac": mac_address}
-                try:
-                    for attr in ("hostname", "manufacturer"):
-                        value = arp_entry.get(attr, None)
-                        if value:
-                            device.update({attr: value})
-                except (TypeError, KeyError, AttributeError):
-                    pass
-
-                mac_addresses.append(mac_address)
-                devices.append(device)
+    devices = [_device_from_arp(mac_address, arp_by_mac) for mac_address in mac_addresses]
 
     for device in devices:
         entity = OPNsenseScannerEntity(
@@ -117,11 +141,14 @@ async def async_setup_entry(
     #     mac_addresses,
     #     previous_mac_addresses,
     # )
-    # Get the MACs that need to be removed and remove their devices
-    for mac_address in list(set(previous_mac_addresses) - set(mac_addresses)):
-        rem_device = dev_reg.async_get_device(connections={(CONNECTION_NETWORK_MAC, mac_address)})
-        if rem_device:
-            dev_reg.async_remove_device(rem_device.id)
+    # For explicitly configured devices, remove tracked devices no longer configured.
+    if is_configured_mode:
+        for mac_address in list(set(previous_mac_addresses) - set(mac_addresses)):
+            rem_device = dev_reg.async_get_device(
+                connections={(CONNECTION_NETWORK_MAC, mac_address)}
+            )
+            if rem_device:
+                dev_reg.async_remove_device(rem_device.id)
 
     if set(mac_addresses) != set(previous_mac_addresses):
         setattr(config_entry.runtime_data, SHOULD_RELOAD, False)
@@ -156,7 +183,7 @@ class OPNsenseScannerEntity(OPNsenseBaseEntity, ScannerEntity, RestoreEntity):
         self._attr_entity_registry_enabled_default: bool = enabled_default
         self._attr_hostname: str | None = hostname
         self._attr_ip_address: str | None = None
-        self._attr_mac_address: str | None = mac
+        self._attr_mac_address: str | None = _normalize_mac_address(mac)
         self._attr_source_type: SourceType = SourceType.ROUTER
         self._attr_icon: str | None = None
 
@@ -206,7 +233,7 @@ class OPNsenseScannerEntity(OPNsenseBaseEntity, ScannerEntity, RestoreEntity):
         self._available = True
         entry: MutableMapping[str, Any] | None = None
         for arp_entry in arp_table:
-            if arp_entry.get("mac", "").lower() == self._attr_mac_address:
+            if _normalize_mac_address(arp_entry.get("mac", "")) == self._attr_mac_address:
                 entry = arp_entry
                 break
         if not entry:
@@ -340,13 +367,23 @@ class OPNsenseScannerEntity(OPNsenseBaseEntity, ScannerEntity, RestoreEntity):
             pass
 
         lkct = state.get("last_known_connected_time", None)
+        self._last_known_connected_time = None
         if isinstance(lkct, datetime):
-            self._attr_extra_state_attributes["last_known_connected_time"] = lkct
+            self._last_known_connected_time = lkct
         elif isinstance(lkct, str):
             with contextlib.suppress(ValueError):
-                self._attr_extra_state_attributes["last_known_connected_time"] = (
-                    datetime.fromisoformat(lkct)
-                )
+                self._last_known_connected_time = datetime.fromisoformat(lkct)
+
+        if self._last_known_connected_time is not None:
+            self._attr_extra_state_attributes["last_known_connected_time"] = (
+                self._last_known_connected_time
+            )
+
+        if isinstance(last_state.state, str):
+            self._is_connected = last_state.state == STATE_HOME
+
+        # Keep the entity available while waiting for the first post-restart coordinator refresh.
+        self._available = True
 
     async def async_added_to_hass(self) -> None:
         """Commands to run after entity is created."""
