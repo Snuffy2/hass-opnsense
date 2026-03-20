@@ -6,12 +6,12 @@ for operations such as starting/stopping services and generating vouchers.
 
 from unittest.mock import AsyncMock, MagicMock
 
+from aiopnsense import VoucherServerError
 import pytest
 import voluptuous as vol
 
 from custom_components.opnsense import services as services_mod
 from custom_components.opnsense.const import DOMAIN, SERVICE_GET_VNSTAT_METRICS
-from custom_components.opnsense.pyopnsense import VoucherServerError
 from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 

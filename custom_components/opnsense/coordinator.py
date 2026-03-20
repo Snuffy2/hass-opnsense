@@ -7,6 +7,8 @@ import logging
 import time
 from typing import Any
 
+from aiopnsense import OPNsenseClient
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -32,7 +34,6 @@ from .const import (
     DOMAIN,
 )
 from .helpers import dict_get
-from .pyopnsense import OPNsenseClient
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -120,8 +121,6 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 "function": "get_host_firmware_version",
                 "state_key": "host_firmware_version",
             },
-            {"function": "is_plugin_installed", "state_key": "plugin_installed"},
-            {"function": "is_plugin_deprecated", "state_key": "plugin_deprecated"},
         ]
 
         if config.get(CONF_SYNC_TELEMETRY, DEFAULT_SYNC_OPTION_VALUE):
@@ -245,11 +244,11 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
             )
             # Create repair task here
             return {}
-        restapi_count, xmlrpc_count = await self._client.get_query_counts()
+        restapi_count, exec_php_count = await self._client.get_query_counts()
         _LOGGER.debug(
-            "DT Update Complete. REST API Queries: %s, XMLRPC Queries: %s",
+            "DT Update Complete. REST API Queries: %s, exec_php Queries: %s",
             restapi_count,
-            xmlrpc_count,
+            exec_php_count,
         )
         return self._state
 
@@ -382,11 +381,11 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
 
             await self._calculate_entity_speeds()
 
-            restapi_count, xmlrpc_count = await self._client.get_query_counts()
+            restapi_count, exec_php_count = await self._client.get_query_counts()
             _LOGGER.debug(
-                "Update Complete. REST API Queries: %s, XMLRPC Queries: %s",
+                "Update Complete. REST API Queries: %s, exec_php Queries: %s",
                 restapi_count,
-                xmlrpc_count,
+                exec_php_count,
             )
             return self._state
         finally:

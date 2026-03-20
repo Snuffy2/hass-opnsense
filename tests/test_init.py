@@ -5,7 +5,7 @@ and removal/unload behaviors for the hass-opnsense integration.
 """
 
 import importlib
-from unittest.mock import ANY, AsyncMock, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -155,12 +155,12 @@ async def test_async_update_listener_not_reload(monkeypatch, make_config_entry):
 
 
 @pytest.mark.asyncio
-async def test_async_remove_config_entry_device_branches(monkeypatch, hass):
+async def test_async_remove_config_entry_device_branches(monkeypatch, ph_hass):
     """Verify removal logic for config entry device registry branches."""
     device = MagicMock()
     device.via_device_id = True
     device.id = "d1"
-    res = await init_mod.async_remove_config_entry_device(hass, None, device)
+    res = await init_mod.async_remove_config_entry_device(ph_hass, None, device)
     assert res is False
 
     # device_entry with linked entity -> False
@@ -178,7 +178,7 @@ async def test_async_remove_config_entry_device_branches(monkeypatch, hass):
     monkeypatch.setattr(
         init_mod.er, "async_entries_for_config_entry", lambda registry, config_entry_id: [ent]
     )
-    res = await init_mod.async_remove_config_entry_device(hass, MagicMock(entry_id="x"), device)
+    res = await init_mod.async_remove_config_entry_device(ph_hass, MagicMock(entry_id="x"), device)
     assert res is False
 
 
@@ -454,295 +454,6 @@ async def test_async_setup_entry_firmware_below_min(
 
     res = await init_mod.async_setup_entry(hass, entry)
     assert res is False
-
-
-@pytest.mark.asyncio
-async def test_async_setup_entry_firmware_between_min_and_ltd(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
-):
-    """async_setup_entry logs a warning issue for firmware between min and LTD but continues."""
-    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version="25.0"))
-    monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
-    )
-    # capture calls to the issue registry to assert a warning issue is created
-    create_issue_mock = MagicMock()
-    monkeypatch.setattr(init_mod.ir, "async_create_issue", create_issue_mock)
-
-    entry = make_config_entry(
-        data={
-            init_mod.CONF_URL: "http://1.2.3.4",
-            init_mod.CONF_USERNAME: "u",
-            init_mod.CONF_PASSWORD: "p",
-            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-        }
-    )
-    hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = AsyncMock()
-    hass.data.setdefault("aiohttp_connector", {})
-
-    res = await init_mod.async_setup_entry(hass, entry)
-    assert res is True
-    # verify the LTD deprecation/warning issue was created
-    assert create_issue_mock.called, (
-        "async_create_issue should have been called for firmware between min and LTD"
-    )
-    call_args = create_issue_mock.call_args
-    # args: (hass, domain, issue_id, ...)
-    assert call_args[0][1] == init_mod.DOMAIN
-    expected_issue_id = f"{entry.data[init_mod.CONF_DEVICE_UNIQUE_ID]}_opnsense_below_ltd_firmware_{init_mod.OPNSENSE_LTD_FIRMWARE}"
-    assert call_args[0][2] == expected_issue_id
-    assert call_args[1].get("severity") == init_mod.ir.IssueSeverity.WARNING
-
-
-@pytest.mark.asyncio
-async def test_async_setup_entry_firmware_triggers_plugin_cleanup(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
-):
-    """async_setup_entry calls _deprecated_plugin_cleanup_26_1_1 for firmware >25.10 and <26.7."""
-    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version="26.2"))
-    monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
-    )
-    # Mock the cleanup function to track if it's called
-    cleanup_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(init_mod, "_deprecated_plugin_cleanup_26_1_1", cleanup_mock)
-
-    entry = make_config_entry(
-        data={
-            init_mod.CONF_URL: "http://1.2.3.4",
-            init_mod.CONF_USERNAME: "u",
-            init_mod.CONF_PASSWORD: "p",
-            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-        }
-    )
-    hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = AsyncMock()
-    hass.data.setdefault("aiohttp_connector", {})
-
-    res = await init_mod.async_setup_entry(hass, entry)
-    assert res is True
-    # Verify cleanup was called with correct args and awaited
-    cleanup_mock.assert_awaited_once_with(
-        hass=hass,
-        client=ANY,
-        entry_id=entry.entry_id,
-        config_device_id=entry.data[init_mod.CONF_DEVICE_UNIQUE_ID],
-    )
-
-
-@pytest.mark.asyncio
-async def test_deprecated_plugin_cleanup_26_1_1_plugin_not_installed(monkeypatch):
-    """_deprecated_plugin_cleanup_26_1_1 removes filter entities when plugin not installed."""
-    hass = MagicMock(spec=HomeAssistant)
-    client = MagicMock()
-    client.is_plugin_installed = AsyncMock(return_value=False)
-    client.is_plugin_deprecated = AsyncMock(return_value=False)
-    entry_id = "test_entry_id"
-
-    # Mock entity registry
-    entity_registry = MagicMock()
-    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: entity_registry)
-
-    # Mock entities: one filter entity, one normal switch
-    filter_entity = MagicMock()
-    filter_entity.entity_id = "switch.opnsense_filter_rule"
-    filter_entity.unique_id = "dev1_filter_rule1"
-    normal_entity = MagicMock()
-    normal_entity.entity_id = "switch.opnsense_normal_rule"
-    normal_entity.unique_id = "dev1_normal_rule1"
-    monkeypatch.setattr(
-        init_mod.er,
-        "async_entries_for_config_entry",
-        MagicMock(return_value=[filter_entity, normal_entity]),
-    )
-
-    # Mock issue registry
-    create_issue_mock = MagicMock()
-    monkeypatch.setattr(init_mod.ir, "async_create_issue", create_issue_mock)
-
-    config_device_id = "dev1"
-    await init_mod._deprecated_plugin_cleanup_26_1_1(hass, client, entry_id, config_device_id)
-
-    # Verify filter entity was removed, normal was not
-    entity_registry.async_remove.assert_called_once_with("switch.opnsense_filter_rule")
-    # Verify issue created for cleanup done
-    create_issue_mock.assert_called_once()
-    call_args = create_issue_mock.call_args
-    assert call_args[0][2] == f"{config_device_id}_plugin_cleanup_done"
-
-
-@pytest.mark.asyncio
-async def test_deprecated_plugin_cleanup_26_1_1_plugin_installed(monkeypatch):
-    """_deprecated_plugin_cleanup_26_1_1 removes NAT entities when plugin is installed."""
-    hass = MagicMock(spec=HomeAssistant)
-    client = MagicMock()
-    client.is_plugin_installed = AsyncMock(return_value=True)
-    client.is_plugin_deprecated = AsyncMock(return_value=False)
-    entry_id = "test_entry_id"
-
-    # Mock entity registry
-    entity_registry = MagicMock()
-    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: entity_registry)
-
-    # Mock entities: NAT port forward, NAT outbound, filter, normal switch
-    nat_pf_entity = MagicMock()
-    nat_pf_entity.entity_id = "switch.opnsense_nat_port_forward_rule"
-    nat_pf_entity.unique_id = "dev1_nat_port_forward_rule1"
-    nat_out_entity = MagicMock()
-    nat_out_entity.entity_id = "switch.opnsense_nat_outbound_rule"
-    nat_out_entity.unique_id = "dev1_nat_outbound_rule1"
-    filter_entity = MagicMock()
-    filter_entity.entity_id = "switch.opnsense_filter_rule"
-    filter_entity.unique_id = "dev1_filter_rule1"
-    normal_entity = MagicMock()
-    normal_entity.entity_id = "switch.opnsense_normal_rule"
-    normal_entity.unique_id = "dev1_normal_rule1"
-    monkeypatch.setattr(
-        init_mod.er,
-        "async_entries_for_config_entry",
-        MagicMock(return_value=[nat_pf_entity, nat_out_entity, filter_entity, normal_entity]),
-    )
-
-    # Mock issue registry
-    create_issue_mock = MagicMock()
-    monkeypatch.setattr(init_mod.ir, "async_create_issue", create_issue_mock)
-
-    config_device_id = "dev1"
-    await init_mod._deprecated_plugin_cleanup_26_1_1(hass, client, entry_id, config_device_id)
-
-    # Verify NAT entities were removed, filter and normal were not
-    assert entity_registry.async_remove.call_count == 2
-    entity_registry.async_remove.assert_any_call("switch.opnsense_nat_port_forward_rule")
-    entity_registry.async_remove.assert_any_call("switch.opnsense_nat_outbound_rule")
-    # Ensure filter entity was preserved when plugin is installed
-    assert not entity_registry.async_remove.mock_calls or all(
-        call.args[0] != "switch.opnsense_filter_rule"
-        for call in entity_registry.async_remove.mock_calls
-    )
-    # Verify issue created for partial cleanup
-    create_issue_mock.assert_called_once()
-    call_args = create_issue_mock.call_args
-    assert call_args[0][2] == f"{config_device_id}_plugin_cleanup_partial"
-
-
-@pytest.mark.asyncio
-async def test_deprecated_plugin_cleanup_26_1_1_plugin_deprecated(monkeypatch):
-    """_deprecated_plugin_cleanup_26_1_1 removes NAT and filter entities when plugin is deprecated."""
-    hass = MagicMock(spec=HomeAssistant)
-    client = MagicMock()
-    client.is_plugin_installed = AsyncMock(return_value=True)
-    client.is_plugin_deprecated = AsyncMock(return_value=True)
-    entry_id = "test_entry_id"
-
-    # Mock entity registry
-    entity_registry = MagicMock()
-    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: entity_registry)
-
-    # Mock entities: NAT port forward, NAT outbound, filter, normal switch
-    nat_pf_entity = MagicMock()
-    nat_pf_entity.entity_id = "switch.opnsense_nat_port_forward_rule"
-    nat_pf_entity.unique_id = "dev1_nat_port_forward_rule1"
-    nat_out_entity = MagicMock()
-    nat_out_entity.entity_id = "switch.opnsense_nat_outbound_rule"
-    nat_out_entity.unique_id = "dev1_nat_outbound_rule1"
-    filter_entity = MagicMock()
-    filter_entity.entity_id = "switch.opnsense_filter_rule"
-    filter_entity.unique_id = "dev1_filter_rule1"
-    normal_entity = MagicMock()
-    normal_entity.entity_id = "switch.opnsense_normal_rule"
-    normal_entity.unique_id = "dev1_normal_rule1"
-    monkeypatch.setattr(
-        init_mod.er,
-        "async_entries_for_config_entry",
-        MagicMock(return_value=[nat_pf_entity, nat_out_entity, filter_entity, normal_entity]),
-    )
-
-    # Mock issue registry
-    create_issue_mock = MagicMock()
-    monkeypatch.setattr(init_mod.ir, "async_create_issue", create_issue_mock)
-
-    config_device_id = "dev1"
-    await init_mod._deprecated_plugin_cleanup_26_1_1(hass, client, entry_id, config_device_id)
-
-    # Verify NAT and filter entities were removed, normal was not
-    assert entity_registry.async_remove.call_count == 3
-    entity_registry.async_remove.assert_any_call("switch.opnsense_nat_port_forward_rule")
-    entity_registry.async_remove.assert_any_call("switch.opnsense_nat_outbound_rule")
-    entity_registry.async_remove.assert_any_call("switch.opnsense_filter_rule")
-    assert not entity_registry.async_remove.mock_calls or all(
-        call.args[0] != "switch.opnsense_normal_rule"
-        for call in entity_registry.async_remove.mock_calls
-    )
-    # Verify cleanup-done issue plus remove-plugin issue are created
-    assert create_issue_mock.call_count == 2
-    create_issue_mock.assert_has_calls(
-        [
-            call(
-                hass,
-                init_mod.DOMAIN,
-                f"{config_device_id}_plugin_cleanup_done",
-                is_fixable=False,
-                is_persistent=False,
-                issue_domain=init_mod.DOMAIN,
-                severity=init_mod.ir.IssueSeverity.WARNING,
-                translation_key="plugin_cleanup_deprecated",
-            ),
-            call(
-                hass,
-                init_mod.DOMAIN,
-                f"{config_device_id}_remove_plugin",
-                is_fixable=False,
-                is_persistent=False,
-                issue_domain=init_mod.DOMAIN,
-                severity=init_mod.ir.IssueSeverity.WARNING,
-                translation_key="remove_plugin",
-            ),
-        ],
-        any_order=True,
-    )
-
-
-@pytest.mark.asyncio
-async def test_deprecated_plugin_cleanup_26_1_1_plugin_deprecated_no_matching_entities(monkeypatch):
-    """_deprecated_plugin_cleanup_26_1_1 still creates remove-plugin issue when no entities match."""
-    hass = MagicMock(spec=HomeAssistant)
-    client = MagicMock()
-    client.is_plugin_installed = AsyncMock(return_value=True)
-    client.is_plugin_deprecated = AsyncMock(return_value=True)
-    entry_id = "test_entry_id"
-
-    entity_registry = MagicMock()
-    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: entity_registry)
-
-    normal_entity = MagicMock()
-    normal_entity.entity_id = "switch.opnsense_normal_rule"
-    normal_entity.unique_id = "dev1_normal_rule1"
-    monkeypatch.setattr(
-        init_mod.er,
-        "async_entries_for_config_entry",
-        MagicMock(return_value=[normal_entity]),
-    )
-
-    create_issue_mock = MagicMock()
-    monkeypatch.setattr(init_mod.ir, "async_create_issue", create_issue_mock)
-
-    config_device_id = "dev1"
-    await init_mod._deprecated_plugin_cleanup_26_1_1(hass, client, entry_id, config_device_id)
-
-    entity_registry.async_remove.assert_not_called()
-    create_issue_mock.assert_called_once_with(
-        hass,
-        init_mod.DOMAIN,
-        f"{config_device_id}_remove_plugin",
-        is_fixable=False,
-        is_persistent=False,
-        issue_domain=init_mod.DOMAIN,
-        severity=init_mod.ir.IssueSeverity.WARNING,
-        translation_key="remove_plugin",
-    )
 
 
 @pytest.mark.asyncio
@@ -1075,80 +786,11 @@ async def test_async_migrate_entry_returns_false_when_submigration_fails(
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_firmware_above_ltd_calls_delete(
+async def test_async_setup_entry_delete_uses_min_issue_id(
     monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
 ):
-    """async_setup_entry deletes previous issues when firmware is at or above LTD."""
-    monkeypatch.setattr(
-        init_mod, "OPNsenseClient", fake_client(firmware_version=init_mod.OPNSENSE_LTD_FIRMWARE)
-    )
-    monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
-    )
-    called = []
-    monkeypatch.setattr(init_mod.ir, "async_delete_issue", lambda *a, **k: called.append(True))
-
-    entry = make_config_entry(
-        data={
-            init_mod.CONF_URL: "http://1.2.3.4",
-            init_mod.CONF_USERNAME: "u",
-            init_mod.CONF_PASSWORD: "p",
-            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-        }
-    )
-    hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = MagicMock()
-    res = await init_mod.async_setup_entry(hass, entry)
-    assert res is True
-    assert called, "async_delete_issue should have been called for firmware >= LTD"
-
-
-@pytest.mark.asyncio
-async def test_async_setup_entry_firmware_at_or_above_ltd_deletes_previous_issues(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
-):
-    """async_setup_entry cleans up previous firmware-related issues for LTD and min thresholds."""
-    monkeypatch.setattr(
-        init_mod, "OPNsenseClient", fake_client(firmware_version=init_mod.OPNSENSE_LTD_FIRMWARE)
-    )
-    monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
-    )
-
-    # capture delete_issue calls
-    delete_issue_mock = MagicMock()
-    monkeypatch.setattr(init_mod.ir, "async_delete_issue", delete_issue_mock)
-
-    entry = make_config_entry(
-        data={
-            init_mod.CONF_URL: "http://1.2.3.4",
-            init_mod.CONF_USERNAME: "u",
-            init_mod.CONF_PASSWORD: "p",
-            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-        }
-    )
-    hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = MagicMock()
-    res = await init_mod.async_setup_entry(hass, entry)
-    assert res is True
-
-    # Expect delete_issue to be called for the previous below-min and below-ltd issue ids
-    assert delete_issue_mock.called, "async_delete_issue should have been called"
-    called_issue_ids = [call[0][2] for call in delete_issue_mock.call_args_list if len(call[0]) > 2]
-    expected_min = f"{entry.data[init_mod.CONF_DEVICE_UNIQUE_ID]}_opnsense_below_min_firmware_{init_mod.OPNSENSE_MIN_FIRMWARE}"
-    expected_ltd = f"{entry.data[init_mod.CONF_DEVICE_UNIQUE_ID]}_opnsense_below_ltd_firmware_{init_mod.OPNSENSE_LTD_FIRMWARE}"
-    assert expected_min in called_issue_ids
-    assert expected_ltd in called_issue_ids
-
-
-@pytest.mark.asyncio
-async def test_async_setup_entry_delete_uses_actual_firmware_string(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
-):
-    """async_setup_entry uses the client's firmware string when deleting previous issues."""
-    firmware_str = "99.9"
+    """async_setup_entry removes the stale below-min repair once firmware is supported."""
+    firmware_str = "26.1.1"
     monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version=firmware_str))
     monkeypatch.setattr(
         init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
@@ -1171,45 +813,13 @@ async def test_async_setup_entry_delete_uses_actual_firmware_string(
     res = await init_mod.async_setup_entry(hass, entry)
     assert res is True
 
-    # Confirm delete_issue was called for the expected issue ids
-    expected_min = f"{entry.data[init_mod.CONF_DEVICE_UNIQUE_ID]}_opnsense_below_min_firmware_{init_mod.OPNSENSE_MIN_FIRMWARE}"
-    expected_ltd = f"{entry.data[init_mod.CONF_DEVICE_UNIQUE_ID]}_opnsense_below_ltd_firmware_{init_mod.OPNSENSE_LTD_FIRMWARE}"
+    expected_min = (
+        f"{entry.data[init_mod.CONF_DEVICE_UNIQUE_ID]}_opnsense_below_min_firmware_"
+        f"{init_mod.OPNSENSE_MIN_FIRMWARE}"
+    )
     assert calls.called, "async_delete_issue should have been called"
     issue_ids = [call[0][2] for call in calls.call_args_list if len(call[0]) > 2]
     assert expected_min in issue_ids
-    assert expected_ltd in issue_ids
-
-
-@pytest.mark.asyncio
-async def test_async_setup_entry_delete_not_called_for_between_min_and_ltd(
-    monkeypatch, ph_hass, coordinator_capture, fake_client, fake_coordinator, make_config_entry
-):
-    """async_setup_entry should not call delete_issue for firmware between min and LTD."""
-    monkeypatch.setattr(init_mod, "OPNsenseClient", fake_client(firmware_version="25.0"))
-    monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
-    )
-
-    delete_issue_mock = MagicMock()
-    monkeypatch.setattr(init_mod.ir, "async_delete_issue", delete_issue_mock)
-
-    entry = make_config_entry(
-        data={
-            init_mod.CONF_URL: "http://1.2.3.4",
-            init_mod.CONF_USERNAME: "u",
-            init_mod.CONF_PASSWORD: "p",
-            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-        }
-    )
-    hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = AsyncMock()
-    hass.data.setdefault("aiohttp_connector", {})
-
-    res = await init_mod.async_setup_entry(hass, entry)
-    assert res is True
-    # delete should not be called for firmware between min and LTD
-    assert not delete_issue_mock.called
 
 
 @pytest.mark.asyncio

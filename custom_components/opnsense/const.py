@@ -11,8 +11,7 @@ from homeassistant.const import PERCENTAGE, Platform, UnitOfInformation, UnitOfT
 
 VERSION = "v0.6.2"
 DOMAIN = "opnsense"
-OPNSENSE_LTD_FIRMWARE = "26.1"  # If less than this, some functions may not work but the integration in general should work. Show repair warning.
-OPNSENSE_MIN_FIRMWARE = "24.7"  # If less than this, don't allow install. It will not work.
+OPNSENSE_MIN_FIRMWARE = "26.1.1"
 
 UNDO_UPDATE_LISTENER = "undo_update_listener"
 
@@ -65,7 +64,6 @@ CONF_GRANULAR_SYNC_OPTIONS = "granular_sync_options"
 
 DEFAULT_GRANULAR_SYNC_OPTIONS = False
 DEFAULT_SYNC_OPTION_VALUE = True
-SYNC_ITEMS_REQUIRING_PLUGIN = (CONF_SYNC_FIREWALL_AND_NAT,)
 GRANULAR_SYNC_ITEMS = (
     CONF_SYNC_TELEMETRY,
     CONF_SYNC_INTERFACES,

@@ -3,6 +3,8 @@
 import logging
 from typing import Any
 
+from aiopnsense import OPNsenseClient
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -11,7 +13,6 @@ from homeassistant.util import slugify
 from .const import CONF_DEVICE_UNIQUE_ID, DOMAIN, OPNSENSE_CLIENT
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .helpers import dict_get
-from .pyopnsense import OPNsenseClient
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 

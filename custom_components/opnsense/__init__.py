@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 import aiohttp
+from aiopnsense import OPNsenseClient
 import awesomeversion
 
 from homeassistant.config_entries import ConfigEntry
@@ -47,7 +48,6 @@ from .const import (
     GRANULAR_SYNC_PREFIX,
     LOADED_PLATFORMS,
     OPNSENSE_CLIENT,
-    OPNSENSE_LTD_FIRMWARE,
     OPNSENSE_MIN_FIRMWARE,
     PLATFORMS,
     SHOULD_RELOAD,
@@ -56,7 +56,6 @@ from .const import (
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .helpers import is_private_ip
 from .models import OPNsenseData
-from .pyopnsense import OPNsenseClient
 from .services import async_setup_services
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -258,48 +257,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             await coordinator.async_shutdown()
             return False
-        if awesomeversion.AwesomeVersion(firmware) < awesomeversion.AwesomeVersion(
-            OPNSENSE_LTD_FIRMWARE
-        ):
-            ir.async_create_issue(
-                hass,
-                DOMAIN,
-                f"{config_device_id}_opnsense_below_ltd_firmware_{OPNSENSE_LTD_FIRMWARE}",
-                is_fixable=False,
-                is_persistent=False,
-                issue_domain=DOMAIN,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="below_ltd_firmware",
-                translation_placeholders={
-                    "version": str(VERSION),
-                    "ltd_firmware": str(OPNSENSE_LTD_FIRMWARE),
-                    "firmware": firmware or "Unknown",
-                },
-            )
-        else:
-            ir.async_delete_issue(
-                hass,
-                DOMAIN,
-                f"{config_device_id}_opnsense_below_min_firmware_{OPNSENSE_MIN_FIRMWARE}",
-            )
-            ir.async_delete_issue(
-                hass,
-                DOMAIN,
-                f"{config_device_id}_opnsense_below_ltd_firmware_{OPNSENSE_LTD_FIRMWARE}",
-            )
-    except (awesomeversion.exceptions.AwesomeVersionCompareException, TypeError, ValueError):
-        _LOGGER.warning("Unable to confirm OPNsense Firmware version")
-
-    try:
-        if awesomeversion.AwesomeVersion(firmware) > awesomeversion.AwesomeVersion(
-            "26.1"
-        ) and awesomeversion.AwesomeVersion(firmware) < awesomeversion.AwesomeVersion("26.7"):
-            await _deprecated_plugin_cleanup_26_1_1(
-                hass=hass,
-                client=client,
-                entry_id=entry.entry_id,
-                config_device_id=config_device_id,
-            )
+        ir.async_delete_issue(
+            hass,
+            DOMAIN,
+            f"{config_device_id}_opnsense_below_min_firmware_{OPNSENSE_MIN_FIRMWARE}",
+        )
     except (awesomeversion.exceptions.AwesomeVersionCompareException, TypeError, ValueError):
         _LOGGER.warning("Unable to confirm OPNsense Firmware version")
 
@@ -344,111 +306,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, platforms)
 
     return True
-
-
-async def _deprecated_plugin_cleanup_26_1_1(
-    hass: HomeAssistant,
-    client: OPNsenseClient,
-    entry_id: str,
-    config_device_id: str,
-) -> None:
-    """Clean up deprecated entities for OPNsense 26.1.1 and plugin compatibility.
-
-    This function removes switch entities that are no longer supported in
-    OPNsense 26.1, specifically firewall filter rules (when plugin not installed)
-    and NAT port forward/outbound rules. It creates appropriate issues to
-    inform the user about the cleanup.
-
-    Parameters
-    ----------
-    hass : HomeAssistant
-        The Home Assistant instance.
-    client : OPNsenseClient
-        The OPNsense client instance.
-    entry_id : str
-        The configuration entry ID.
-    config_device_id : str
-        The device unique ID from the configuration.
-
-    """
-    _LOGGER.debug("Starting OPNsense 26.1.1 and Plugin cleanup")
-    entity_registry = er.async_get(hass)
-    plugin_installed: bool = await client.is_plugin_installed()
-    plugin_deprecated: bool = await client.is_plugin_deprecated()
-    cleanup_started: bool = False
-
-    for ent in er.async_entries_for_config_entry(entity_registry, entry_id):
-        platform = ent.entity_id.split(".")[0]
-        if platform != Platform.SWITCH:
-            continue
-        # _LOGGER.debug("[deprecated_plugin_cleanup] ent: %s", ent)
-        if (
-            ((plugin_deprecated or not plugin_installed) and "_filter_" in ent.unique_id)
-            or "_nat_port_forward_" in ent.unique_id
-            or "_nat_outbound_" in ent.unique_id
-        ):
-            cleanup_started = True
-            try:
-                entity_registry.async_remove(ent.entity_id)
-                _LOGGER.debug("[deprecated_plugin_cleanup] removed entity_id: %s", ent.entity_id)
-            except (KeyError, ValueError) as e:
-                _LOGGER.error(
-                    "Error removing entity: %s. %s: %s",
-                    ent.entity_id,
-                    type(e).__name__,
-                    e,
-                )
-    if cleanup_started:
-        if plugin_installed and not plugin_deprecated:
-            _LOGGER.info(
-                "OPNsense 26.1.1+ and Plugin cleanup partially completed. OPNsense Plugin is still installed. NAT Outbound and NAT Port Forward rules removed. Firewall Filter rules will be removed once the plugin is removed."
-            )
-            ir.async_create_issue(
-                hass,
-                DOMAIN,
-                f"{config_device_id}_plugin_cleanup_partial",
-                is_fixable=False,
-                is_persistent=False,
-                issue_domain=DOMAIN,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="plugin_cleanup_partial",
-            )
-        else:
-            if plugin_deprecated:
-                _LOGGER.info(
-                    "OPNsense 26.1.1+ and Plugin cleanup completed. OPNsense Plugin is deprecated. NAT Outbound, NAT Port Forward, and Firewall Filter rules removed."
-                )
-            else:
-                _LOGGER.info(
-                    "OPNsense 26.1.1+ and Plugin cleanup completed. OPNsense Plugin is not installed. NAT Outbound, NAT Port Forward, and Firewall Filter rules removed."
-                )
-            ir.async_create_issue(
-                hass,
-                DOMAIN,
-                f"{config_device_id}_plugin_cleanup_done",
-                is_fixable=False,
-                is_persistent=False,
-                issue_domain=DOMAIN,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="plugin_cleanup_deprecated"
-                if plugin_deprecated
-                else "plugin_cleanup_done",
-            )
-
-    if plugin_deprecated and plugin_installed:
-        _LOGGER.info(
-            "OPNsense Firmware is 26.1.3+ and the deprecated Plugin is still installed. Both because it will no longer work and for security reasons, please remove this plugin from OPNsense."
-        )
-        ir.async_create_issue(
-            hass,
-            DOMAIN,
-            f"{config_device_id}_remove_plugin",
-            is_fixable=False,
-            is_persistent=False,
-            issue_domain=DOMAIN,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key="remove_plugin",
-        )
 
 
 async def async_remove_config_entry_device(

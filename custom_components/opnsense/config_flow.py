@@ -10,9 +10,9 @@ import re
 import socket
 from typing import Any
 from urllib.parse import ParseResult, quote_plus, urlparse
-import xmlrpc
 
 import aiohttp
+from aiopnsense import OPNsenseClient, UnknownFirmware
 import awesomeversion
 import voluptuous as vol
 
@@ -49,11 +49,9 @@ from .const import (
     DOMAIN,
     GRANULAR_SYNC_ITEMS,
     OPNSENSE_MIN_FIRMWARE,
-    SYNC_ITEMS_REQUIRING_PLUGIN,
     TRACKED_MACS,
 )
 from .helpers import is_private_ip
-from .pyopnsense import OPNsenseClient, UnknownFirmware
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -346,29 +344,11 @@ async def validate_input(
             key="missing_device_unique_id",
             message=f"Missing Device Unique ID Error. {type(e).__name__}: {e}",
         )
-    except PluginMissing:
-        _log_and_set_error(errors=errors, key="plugin_missing", message="OPNsense Plugin Missing")
     except (aiohttp.InvalidURL, InvalidURL) as e:
         _log_and_set_error(
             errors=errors,
             key="invalid_url_format",
             message=f"InvalidURL Error. {type(e).__name__}: {e}",
-        )
-    except xmlrpc.client.Fault as e:
-        error_message = str(e)
-        if "Invalid username or password" in error_message:
-            errors["base"] = "invalid_auth"
-        elif "Authentication failed: not enough privileges" in error_message:
-            errors["base"] = "privilege_missing"
-        elif "opnsense.exec_php does not exist" in error_message:
-            errors["base"] = "plugin_missing"
-        else:
-            errors["base"] = "cannot_connect"
-        _LOGGER.error(
-            cleanse_sensitive_data(
-                f"XMLRPC Error. {type(e).__name__}: {e}",
-                [user_input.get(CONF_USERNAME), user_input.get(CONF_PASSWORD)],
-            )
         )
     except aiohttp.ClientSSLError as e:
         _log_and_set_error(
@@ -407,18 +387,6 @@ async def validate_input(
         _LOGGER.error(
             cleanse_sensitive_data(
                 f"Aiohttp Error. {type(e).__name__}: {e}",
-                [user_input.get(CONF_USERNAME), user_input.get(CONF_PASSWORD)],
-            )
-        )
-    except xmlrpc.client.ProtocolError as e:
-        error_message = str(e)
-        if "307 Temporary Redirect" in error_message or "301 Moved Permanently" in error_message:
-            errors["base"] = "url_redirect"
-        else:
-            errors["base"] = "cannot_connect"
-        _LOGGER.error(
-            cleanse_sensitive_data(
-                f"XMLRPC Error. {type(e).__name__}: {e}",
                 [user_input.get(CONF_USERNAME), user_input.get(CONF_PASSWORD)],
             )
         )
@@ -510,30 +478,6 @@ async def _handle_user_input(
         raise UnknownFirmware from e
 
     await client.set_use_snake_case(initial=True)
-
-    # Plugin check not required for config step of user. Otherwise, plugin check is required if
-    # granular sync options is enabled
-    try:
-        require_plugin_check = (
-            config_step != "user"
-            and user_input.get(CONF_GRANULAR_SYNC_OPTIONS, DEFAULT_GRANULAR_SYNC_OPTIONS)
-            and any(
-                user_input.get(item, DEFAULT_SYNC_OPTION_VALUE)
-                for item in SYNC_ITEMS_REQUIRING_PLUGIN
-            )
-            and awesomeversion.AwesomeVersion(user_input[CONF_FIRMWARE_VERSION])
-            < awesomeversion.AwesomeVersion("26.1.1")
-        )
-    except (awesomeversion.exceptions.AwesomeVersionCompareException, TypeError, ValueError) as e:
-        raise UnknownFirmware from e
-
-    _LOGGER.debug(
-        "[handle_user_input] config_step: %s, require_plugin_check: %s",
-        config_step,
-        require_plugin_check,
-    )
-    if require_plugin_check and not await client.is_plugin_installed():
-        raise PluginMissing
 
     system_info: dict[str, Any] = await client.get_system_info()
     _LOGGER.debug("[handle_user_input] system_info: %s", system_info)
@@ -1101,7 +1045,7 @@ class OPNsenseOptionsFlow(OptionsFlow):
             dt_entries: dict[str, Any] = await _get_dt_entries(
                 hass=self.hass, config=self.config_entry.data, selected_devices=selected_devices
             )
-        except (aiohttp.ClientError, TimeoutError, OSError, xmlrpc.client.Error) as err:
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
             _LOGGER.warning("Failed to load device tracker entries: %s", err)
             errors["base"] = "cannot_connect"
             dt_entries = {
@@ -1129,7 +1073,3 @@ class MissingDeviceUniqueID(Exception):
 
 class BelowMinFirmware(Exception):
     """Current firmware is below the Minimum supported version."""
-
-
-class PluginMissing(Exception):
-    """OPNsense plugin missing."""

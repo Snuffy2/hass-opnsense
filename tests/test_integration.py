@@ -43,7 +43,7 @@ class _FakeFlowClient:
     It implements only the async methods the flows invoke.
     """
 
-    def __init__(self, device_id: str = "dev-flow", firmware: str = "25.1") -> None:
+    def __init__(self, device_id: str = "dev-flow", firmware: str = "26.1.1") -> None:
         self._device_id = device_id
         self._firmware = firmware
 
@@ -53,9 +53,6 @@ class _FakeFlowClient:
     async def set_use_snake_case(self, initial: bool = False) -> None:
         """No-op used by config flow validation path."""
         return
-
-    async def is_plugin_installed(self) -> bool:  # for SYNC_ITEMS_REQUIRING_PLUGIN path
-        return True
 
     async def get_system_info(self) -> MutableMapping[str, Any]:
         return {"name": "OPNsenseTest"}
@@ -74,7 +71,7 @@ class _FakeFlowClient:
 class _FakeRuntimeClient:
     """Fake client used during async_setup_entry (main integration path)."""
 
-    def __init__(self, device_id: str = "dev-runtime", firmware: str = "25.1") -> None:
+    def __init__(self, device_id: str = "dev-runtime", firmware: str = "26.1.1") -> None:
         self._device_id = device_id
         self._firmware = firmware
         self._closed = False
@@ -533,7 +530,7 @@ async def test_e2e_full_migration_chain(monkeypatch, make_config_entry):
             return "newmacid"
 
         async def get_host_firmware_version(self):  # not used in migration chain here
-            return "25.1"
+            return "26.1.1"
 
         async def get_telemetry(self) -> dict[str, Any]:
             return {"filesystems": []}  # keep simple to avoid extra branches

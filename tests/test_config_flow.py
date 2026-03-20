@@ -6,7 +6,6 @@ and options flow behaviors such as device tracker handling.
 
 import importlib
 from unittest.mock import AsyncMock, MagicMock
-import xmlrpc.client
 
 import aiohttp
 import pytest
@@ -112,17 +111,12 @@ async def test_clean_and_parse_url_success_and_failure():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "exc_key, expected",
+    ("exc_key", "expected"),
     [
         ("below_min", "below_min_firmware"),
         ("unknown_fw", "unknown_firmware"),
         ("missing_id", "missing_device_unique_id"),
-        ("plugin_missing", "plugin_missing"),
         ("invalid_url", "invalid_url_format"),
-        ("xmlrpc_invalid_auth", "invalid_auth"),
-        ("xmlrpc_privilege", "privilege_missing"),
-        ("xmlrpc_plugin", "plugin_missing"),
-        ("xmlrpc_other", "cannot_connect"),
         ("client_connector_ssl", "cannot_connect_ssl"),
         ("resp_401", "invalid_auth"),
         ("resp_403", "privilege_missing"),
@@ -147,18 +141,8 @@ async def test_validate_input_exception_mapping(monkeypatch, exc_key, expected):
         exc = cf_mod.UnknownFirmware()
     elif exc_key == "missing_id":
         exc = cf_mod.MissingDeviceUniqueID("x")
-    elif exc_key == "plugin_missing":
-        exc = cf_mod.PluginMissing()
     elif exc_key == "invalid_url":
         exc = aiohttp.InvalidURL("u")
-    elif exc_key == "xmlrpc_invalid_auth":
-        exc = xmlrpc.client.Fault(1, "Invalid username or password")
-    elif exc_key == "xmlrpc_privilege":
-        exc = xmlrpc.client.Fault(1, "Authentication failed: not enough privileges")
-    elif exc_key == "xmlrpc_plugin":
-        exc = xmlrpc.client.Fault(1, "opnsense.exec_php does not exist")
-    elif exc_key == "xmlrpc_other":
-        exc = xmlrpc.client.Fault(1, "other fault")
     elif exc_key == "client_connector_ssl":
         # Simulate an SSL-related client error that maps to "cannot_connect_ssl".
         # ClientSSLError (and its base ClientConnectorError) require a connection
@@ -179,7 +163,7 @@ async def test_validate_input_exception_mapping(monkeypatch, exc_key, expected):
 
         exc = aiohttp.ClientResponseError(request_info=RI(), history=(), status=status, message="m")
     elif exc_key == "protocol_307":
-        exc = xmlrpc.client.ProtocolError("u", 307, "307 Temporary Redirect", {})
+        exc = aiohttp.RedirectClientError("307 Temporary Redirect")
     elif exc_key == "too_many_redirects":
 
         class RI:
@@ -580,164 +564,3 @@ async def test_options_flow_init_selected_mode_shows_picker_step(monkeypatch, ma
     )
     assert result["type"] == "form"
     assert result["step_id"] == "device_tracker"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "granular_flag, config_step, expected_called",
-    [
-        # user step: no plugin check no matter the granular sync flag
-        (True, "user", False),
-        (False, "user", False),
-        # granular_sync or reconfigure step: if granular sync is enabled, plugin check should happen
-        (True, "granular_sync", True),
-        (False, "granular_sync", False),
-        (True, "reconfigure", True),
-        (False, "reconfigure", False),
-    ],
-)
-async def test_validate_input_user_respects_granular_flag_for_plugin_check(
-    monkeypatch, granular_flag, config_step, expected_called, fake_flow_client
-):
-    """Plugin check not required for config step of user.
-
-    Otherwise, plugin check is required if granular sync options is enabled
-    """
-    # Use shared fake_flow_client fixture to supply a FakeClient class
-    client_cls = fake_flow_client()
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
-
-    # avoid real network sessions
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
-
-    user_input = {
-        cf_mod.CONF_URL: "https://host.example",
-        cf_mod.CONF_USERNAME: "user",
-        cf_mod.CONF_PASSWORD: "pass",
-        cf_mod.CONF_GRANULAR_SYNC_OPTIONS: granular_flag,
-    }
-    # Do not set granular sync items here; leave them absent so defaults apply
-
-    # Create a real config flow and stub methods that interact with Home Assistant internals
-    flow = cf_mod.OPNsenseConfigFlow()
-    flow.hass = MagicMock()
-
-    async def _noop(*args, **kwargs):
-        return None
-
-    # Prevent base ConfigFlow methods from touching HA internals during unit test
-    flow.async_set_unique_id = _noop
-    flow._abort_if_unique_id_configured = lambda: None
-
-    # Call the requested config step which will call validate_input internally
-    if config_step == "user":
-        await flow.async_step_user(user_input=user_input)
-    elif config_step == "granular_sync":
-        # populate internal config as if the user completed the first step
-        flow._config = {
-            cf_mod.CONF_URL: "https://host.example",
-            cf_mod.CONF_USERNAME: "user",
-            cf_mod.CONF_PASSWORD: "pass",
-            cf_mod.CONF_GRANULAR_SYNC_OPTIONS: granular_flag,
-        }
-        await flow.async_step_granular_sync(user_input={})
-    elif config_step == "reconfigure":
-        # reconfigure should behave like granular_sync for plugin-check testing;
-        # populate internal config and invoke the reconfigure step
-        reconfigure_entry = MagicMock()
-        reconfigure_entry.data = {
-            cf_mod.CONF_URL: "https://host.example",
-            cf_mod.CONF_USERNAME: "user",
-            cf_mod.CONF_PASSWORD: "pass",
-            cf_mod.CONF_GRANULAR_SYNC_OPTIONS: granular_flag,
-        }
-        # Monkeypatch the helper the config flow uses to get the reconfigure entry
-        flow._get_reconfigure_entry = lambda: reconfigure_entry
-        # Prevent HA internals from being accessed if the flow reaches update/abort paths
-        flow.hass.config_entries = MagicMock()
-        flow.hass.config_entries.async_update_entry = MagicMock()
-        await flow.async_step_reconfigure(user_input={})
-    else:
-        raise ValueError(f"unknown config_step: {config_step}")
-
-    # ensure client was instantiated
-    assert client_cls.last_instance is not None
-    # Check whether the plugin check was called according to expected behavior
-    called_count = getattr(client_cls.last_instance, "_is_plugin_called", 0)
-    if expected_called:
-        assert called_count > 0
-    else:
-        assert called_count == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "flow_type, require_plugin, expected_called",
-    [
-        ("config", True, True),
-        ("config", False, False),
-        ("options", True, True),
-        ("options", False, False),
-    ],
-)
-async def test_granular_sync_flow_plugin_check(
-    monkeypatch, flow_type, require_plugin, expected_called, fake_flow_client
-):
-    """Test plugin check behavior when granular sync is enabled and granular items are set.
-
-        For granular_sync step from both ConfigFlow and OptionsFlow:
-    - If any SYNC_ITEMS_REQUIRING_PLUGIN is True -> is_plugin_installed should be called.
-    - If none are True -> is_plugin_installed should NOT be called.
-    """
-    # Use shared fake_flow_client fixture
-    client_cls = fake_flow_client()
-    monkeypatch.setattr(cf_mod, "OPNsenseClient", client_cls)
-    monkeypatch.setattr(cf_mod, "async_create_clientsession", lambda *a, **k: MagicMock())
-
-    # Build a user_input payload for granular sync where items in SYNC_ITEMS_REQUIRING_PLUGIN are toggled
-    # Start with all granular items as False, then set one plugin-required item True if require_plugin
-    granular_input = dict.fromkeys(cf_mod.GRANULAR_SYNC_ITEMS, False)
-    if require_plugin:
-        # pick the first item that requires plugin
-        plugin_item = list(cf_mod.SYNC_ITEMS_REQUIRING_PLUGIN)[0]
-        granular_input[plugin_item] = True
-
-    if flow_type == "config":
-        # Prepare a config flow and populate internal config
-        flow = cf_mod.OPNsenseConfigFlow()
-        flow.hass = MagicMock()
-        flow._config = {
-            cf_mod.CONF_URL: "https://host.example",
-            cf_mod.CONF_USERNAME: "user",
-            cf_mod.CONF_PASSWORD: "pass",
-            cf_mod.CONF_GRANULAR_SYNC_OPTIONS: True,
-        }
-        # Call the granular sync step which will invoke validate_input -> _handle_user_input
-        await flow.async_step_granular_sync(user_input=granular_input)
-    else:
-        # Options flow branch
-        cfg = MagicMock()
-        cfg.data = {
-            cf_mod.CONF_URL: "https://host.example",
-            cf_mod.CONF_USERNAME: "user",
-            cf_mod.CONF_PASSWORD: "pass",
-            cf_mod.CONF_GRANULAR_SYNC_OPTIONS: True,
-        }
-        cfg.options = {cf_mod.CONF_DEVICE_TRACKER_ENABLED: False}
-        flow = cf_mod.OPNsenseOptionsFlow(cfg)
-        flow.hass = MagicMock()
-        # emulate HA internals required by the options flow methods in tests
-        flow.handler = "opnsense"
-        flow.hass.config_entries = MagicMock()
-        flow.hass.config_entries.async_get_known_entry = MagicMock(return_value=cfg)
-        flow._config = dict(cfg.data)
-        flow._options = dict(cfg.options)
-        await flow.async_step_granular_sync(user_input=granular_input)
-
-    # Check whether is_plugin_installed was invoked according to expectations
-    assert client_cls.last_instance is not None
-    called_count = getattr(client_cls.last_instance, "_is_plugin_called", 0)
-    if expected_called:
-        assert called_count > 0
-    else:
-        assert called_count == 0

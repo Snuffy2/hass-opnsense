@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from aiopnsense import OPNsenseClient
+
 from homeassistant.const import Platform
 
 from .coordinator import OPNsenseDataUpdateCoordinator
-from .pyopnsense import OPNsenseClient
 
 
 @dataclass

@@ -15,14 +15,14 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
+import aiopnsense as _pyopnsense_mod
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.plugins import get_scheduled_timer_handles
 
 import custom_components.opnsense as _init_mod
-from custom_components.opnsense import pyopnsense as _pyopnsense_mod
 from custom_components.opnsense.const import CONF_DEVICE_UNIQUE_ID
 import homeassistant.core as ha_core
+from homeassistant.util.async_ import get_scheduled_timer_handles
+from tests.common import MockConfigEntry
 
 # expose the pyopnsense module under the plain name for tests that
 # import the fixture and expect `pyopnsense` to be available.
@@ -413,13 +413,13 @@ def _neutralize_pyopnsense_background_tasks(monkeypatch, request):
     # Fallback to import path strings in case direct attribute access failed.
     with contextlib.suppress(Exception):
         monkeypatch.setattr(
-            "custom_components.opnsense.pyopnsense.OPNsenseClient._monitor_queue",
+            "aiopnsense.OPNsenseClient._monitor_queue",
             _noop_async,
             raising=False,
         )
     with contextlib.suppress(Exception):
         monkeypatch.setattr(
-            "custom_components.opnsense.pyopnsense.OPNsenseClient._process_queue",
+            "aiopnsense.OPNsenseClient._process_queue",
             _noop_async,
             raising=False,
         )
@@ -657,33 +657,18 @@ def fake_reg_factory():
 
 @pytest.fixture
 def fake_flow_client():
-    """Return a factory that constructs a lightweight FakeClient used in flow tests.
+    """Return a factory that constructs a lightweight FakeClient used in flow tests."""
 
-    The returned factory when called yields a FakeClient class suitable for
-    config/option flow validation paths and records calls to is_plugin_installed.
-    """
-
-    def _make(
-        device_id: str = "unique-id",
-        firmware: str = "25.1",
-        plugin_installed: bool = False,
-    ):
+    def _make(device_id: str = "unique-id", firmware: str = "26.1.1"):
         class FakeFlowClient:
-            """Configurable fake client for flow tests.
-
-            Attributes:
-                last_instance: class var pointing to last created instance
-
-            """
+            """Configurable fake client for flow tests."""
 
             last_instance: "FakeFlowClient | None" = None
 
             def __init__(self, *args, **kwargs):
                 FakeFlowClient.last_instance = self
-                self._is_plugin_called = 0
                 self._device_id = device_id
                 self._firmware = firmware
-                self._plugin_installed = plugin_installed
 
             async def get_host_firmware_version(self) -> str:
                 return self._firmware
@@ -696,10 +681,6 @@ def fake_flow_client():
 
             async def get_device_unique_id(self, expected_id: str | None = None) -> str:
                 return self._device_id
-
-            async def is_plugin_installed(self) -> bool:
-                self._is_plugin_called += 1
-                return self._plugin_installed
 
         return FakeFlowClient
 
