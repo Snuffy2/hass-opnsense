@@ -702,6 +702,26 @@ def fake_client():
                 """Return an empty WireGuard payload for coordinator tests."""
                 return {"servers": {}}
 
+            async def get_carp_interfaces(self) -> list[dict[str, Any]]:
+                """Return an empty CARP interface list for coordinator tests."""
+                return []
+
+            async def get_carp_status_summary(self) -> dict[str, Any]:
+                """Return a default CARP status summary for coordinator tests."""
+                return {
+                    "state": "not_configured",
+                    "enabled": True,
+                    "maintenance_mode": False,
+                    "demotion": 0,
+                    "status_message": "",
+                    "vip_count": 0,
+                    "master_count": 0,
+                    "backup_count": 0,
+                    "other_count": 0,
+                    "interfaces": [],
+                    "vips": [],
+                }
+
         return FakeClient
 
     return _make

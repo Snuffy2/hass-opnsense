@@ -414,7 +414,7 @@ def test_build_categories_returns_empty_when_no_config(make_config_entry, fake_c
         (CONF_SYNC_SPEEDTEST, ["speedtest"]),
         (CONF_SYNC_VPN, ["openvpn", "wireguard"]),
         (CONF_SYNC_FIRMWARE_UPDATES, ["firmware_update_info"]),
-        (CONF_SYNC_CARP, ["carp_interfaces", "carp_status"]),
+        (CONF_SYNC_CARP, ["carp_interfaces", "carp_status_summary"]),
         (CONF_SYNC_DHCP_LEASES, ["dhcp_leases"]),
         (CONF_SYNC_GATEWAYS, ["gateways"]),
         (CONF_SYNC_SERVICES, ["services"]),
