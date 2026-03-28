@@ -483,6 +483,27 @@ async def test_get_carp_interfaces_prefers_first_candidate_for_partial_key_colli
             },
             "unknown",
         ),
+        (
+            {
+                "rows": [{"mode": "carp", "status": "MASTER", "interface": "wan"}],
+            },
+            "unknown",
+        ),
+        (
+            {
+                "rows": [
+                    {"mode": "carp", "status": "MASTER", "interface": "wan", "subnet": ""},
+                    {"mode": "carp", "status": "BACKUP", "subnet": "1.2.3.4"},
+                ],
+                "carp": {
+                    "allow": "1",
+                    "maintenancemode": False,
+                    "demotion": "0",
+                    "status_msg": "",
+                },
+            },
+            "healthy",
+        ),
     ],
 )
 async def test_get_carp_status_summary_states(
@@ -505,6 +526,51 @@ async def test_get_carp_status_summary_states(
             str,
         ):
             assert summary["status_message"] == ""
+    finally:
+        await client.async_close()
+
+
+@pytest.mark.asyncio
+async def test_get_carp_status_summary_uses_settings_merge_for_partial_rows(make_client) -> None:
+    """Ensure summary reconstructs partial status rows using VIP settings merge."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = make_client(session=session)
+    try:
+        client._safe_dict_get = AsyncMock(
+            side_effect=[
+                {
+                    "rows": [
+                        {
+                            "mode": "carp",
+                            "status": "MASTER",
+                            "interface": "wan",
+                            "vhid": "1",
+                        }
+                    ],
+                    "carp": {
+                        "allow": "1",
+                        "maintenancemode": False,
+                        "demotion": "0",
+                        "status_msg": "",
+                    },
+                },
+                {
+                    "rows": [
+                        {
+                            "mode": "carp",
+                            "interface": "wan",
+                            "subnet": "1.2.3.4",
+                            "vhid": "1",
+                        }
+                    ]
+                },
+            ]
+        )
+        summary = await client.get_carp_status_summary()
+        assert summary["state"] == "healthy"
+        assert summary["vip_count"] == 1
+        assert summary["interfaces"] == ["wan"]
+        assert summary["vips"][0]["subnet"] == "1.2.3.4"
     finally:
         await client.async_close()
 

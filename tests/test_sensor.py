@@ -360,6 +360,57 @@ def test_carp_sensor_attributes_and_icon(
             "degraded",
             "mdi:close-network-outline",
         ),
+        (
+            {
+                "state": "disabled",
+                "enabled": False,
+                "maintenance_mode": False,
+                "demotion": 0,
+                "status_message": "",
+                "vip_count": 1,
+                "master_count": 0,
+                "backup_count": 0,
+                "other_count": 1,
+                "interfaces": ["wan"],
+                "vips": [{"interface": "wan", "subnet": "1.2.3.5", "status": "INIT"}],
+            },
+            "disabled",
+            "mdi:close-network-outline",
+        ),
+        (
+            {
+                "state": "not_configured",
+                "enabled": True,
+                "maintenance_mode": False,
+                "demotion": 0,
+                "status_message": "",
+                "vip_count": 0,
+                "master_count": 0,
+                "backup_count": 0,
+                "other_count": 0,
+                "interfaces": [],
+                "vips": [],
+            },
+            "not_configured",
+            "mdi:backup-restore",
+        ),
+        (
+            {
+                "state": "unknown",
+                "enabled": False,
+                "maintenance_mode": False,
+                "demotion": 0,
+                "status_message": "",
+                "vip_count": 0,
+                "master_count": 0,
+                "backup_count": 0,
+                "other_count": 0,
+                "interfaces": [],
+                "vips": [],
+            },
+            "unknown",
+            "mdi:gauge",
+        ),
     ],
 )
 def test_carp_status_sensor_states_and_attributes(
@@ -376,6 +427,7 @@ def test_carp_status_sensor_states_and_attributes(
     desc = MagicMock()
     desc.key = "carp.status_summary"
     desc.name = "CARP Status"
+    desc.icon = "mdi:gauge"
 
     sensor = OPNsenseCarpStatusSensor(
         config_entry=entry,
@@ -421,7 +473,7 @@ async def test_compile_carp_interface_sensor_name_includes_interface(make_config
 
 
 @pytest.mark.parametrize(
-    "desc_key,cls,main_check,extra_check",
+    ("desc_key", "cls", "main_check", "extra_check"),
     [
         (
             f"carp.interface.{sensor_module.slugify('10.0.0.1')}",

@@ -144,6 +144,103 @@ class SystemMixin(PyOPNsenseClientProtocol):
                 best_score = score
         return best_candidate
 
+    def _merge_carp_vip_rows(
+        self,
+        vip_status_rows: list[Any],
+        vip_settings_rows: list[Any],
+    ) -> list[dict[str, Any]]:
+        """Merge CARP VIP status rows with VIP settings rows.
+
+        Args:
+            vip_status_rows: Raw rows from the VIP status endpoint.
+            vip_settings_rows: Raw rows from the VIP settings endpoint.
+
+        Returns:
+            list[dict[str, Any]]: Merged CARP VIP rows with normalized subnet values.
+        """
+        vip_status = self._parse_carp_vip_rows(vip_status_rows)
+
+        vip_settings: list[dict[str, Any]] = []
+        for row in vip_settings_rows:
+            if not isinstance(row, MutableMapping):
+                continue
+            mode = str(row.get("mode", "")).strip().lower()
+            if mode and mode != "carp":
+                continue
+            vip_settings.append(dict(row))
+
+        settings_by_full: dict[tuple[str, str, str], dict[str, Any]] = {}
+        settings_by_if_subnet: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        settings_by_if_vhid: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        settings_by_subnet: dict[str, list[dict[str, Any]]] = {}
+        settings_by_vhid: dict[str, list[dict[str, Any]]] = {}
+        for setting in vip_settings:
+            interface_key = self._carp_match_value(setting.get("interface"))
+            vhid_key = self._carp_match_value(setting.get("vhid"))
+            subnet_key = self._carp_match_value(setting.get("subnet"))
+            settings_by_full[(interface_key, vhid_key, subnet_key)] = setting
+            if interface_key and subnet_key:
+                settings_by_if_subnet.setdefault((interface_key, subnet_key), []).append(setting)
+            if interface_key and vhid_key:
+                settings_by_if_vhid.setdefault((interface_key, vhid_key), []).append(setting)
+            if subnet_key:
+                settings_by_subnet.setdefault(subnet_key, []).append(setting)
+            if vhid_key:
+                settings_by_vhid.setdefault(vhid_key, []).append(setting)
+
+        merged_vips: list[dict[str, Any]] = []
+        for status_vip in vip_status:
+            interface_key = self._carp_match_value(status_vip.get("interface"))
+            vhid_key = self._carp_match_value(status_vip.get("vhid"))
+            subnet_key = self._carp_match_value(status_vip.get("subnet"))
+
+            settings_match = settings_by_full.get((interface_key, vhid_key, subnet_key))
+            if settings_match is None and interface_key and subnet_key:
+                settings_match = self._select_carp_setting_candidate(
+                    settings_by_if_subnet.get((interface_key, subnet_key), []),
+                    interface_key,
+                    vhid_key,
+                    subnet_key,
+                )
+            if settings_match is None and interface_key and vhid_key:
+                settings_match = self._select_carp_setting_candidate(
+                    settings_by_if_vhid.get((interface_key, vhid_key), []),
+                    interface_key,
+                    vhid_key,
+                    subnet_key,
+                )
+            if settings_match is None and subnet_key:
+                settings_match = self._select_carp_setting_candidate(
+                    settings_by_subnet.get(subnet_key, []),
+                    interface_key,
+                    vhid_key,
+                    subnet_key,
+                )
+            if settings_match is None and vhid_key:
+                settings_match = self._select_carp_setting_candidate(
+                    settings_by_vhid.get(vhid_key, []),
+                    interface_key,
+                    vhid_key,
+                    subnet_key,
+                )
+
+            if settings_match is None:
+                merged_vip = dict(status_vip)
+            else:
+                merged_vip = dict(settings_match)
+                merged_vip.update(status_vip)
+
+            subnet_value = merged_vip.get("subnet")
+            if isinstance(subnet_value, str):
+                subnet_value = subnet_value.strip()
+                if subnet_value:
+                    merged_vip["subnet"] = subnet_value
+            if not subnet_value:
+                continue
+            merged_vips.append(merged_vip)
+
+        return merged_vips
+
     def _get_local_timezone(self) -> tzinfo:
         """Return a local timezone fallback with fixed UTC offset.
 
@@ -283,98 +380,33 @@ $toreturn = [
         Returns:
             list[dict[str, Any]]: Parsed carp interfaces payload returned by OPNsense APIs.
         """
-        vip_status_raw = await self._safe_dict_get("/api/diagnostics/interface/get_vip_status")
-        vip_status_rows = vip_status_raw.get("rows", None)
-        vip_status = (
-            self._parse_carp_vip_rows(vip_status_rows) if isinstance(vip_status_rows, list) else []
-        )
-
-        vip_settings_raw = await self._safe_dict_get("/api/interfaces/vip_settings/get")
-        vip_settings_rows = vip_settings_raw.get("rows", None)
-        vip_settings: list[dict[str, Any]] = []
-        if isinstance(vip_settings_rows, list):
-            for row in vip_settings_rows:
-                if not isinstance(row, MutableMapping):
-                    continue
-                mode = str(row.get("mode", "")).strip().lower()
-                if mode and mode != "carp":
-                    continue
-                vip_settings.append(dict(row))
-
-        settings_by_full: dict[tuple[str, str, str], dict[str, Any]] = {}
-        settings_by_if_subnet: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        settings_by_if_vhid: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        settings_by_subnet: dict[str, list[dict[str, Any]]] = {}
-        settings_by_vhid: dict[str, list[dict[str, Any]]] = {}
-        for setting in vip_settings:
-            interface_key = self._carp_match_value(setting.get("interface"))
-            vhid_key = self._carp_match_value(setting.get("vhid"))
-            subnet_key = self._carp_match_value(setting.get("subnet"))
-            settings_by_full[(interface_key, vhid_key, subnet_key)] = setting
-            if interface_key and subnet_key:
-                settings_by_if_subnet.setdefault((interface_key, subnet_key), []).append(setting)
-            if interface_key and vhid_key:
-                settings_by_if_vhid.setdefault((interface_key, vhid_key), []).append(setting)
-            if subnet_key:
-                settings_by_subnet.setdefault(subnet_key, []).append(setting)
-            if vhid_key:
-                settings_by_vhid.setdefault(vhid_key, []).append(setting)
-
-        carp: list[dict[str, Any]] = []
-        for status_vip in vip_status:
-            interface_key = self._carp_match_value(status_vip.get("interface"))
-            vhid_key = self._carp_match_value(status_vip.get("vhid"))
-            subnet_key = self._carp_match_value(status_vip.get("subnet"))
-
-            settings_match = settings_by_full.get((interface_key, vhid_key, subnet_key))
-            if settings_match is None and interface_key and subnet_key:
-                settings_match = self._select_carp_setting_candidate(
-                    settings_by_if_subnet.get((interface_key, subnet_key), []),
-                    interface_key,
-                    vhid_key,
-                    subnet_key,
-                )
-            if settings_match is None and interface_key and vhid_key:
-                settings_match = self._select_carp_setting_candidate(
-                    settings_by_if_vhid.get((interface_key, vhid_key), []),
-                    interface_key,
-                    vhid_key,
-                    subnet_key,
-                )
-            if settings_match is None and subnet_key:
-                settings_match = self._select_carp_setting_candidate(
-                    settings_by_subnet.get(subnet_key, []),
-                    interface_key,
-                    vhid_key,
-                    subnet_key,
-                )
-            if settings_match is None and vhid_key:
-                settings_match = self._select_carp_setting_candidate(
-                    settings_by_vhid.get(vhid_key, []),
-                    interface_key,
-                    vhid_key,
-                    subnet_key,
-                )
-
-            if settings_match is None:
-                merged_vip = dict(status_vip)
-            else:
-                merged_vip = dict(settings_match)
-                merged_vip.update(status_vip)
-
-            if not merged_vip.get("status"):
-                merged_vip["status"] = "DISABLED"
-            subnet_value = merged_vip.get("subnet")
-            if isinstance(subnet_value, str):
-                subnet_value = subnet_value.strip()
-                if subnet_value:
-                    merged_vip["subnet"] = subnet_value
-            if not subnet_value:
-                continue
-            carp.append(merged_vip)
+        _, carp = await self._fetch_and_merge_carp_vips()
 
         _LOGGER.debug("[get_carp_interfaces] carp: %s", carp)
         return carp
+
+    async def _fetch_and_merge_carp_vips(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Fetch CARP status/settings and return merged normalized VIP rows.
+
+        Returns:
+            tuple[dict[str, Any], list[dict[str, Any]]]: The raw VIP status response and
+            merged/normalized CARP VIP rows derived from status + settings endpoints.
+        """
+        vip_status_raw = await self._safe_dict_get("/api/diagnostics/interface/get_vip_status")
+        vip_settings_raw = await self._safe_dict_get("/api/interfaces/vip_settings/get")
+
+        vip_status = dict(vip_status_raw) if isinstance(vip_status_raw, MutableMapping) else {}
+        vip_status_rows = vip_status.get("rows")
+        vip_settings_rows = (
+            vip_settings_raw.get("rows") if isinstance(vip_settings_raw, MutableMapping) else None
+        )
+        merged_vips = self._parse_carp_vip_rows(
+            self._merge_carp_vip_rows(
+                vip_status_rows if isinstance(vip_status_rows, list) else [],
+                vip_settings_rows if isinstance(vip_settings_rows, list) else [],
+            )
+        )
+        return vip_status, merged_vips
 
     @_log_errors
     async def get_carp_status_summary(self) -> dict[str, Any]:
@@ -396,8 +428,8 @@ $toreturn = [
             "interfaces": [],
             "vips": [],
         }
-        response = await self._safe_dict_get("/api/diagnostics/interface/get_vip_status")
-        if not isinstance(response, MutableMapping):
+        response, vips = await self._fetch_and_merge_carp_vips()
+        if not response:
             return summary
 
         carp_raw = response.get("carp")
@@ -407,15 +439,7 @@ $toreturn = [
         else:
             has_carp_block = False
             carp_block = {}
-        vip_rows_raw = response.get("rows")
-        if isinstance(vip_rows_raw, list):
-            has_rows = True
-            vip_rows: list[Any] = vip_rows_raw
-        else:
-            has_rows = False
-            vip_rows = []
-
-        vips = self._parse_carp_vip_rows(vip_rows) if has_rows else []
+        has_rows = bool(vips)
 
         enabled = self._coerce_carp_bool(carp_block.get("allow")) if has_carp_block else bool(vips)
         maintenance_mode = (
