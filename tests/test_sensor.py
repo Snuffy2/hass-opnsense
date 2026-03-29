@@ -109,7 +109,7 @@ def test_carp_sensor_unavailable_variants(coord_data, desc_subnet, make_config_e
     entry = make_config_entry()
 
     desc = MagicMock()
-    desc.key = f"carp.interface.{sensor_module.slugify(desc_subnet)}"
+    desc.key = f"carp.interface.lan0.{sensor_module.slugify(desc_subnet)}"
     desc.name = "CARP"
 
     s = OPNsenseCarpInterfaceSensor(config_entry=entry, coordinator=coord, entity_description=desc)
@@ -128,7 +128,7 @@ def test_carp_sensor_state_wrong_type(make_config_entry):
     entry = make_config_entry()
 
     desc = MagicMock()
-    desc.key = f"carp.interface.{sensor_module.slugify('10.10.10.10')}"
+    desc.key = f"carp.interface.wan.{sensor_module.slugify('10.10.10.10')}"
     desc.name = "CARP WrongType"
 
     s = OPNsenseCarpInterfaceSensor(config_entry=entry, coordinator=coord, entity_description=desc)
@@ -142,7 +142,7 @@ def test_carp_sensor_state_wrong_type(make_config_entry):
 @pytest.mark.parametrize(
     "desc_key,cls",
     [
-        ("carp.interface.some", OPNsenseCarpInterfaceSensor),
+        ("carp.interface.some.some", OPNsenseCarpInterfaceSensor),
         ("carp.status_summary", OPNsenseCarpStatusSensor),
         ("gateway.gw1.status", OPNsenseGatewaySensor),
         ("interface.lan.status", OPNsenseInterfaceSensor),
@@ -290,7 +290,11 @@ def test_carp_sensor_attributes_and_icon(
     coord.data = {"carp": {"interfaces": [carp_entry]}}
 
     desc = MagicMock()
-    desc.key = f"carp.interface.{sensor_module.slugify(carp_entry['subnet'])}"
+    desc.key = (
+        f"carp.interface."
+        f"{sensor_module.slugify(carp_entry.get('interface', 'unknown'))}."
+        f"{sensor_module.slugify(carp_entry['subnet'])}"
+    )
     desc.name = "CARP Test"
 
     s = OPNsenseCarpInterfaceSensor(config_entry=entry, coordinator=coord, entity_description=desc)
@@ -323,7 +327,7 @@ def test_carp_sensor_attributes_and_icon(
                 "interfaces": ["lan", "wan"],
                 "vips": [{"interface": "wan", "subnet": "1.2.3.4", "status": "MASTER"}],
             },
-            "healthy",
+            "Healthy",
             "mdi:check-network",
         ),
         (
@@ -340,7 +344,7 @@ def test_carp_sensor_attributes_and_icon(
                 "interfaces": ["wan"],
                 "vips": [],
             },
-            "maintenance",
+            "Maintenance",
             "mdi:backup-restore",
         ),
         (
@@ -357,7 +361,7 @@ def test_carp_sensor_attributes_and_icon(
                 "interfaces": ["wan"],
                 "vips": [],
             },
-            "degraded",
+            "Degraded",
             "mdi:close-network-outline",
         ),
         (
@@ -374,7 +378,7 @@ def test_carp_sensor_attributes_and_icon(
                 "interfaces": ["wan"],
                 "vips": [{"interface": "wan", "subnet": "1.2.3.5", "status": "INIT"}],
             },
-            "disabled",
+            "Disabled",
             "mdi:close-network-outline",
         ),
         (
@@ -391,7 +395,7 @@ def test_carp_sensor_attributes_and_icon(
                 "interfaces": [],
                 "vips": [],
             },
-            "not_configured",
+            "Not Configured",
             "mdi:backup-restore",
         ),
         (
@@ -468,17 +472,15 @@ async def test_compile_carp_interface_sensor_name_includes_interface(make_config
 
     entities = await sensor_module._compile_carp_interface_sensors(entry, coordinator, state)
     assert len(entities) == 1
-    assert (
-        entities[0].entity_description.name
-        == "CARP Interface Status WAN 203.0.113.10 (Primary WAN VIP)"
-    )
+    assert entities[0].entity_description.name == "CARP Interface: WAN: 203.0.113.10"
+    assert entities[0].entity_description.key == "carp.interface.wan.203_0_113_10"
 
 
 @pytest.mark.parametrize(
     ("desc_key", "cls", "main_check", "extra_check"),
     [
         (
-            f"carp.interface.{sensor_module.slugify('10.0.0.1')}",
+            f"carp.interface.{sensor_module.slugify('lan0')}.{sensor_module.slugify('10.0.0.1')}",
             OPNsenseCarpInterfaceSensor,
             lambda s: s.native_value == "MASTER",
             lambda s: s.icon == "mdi:check-network",
@@ -486,7 +488,7 @@ async def test_compile_carp_interface_sensor_name_includes_interface(make_config
         (
             "carp.status_summary",
             OPNsenseCarpStatusSensor,
-            lambda s: s.native_value == "healthy",
+            lambda s: s.native_value == "Healthy",
             lambda s: s.icon == "mdi:check-network",
         ),
         (
