@@ -178,6 +178,7 @@ Many entities are created by `hass-opnsense` for statistics etc. Due to the volu
 * Filesystem usage
 * Interface details (status, stats, pps, kbs, etc.) *[speeds are based on the `Scan Interval (seconds)` config option]*
 * Gateways details (status, delay, stddev, loss, address)
+  * Gateway address sensors are disabled by default.
 * CARP Status (aggregate)
 * CARP Interface status
 * DHCP Leases
