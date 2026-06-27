@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
         mac_address: str | None
         name: str | None
+        ip_address: str | None
         pref_disable_new_entities: bool
 
         def __init__(self, *args: object, **kwargs: object) -> None:
