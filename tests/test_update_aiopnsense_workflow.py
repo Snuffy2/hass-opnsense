@@ -208,6 +208,10 @@ def _load_script(module_name: str, script_path: Path) -> ModuleType:
     [
         ("actions/setup-python@v6", "pins a Python runtime"),
         ("python-version: '3.14'", "uses a tomllib-capable Python"),
+        (
+            "python -m pip install --disable-pip-version-check --no-input requests",
+            "installs requests before script usage",
+        ),
         ("Automated update of aiopnsense dependency pins.", "describes generated PRs"),
         ("custom_components/opnsense/manifest.json", "updates the integration manifest"),
         ("pyproject.toml", "updates the local dependency pin"),
@@ -233,6 +237,22 @@ def test_workflow_contains_expected_update_logic(needle: str, reason: str) -> No
 def test_workflow_avoids_inline_repository_template_expansion() -> None:
     """Workflow should not expand the repository context inside shell scripts."""
     assert '--repository "${{ github.repository }}"' not in WORKFLOW_PATH.read_text()
+
+
+def test_workflow_installs_requests_before_scripts() -> None:
+    """Workflow should install requests before any script that imports it runs."""
+    workflow_text = WORKFLOW_PATH.read_text()
+    install_step = "python -m pip install --disable-pip-version-check --no-input requests"
+    assert install_step in workflow_text
+
+    script_invocations = [
+        "python .github/scripts/update_aiopnsense_pins.py",
+        "python .github/scripts/build_aiopnsense_release_notes.py",
+        "python .github/scripts/cleanup_aiopnsense_update_branches.py",
+    ]
+    install_index = workflow_text.index(install_step)
+    for invocation in script_invocations:
+        assert install_index < workflow_text.index(invocation)
 
 
 def _read_update_workflow_surface() -> str:
