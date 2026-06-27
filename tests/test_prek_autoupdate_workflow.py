@@ -2,13 +2,11 @@
 
 from collections.abc import Generator
 from importlib import util
-import json
 from pathlib import Path
 import sys
 from types import ModuleType
 
 import pytest
-import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_SCRIPT_PATH = ".github/scripts/cleanup_prek_update_branches.py"
@@ -19,49 +17,6 @@ WORKFLOW_LABEL = "dependencies"
 WORKFLOW_AUTHOR = "github-actions[bot]"
 WORKFLOW_BODY_MARKER = "Automated update of `prek` hooks."
 REPOSITORY = "o/r"
-
-
-class FakeHTTPResponse:
-    """Fake requests response returned by workflow helper request tests."""
-
-    def __init__(self, *, status_code: int, body: str) -> None:
-        """Initialize a fake requests response.
-
-        Args:
-            status_code: HTTP status code.
-            body: Response body text.
-        """
-        self.status_code = status_code
-        self.text = body
-        self.content = body.encode()
-        self.headers: dict[str, str] = {}
-
-    def json(self) -> object:
-        """Return the decoded JSON response body."""
-        return json.loads(self.text)
-
-
-class FakeRequestsRequest:
-    """Fake ``requests.request`` callable returning one response."""
-
-    def __init__(self, response: FakeHTTPResponse) -> None:
-        """Initialize the fake with a response.
-
-        Args:
-            response: Response returned by the fake.
-        """
-        self.response = response
-        self.calls: list[dict[str, object]] = []
-
-    def __call__(
-        self,
-        method: str,
-        url: str,
-        **kwargs: object,
-    ) -> FakeHTTPResponse:
-        """Record the request and return the fake response."""
-        self.calls.append({"method": method, "url": url, **kwargs})
-        return self.response
 
 
 class FakeCleanupClient:
@@ -160,10 +115,6 @@ def cleanup_script() -> Generator[ModuleType]:
     [
         ("actions/setup-python@v6", "pins a Python runtime for cleanup"),
         ("python-version: '3.14'", "uses the same runtime as local tooling"),
-        (
-            "python -m pip install --disable-pip-version-check --no-input requests",
-            "installs requests before cleanup helper runs",
-        ),
         (WORKFLOW_SCRIPT_PATH, "runs the checked-in cleanup helper"),
         ("Close extra auto-generated PRs", "closes duplicate generated PRs"),
         ("Close stale prek update PRs", "closes stale PRs when no diff remains"),
@@ -200,16 +151,6 @@ def test_workflow_contains_expected_cleanup_logic(needle: str, reason: str) -> N
 def test_workflow_avoids_inline_repository_template_expansion() -> None:
     """Workflow should not expand the repository context inside shell scripts."""
     assert '--repository "${{ github.repository }}"' not in WORKFLOW_PATH.read_text()
-
-
-def test_workflow_installs_requests_before_cleanup_script() -> None:
-    """Workflow should install requests before running cleanup helper."""
-    workflow_text = WORKFLOW_PATH.read_text()
-    install_step = "python -m pip install --disable-pip-version-check --no-input requests"
-    assert install_step in workflow_text
-    assert workflow_text.index(install_step) < workflow_text.index(
-        "python .github/scripts/cleanup_prek_update_branches.py"
-    )
 
 
 def test_cleanup_script_closes_stale_prs_and_deletes_workflow_branches(
@@ -381,66 +322,3 @@ def test_github_headers_include_json_content_type(cleanup_script: ModuleType) ->
     headers = cleanup_script._github_headers("token")
 
     assert headers["Content-Type"] == "application/json"
-
-
-def test_request_json_handles_no_content_response(
-    cleanup_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cleanup helper should treat no-content responses as empty payloads."""
-    fake_request = FakeRequestsRequest(FakeHTTPResponse(status_code=204, body=""))
-    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
-
-    payload, link_header = cleanup_script._request_json(
-        method="DELETE",
-        url="https://api.github.com/repos/o/r/git/refs/heads/b",
-        headers={},
-    )
-
-    assert payload == {}
-    assert link_header is None
-    assert fake_request.calls[0]["method"] == "DELETE"
-
-
-def test_request_json_raises_api_error_for_non_success_status(
-    cleanup_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cleanup helper should preserve failed GitHub response details."""
-    fake_request = FakeRequestsRequest(
-        FakeHTTPResponse(status_code=422, body='{"message": "Reference does not exist"}')
-    )
-    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
-
-    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
-        cleanup_script._request_json(
-            method="DELETE",
-            url="https://api.github.com/repos/o/r/git/refs/heads/b",
-            headers={},
-        )
-
-    assert exc_info.value.status == 422
-    assert "Reference does not exist" in exc_info.value.body
-
-
-def test_request_json_normalizes_transport_errors(
-    cleanup_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cleanup helper should convert request transport failures into API errors."""
-
-    def raise_timeout(*_: object, **__: object) -> None:
-        """Raise a requests transport error."""
-        raise requests.Timeout("timed out")
-
-    monkeypatch.setattr(cleanup_script.requests, "request", raise_timeout)
-
-    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
-        cleanup_script._request_json(
-            method="GET",
-            url="https://api.github.com/repos/o/r/pulls",
-            headers={},
-        )
-
-    assert exc_info.value.status == 0
-    assert "timed out" in exc_info.value.body

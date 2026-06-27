@@ -10,8 +10,8 @@ import logging
 import os
 import sys
 from typing import Protocol
-
-import requests
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 GITHUB_API_URL = "https://api.github.com"
 LOGGER = logging.getLogger(__name__)
@@ -95,8 +95,8 @@ class GithubClient:
         url = f"{GITHUB_API_URL}/repos/{self.repository}/git/refs/{ref}"
         try:
             self._request("DELETE", url)
-        except GithubAPIError as err:
-            if err.status == 404 or (err.status == 422 and _is_missing_ref_error(err.body)):
+        except HTTPError as err:
+            if err.code == 404 or (err.code == 422 and _is_missing_ref_error(err)):
                 LOGGER.info("Ref %s was already deleted.", ref)
                 return
             raise
@@ -118,64 +118,12 @@ class GithubClient:
         Returns:
             Decoded payload and Link header.
         """
-        return _request_json(
-            method=method,
-            url=url,
-            headers=_github_headers(self.token),
-            payload=payload,
-        )
-
-
-class GithubAPIError(Exception):
-    """Error raised for non-successful GitHub API responses."""
-
-    def __init__(self, status: int, body: str) -> None:
-        """Initialize a GitHub API error.
-
-        Args:
-            status: HTTP status code.
-            body: Response body.
-        """
-        super().__init__(f"GitHub API request failed with HTTP {status}")
-        self.status = status
-        self.body = body
-
-
-def _request_json(
-    *,
-    method: str,
-    url: str,
-    headers: Mapping[str, str],
-    payload: Mapping[str, object] | None = None,
-) -> tuple[object, str | None]:
-    """Send a JSON request to the GitHub API over HTTPS.
-
-    Args:
-        method: HTTP method.
-        url: Target HTTPS URL.
-        headers: Request headers.
-        payload: Optional JSON payload.
-
-    Returns:
-        Decoded JSON payload and Link header.
-
-    Raises:
-        GithubAPIError: If the response is not successful.
-    """
-    if not url.startswith("https://"):
-        raise GithubAPIError(0, f"Unsupported URL: {url}")
-
-    data = json.dumps(payload).encode() if payload is not None else None
-
-    try:
-        response = requests.request(method, url, data=data, headers=dict(headers), timeout=30)
-    except requests.RequestException as err:
-        raise GithubAPIError(0, str(err)) from err
-    if response.status_code < 200 or response.status_code >= 300:
-        raise GithubAPIError(response.status_code, response.text)
-    if response.status_code == 204 or not response.content:
-        return {}, response.headers.get("Link")
-    return response.json(), response.headers.get("Link")
+        data = json.dumps(payload).encode() if payload is not None else None
+        request = Request(url, data=data, headers=_github_headers(self.token), method=method)  # noqa: S310
+        with urlopen(request, timeout=30) as response:  # noqa: S310
+            if response.status == 204:
+                return {}, response.headers.get("Link")
+            return json.load(response), response.headers.get("Link")
 
 
 def cleanup_update_branches(
@@ -345,15 +293,16 @@ def _github_headers(token: str) -> dict[str, str]:
     }
 
 
-def _is_missing_ref_error(body: str) -> bool:
+def _is_missing_ref_error(err: HTTPError) -> bool:
     """Return whether a GitHub 422 error reports a missing ref.
 
     Args:
-        body: Response body from the GitHub API.
+        err: HTTP error from the GitHub API.
 
     Returns:
         True when the error body says the reference does not exist.
     """
+    body = err.read().decode(errors="replace")
     if not body:
         return False
     try:

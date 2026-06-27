@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+import json
 import logging
 import os
 from pathlib import Path
 import re
 import sys
 from urllib.error import URLError
-
-import requests
+from urllib.request import Request, urlopen
 
 GITHUB_API_URL = "https://api.github.com"
 LOGGER = logging.getLogger(__name__)
@@ -189,37 +189,14 @@ def fetch_releases(*, owner: str, repo: str, token: str | None = None) -> list[d
     releases: list[dict[str, object]] = []
     url: str | None = f"{GITHUB_API_URL}/repos/{owner}/{repo}/releases?per_page=100"
     while url is not None:
-        payload, link_header = _request_json(url=url, headers=_github_headers(token))
-        if not isinstance(payload, list):
-            raise TypeError(f"Expected a list of releases from {url}")
-        releases.extend(release for release in payload if isinstance(release, dict))
-        url = _next_link(link_header)
+        request = Request(url, headers=_github_headers(token))  # noqa: S310
+        with urlopen(request, timeout=30) as response:  # noqa: S310
+            payload = json.load(response)
+            if not isinstance(payload, list):
+                raise TypeError(f"Expected a list of releases from {url}")
+            releases.extend(release for release in payload if isinstance(release, dict))
+            url = _next_link(response.headers.get("Link"))
     return releases
-
-
-def _request_json(*, url: str, headers: Mapping[str, str]) -> tuple[object, str | None]:
-    """Fetch JSON from an HTTPS URL.
-
-    Args:
-        url: Target HTTPS URL.
-        headers: Request headers.
-
-    Returns:
-        Decoded JSON payload and Link header, if present.
-
-    Raises:
-        URLError: If the request fails or the response is not successful.
-    """
-    if not url.startswith("https://"):
-        raise URLError(f"Unsupported URL: {url}")
-
-    try:
-        response = requests.get(url, headers=dict(headers), timeout=30)
-    except requests.RequestException as err:
-        raise URLError(str(err)) from err
-    if response.status_code < 200 or response.status_code >= 300:
-        raise URLError(f"HTTP {response.status_code} for {url}: {response.text}")
-    return response.json(), response.headers.get("Link")
 
 
 def _github_headers(token: str | None) -> dict[str, str]:

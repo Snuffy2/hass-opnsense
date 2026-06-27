@@ -10,8 +10,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
-
-import requests
+from urllib.request import urlopen
 
 PYPI_URL = "https://pypi.org/pypi/aiopnsense/json"
 PIN_PREFIX = "aiopnsense=="
@@ -101,35 +100,10 @@ def fetch_latest_version() -> str:
     Raises:
         ValueError: If PyPI does not return a usable version.
     """
-    payload = _request_json(PYPI_URL)
+    with urlopen(PYPI_URL, timeout=30) as response:  # noqa: S310
+        payload = json.load(response)
+
     return _select_latest_stable_version(payload)
-
-
-def _request_json(url: str) -> Mapping[str, object]:
-    """Fetch JSON from an HTTPS URL.
-
-    Args:
-        url: Target HTTPS URL.
-
-    Returns:
-        Decoded JSON payload.
-
-    Raises:
-        ValueError: If the URL is unsupported or the response is not a JSON object.
-    """
-    if not url.startswith("https://"):
-        raise ValueError(f"Unsupported URL: {url}")
-
-    try:
-        response = requests.get(url, timeout=30)
-    except requests.RequestException as err:
-        raise ValueError(str(err)) from err
-    if response.status_code < 200 or response.status_code >= 300:
-        raise ValueError(f"HTTP {response.status_code} for {url}: {response.text}")
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise TypeError(f"Expected a JSON object from {url}")
-    return payload
 
 
 def _select_latest_stable_version(payload: Mapping[str, object]) -> str:

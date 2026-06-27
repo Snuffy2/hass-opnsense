@@ -7,76 +7,11 @@ import sys
 from types import ModuleType
 
 import pytest
-import requests
 
 WORKFLOW_PATH = Path(".github/workflows/update_aiopnsense.yml")
 SCRIPT_PATH = Path(".github/scripts/update_aiopnsense_pins.py")
 RELEASE_NOTES_SCRIPT_PATH = Path(".github/scripts/build_aiopnsense_release_notes.py")
 CLEANUP_SCRIPT_PATH = Path(".github/scripts/cleanup_aiopnsense_update_branches.py")
-
-
-class FakeHTTPResponse:
-    """Fake requests response returned by workflow helper request tests."""
-
-    def __init__(
-        self,
-        *,
-        status_code: int,
-        body: str,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        """Initialize a fake requests response.
-
-        Args:
-            status_code: HTTP status code.
-            body: Response body text.
-            headers: Optional response headers.
-        """
-        self.status_code = status_code
-        self.text = body
-        self.content = body.encode()
-        self.headers = headers or {}
-
-    def json(self) -> object:
-        """Return the decoded JSON response body."""
-        return json.loads(self.text)
-
-
-class FakeRequestsGet:
-    """Fake ``requests.get`` callable returning ordered responses."""
-
-    def __init__(self, responses: list[FakeHTTPResponse]) -> None:
-        """Initialize the fake with ordered responses.
-
-        Args:
-            responses: Responses returned by successive calls.
-        """
-        self.responses = responses
-        self.calls: list[dict[str, object]] = []
-
-    def __call__(self, url: str, **kwargs: object) -> FakeHTTPResponse:
-        """Return the next fake response."""
-        self.calls.append({"url": url, **kwargs})
-        return self.responses.pop(0)
-
-
-class FakeRequestsRequest:
-    """Fake ``requests.request`` callable returning one response."""
-
-    def __init__(self, response: FakeHTTPResponse) -> None:
-        """Initialize the fake with a response."""
-        self.response = response
-        self.calls: list[dict[str, object]] = []
-
-    def __call__(
-        self,
-        method: str,
-        url: str,
-        **kwargs: object,
-    ) -> FakeHTTPResponse:
-        """Record the request and return the fake response."""
-        self.calls.append({"method": method, "url": url, **kwargs})
-        return self.response
 
 
 class FakeCleanupClient:
@@ -208,10 +143,6 @@ def _load_script(module_name: str, script_path: Path) -> ModuleType:
     [
         ("actions/setup-python@v6", "pins a Python runtime"),
         ("python-version: '3.14'", "uses a tomllib-capable Python"),
-        (
-            "python -m pip install --disable-pip-version-check --no-input requests",
-            "installs requests before script usage",
-        ),
         ("Automated update of aiopnsense dependency pins.", "describes generated PRs"),
         ("custom_components/opnsense/manifest.json", "updates the integration manifest"),
         ("pyproject.toml", "updates the local dependency pin"),
@@ -237,22 +168,6 @@ def test_workflow_contains_expected_update_logic(needle: str, reason: str) -> No
 def test_workflow_avoids_inline_repository_template_expansion() -> None:
     """Workflow should not expand the repository context inside shell scripts."""
     assert '--repository "${{ github.repository }}"' not in WORKFLOW_PATH.read_text()
-
-
-def test_workflow_installs_requests_before_scripts() -> None:
-    """Workflow should install requests before any script that imports it runs."""
-    workflow_text = WORKFLOW_PATH.read_text()
-    install_step = "python -m pip install --disable-pip-version-check --no-input requests"
-    assert install_step in workflow_text
-
-    script_invocations = [
-        "python .github/scripts/update_aiopnsense_pins.py",
-        "python .github/scripts/build_aiopnsense_release_notes.py",
-        "python .github/scripts/cleanup_aiopnsense_update_branches.py",
-    ]
-    install_index = workflow_text.index(install_step)
-    for invocation in script_invocations:
-        assert install_index < workflow_text.index(invocation)
 
 
 def _read_update_workflow_surface() -> str:
@@ -472,154 +387,6 @@ def test_release_note_script_handles_url_errors(
     )
 
     assert result == 1
-
-
-def test_release_note_fetch_releases_paginates_with_link_header(
-    release_notes_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Release-note helper should follow GitHub Link pagination."""
-    fake_get = FakeRequestsGet(
-        [
-            FakeHTTPResponse(
-                status_code=200,
-                body='[{"tag_name": "1.0.8"}]',
-                headers={"Link": '<https://api.github.com/repos/o/r/releases?page=2>; rel="next"'},
-            ),
-            FakeHTTPResponse(status_code=200, body='[{"tag_name": "1.0.9"}]'),
-        ]
-    )
-    monkeypatch.setattr(release_notes_script.requests, "get", fake_get)
-
-    releases = release_notes_script.fetch_releases(owner="o", repo="r")
-
-    assert [release["tag_name"] for release in releases] == ["1.0.8", "1.0.9"]
-    assert [call["url"] for call in fake_get.calls] == [
-        "https://api.github.com/repos/o/r/releases?per_page=100",
-        "https://api.github.com/repos/o/r/releases?page=2",
-    ]
-
-
-def test_release_note_request_json_raises_for_non_success_status(
-    release_notes_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Release-note helper should expose failed HTTP responses."""
-    fake_get = FakeRequestsGet(
-        [FakeHTTPResponse(status_code=500, body='{"message": "server failed"}')]
-    )
-    monkeypatch.setattr(release_notes_script.requests, "get", fake_get)
-
-    with pytest.raises(release_notes_script.URLError, match="HTTP 500"):
-        release_notes_script._request_json(
-            url="https://api.github.com/repos/o/r/releases",
-            headers={},
-        )
-
-
-def test_release_note_request_json_normalizes_transport_errors(
-    release_notes_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Release-note helper should keep network failures on the URLError path."""
-
-    def raise_timeout(*_: object, **__: object) -> None:
-        """Raise a requests transport error."""
-        raise requests.Timeout("timed out")
-
-    monkeypatch.setattr(release_notes_script.requests, "get", raise_timeout)
-
-    with pytest.raises(release_notes_script.URLError, match="timed out"):
-        release_notes_script._request_json(
-            url="https://api.github.com/repos/o/r/releases",
-            headers={},
-        )
-
-
-def test_updater_request_json_rejects_non_object_payload(
-    updater_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Updater helper should reject unexpected JSON payload shapes."""
-    fake_get = FakeRequestsGet([FakeHTTPResponse(status_code=200, body="[]")])
-    monkeypatch.setattr(updater_script.requests, "get", fake_get)
-
-    with pytest.raises(TypeError, match="Expected a JSON object"):
-        updater_script._request_json("https://pypi.org/pypi/aiopnsense/json")
-
-
-def test_updater_request_json_raises_for_non_success_status(
-    updater_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Updater helper should fail clearly for non-success HTTP responses."""
-    fake_get = FakeRequestsGet([FakeHTTPResponse(status_code=503, body="unavailable")])
-    monkeypatch.setattr(updater_script.requests, "get", fake_get)
-
-    with pytest.raises(ValueError, match="HTTP 503"):
-        updater_script._request_json("https://pypi.org/pypi/aiopnsense/json")
-
-
-def test_cleanup_request_json_handles_no_content_response(
-    cleanup_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cleanup helper should treat no-content responses as empty payloads."""
-    fake_request = FakeRequestsRequest(FakeHTTPResponse(status_code=204, body=""))
-    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
-
-    payload, link_header = cleanup_script._request_json(
-        method="DELETE",
-        url="https://api.github.com/repos/o/r/git/refs/heads/b",
-        headers={},
-    )
-
-    assert payload == {}
-    assert link_header is None
-
-
-def test_cleanup_request_json_raises_api_error_for_non_success_status(
-    cleanup_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cleanup helper should preserve failed GitHub response details."""
-    fake_request = FakeRequestsRequest(
-        FakeHTTPResponse(status_code=422, body='{"message": "Reference does not exist"}')
-    )
-    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
-
-    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
-        cleanup_script._request_json(
-            method="DELETE",
-            url="https://api.github.com/repos/o/r/git/refs/heads/b",
-            headers={},
-        )
-
-    assert exc_info.value.status == 422
-    assert "Reference does not exist" in exc_info.value.body
-
-
-def test_cleanup_request_json_normalizes_transport_errors(
-    cleanup_script: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cleanup helper should convert request transport failures into API errors."""
-
-    def raise_timeout(*_: object, **__: object) -> None:
-        """Raise a requests transport error."""
-        raise requests.Timeout("timed out")
-
-    monkeypatch.setattr(cleanup_script.requests, "request", raise_timeout)
-
-    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
-        cleanup_script._request_json(
-            method="GET",
-            url="https://api.github.com/repos/o/r/pulls",
-            headers={},
-        )
-
-    assert exc_info.value.status == 0
-    assert "timed out" in exc_info.value.body
 
 
 def test_cleanup_script_closes_stale_prs_and_deletes_workflow_branches(

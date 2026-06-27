@@ -27,12 +27,6 @@ jobs:
         with:
           tool: prek
 
-      - name: Install requests dependency
-        run: |
-          set -euo pipefail
-
-          python -m pip install --disable-pip-version-check --no-input requests
-
       - name: Run prek auto-update
         id: prek
         run: |

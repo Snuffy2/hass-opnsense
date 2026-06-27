@@ -37,12 +37,6 @@ jobs:
           python-version: '3.14'
           cache: 'pip'
 
-      - name: Install requests dependency
-        run: |
-          set -euo pipefail
-
-          python -m pip install --disable-pip-version-check --no-input requests
-
       - name: Determine current and latest aiopnsense versions
         id: versions
         run: |
