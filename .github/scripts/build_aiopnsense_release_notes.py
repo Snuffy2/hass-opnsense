@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+import http.client
 import json
 import logging
 import os
 from pathlib import Path
 import re
+import ssl
 import sys
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 GITHUB_API_URL = "https://api.github.com"
 LOGGER = logging.getLogger(__name__)
@@ -189,14 +191,50 @@ def fetch_releases(*, owner: str, repo: str, token: str | None = None) -> list[d
     releases: list[dict[str, object]] = []
     url: str | None = f"{GITHUB_API_URL}/repos/{owner}/{repo}/releases?per_page=100"
     while url is not None:
-        request = Request(url, headers=_github_headers(token))  # noqa: S310
-        with urlopen(request, timeout=30) as response:  # noqa: S310
-            payload = json.load(response)
-            if not isinstance(payload, list):
-                raise TypeError(f"Expected a list of releases from {url}")
-            releases.extend(release for release in payload if isinstance(release, dict))
-            url = _next_link(response.headers.get("Link"))
+        payload, link_header = _request_json(url=url, headers=_github_headers(token))
+        if not isinstance(payload, list):
+            raise TypeError(f"Expected a list of releases from {url}")
+        releases.extend(release for release in payload if isinstance(release, dict))
+        url = _next_link(link_header)
     return releases
+
+
+def _request_json(*, url: str, headers: Mapping[str, str]) -> tuple[object, str | None]:
+    """Fetch JSON from an HTTPS URL.
+
+    Args:
+        url: Target HTTPS URL.
+        headers: Request headers.
+
+    Returns:
+        Decoded JSON payload and Link header, if present.
+
+    Raises:
+        URLError: If the request fails or the response is not successful.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise URLError(f"Unsupported URL: {url}")
+
+    connection = http.client.HTTPSConnection(
+        parsed.netloc,
+        timeout=30,
+        context=ssl.create_default_context(),
+    )
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    try:
+        connection.request("GET", path, headers=dict(headers))
+        response = connection.getresponse()
+        body = response.read().decode("utf-8", errors="replace")
+        if response.status < 200 or response.status >= 300:
+            raise URLError(f"HTTP {response.status} for {url}: {body}")
+        payload = json.loads(body)
+        return payload, response.headers.get("Link")
+    finally:
+        connection.close()
 
 
 def _github_headers(token: str | None) -> dict[str, str]:

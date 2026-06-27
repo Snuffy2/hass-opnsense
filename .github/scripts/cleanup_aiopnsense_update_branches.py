@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+import http.client
 import json
 import logging
 import os
+import ssl
 import sys
 from typing import Protocol
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 GITHUB_API_URL = "https://api.github.com"
 LOGGER = logging.getLogger(__name__)
@@ -95,8 +96,8 @@ class GithubClient:
         url = f"{GITHUB_API_URL}/repos/{self.repository}/git/refs/{ref}"
         try:
             self._request("DELETE", url)
-        except HTTPError as err:
-            if err.code == 404 or (err.code == 422 and _is_missing_ref_error(err)):
+        except GithubAPIError as err:
+            if err.status == 404 or (err.status == 422 and _is_missing_ref_error(err.body)):
                 LOGGER.info("Ref %s was already deleted.", ref)
                 return
             raise
@@ -118,12 +119,77 @@ class GithubClient:
         Returns:
             Decoded payload and Link header.
         """
-        data = json.dumps(payload).encode() if payload is not None else None
-        request = Request(url, data=data, headers=_github_headers(self.token), method=method)  # noqa: S310
-        with urlopen(request, timeout=30) as response:  # noqa: S310
-            if response.status == 204:
-                return {}, response.headers.get("Link")
-            return json.load(response), response.headers.get("Link")
+        return _request_json(
+            method=method,
+            url=url,
+            headers=_github_headers(self.token),
+            payload=payload,
+        )
+
+
+class GithubAPIError(Exception):
+    """Error raised for non-successful GitHub API responses."""
+
+    def __init__(self, status: int, body: str) -> None:
+        """Initialize a GitHub API error.
+
+        Args:
+            status: HTTP status code.
+            body: Response body.
+        """
+        super().__init__(f"GitHub API request failed with HTTP {status}")
+        self.status = status
+        self.body = body
+
+
+def _request_json(
+    *,
+    method: str,
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, object] | None = None,
+) -> tuple[object, str | None]:
+    """Send a JSON request to the GitHub API over HTTPS.
+
+    Args:
+        method: HTTP method.
+        url: Target HTTPS URL.
+        headers: Request headers.
+        payload: Optional JSON payload.
+
+    Returns:
+        Decoded JSON payload and Link header.
+
+    Raises:
+        GithubAPIError: If the response is not successful.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise GithubAPIError(0, f"Unsupported URL: {url}")
+
+    connection = http.client.HTTPSConnection(
+        parsed.netloc,
+        timeout=30,
+        context=ssl.create_default_context(),
+    )
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    data = json.dumps(payload).encode() if payload is not None else None
+
+    try:
+        connection.request(method, path, body=data, headers=dict(headers))
+        response = connection.getresponse()
+        body = response.read().decode("utf-8", errors="replace")
+        if response.status < 200 or response.status >= 300:
+            raise GithubAPIError(response.status, body)
+        if response.status == 204:
+            return {}, response.headers.get("Link")
+        if not body:
+            return {}, response.headers.get("Link")
+        return json.loads(body), response.headers.get("Link")
+    finally:
+        connection.close()
 
 
 def cleanup_update_branches(
@@ -293,16 +359,15 @@ def _github_headers(token: str) -> dict[str, str]:
     }
 
 
-def _is_missing_ref_error(err: HTTPError) -> bool:
+def _is_missing_ref_error(body: str) -> bool:
     """Return whether a GitHub 422 error reports a missing ref.
 
     Args:
-        err: HTTP error from the GitHub API.
+        body: Response body from the GitHub API.
 
     Returns:
         True when the error body says the reference does not exist.
     """
-    body = err.read().decode(errors="replace")
     if not body:
         return False
     try:

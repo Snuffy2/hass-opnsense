@@ -4,10 +4,9 @@ from collections.abc import Mapping, MutableMapping
 import contextlib
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.device_tracker import SourceType
-from homeassistant.components.device_tracker.config_entry import ScannerEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import (
@@ -34,6 +33,23 @@ from .entity import OPNsenseBaseEntity
 from .helpers import dict_get
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+
+    class ScannerEntity:
+        """Type-checking stub for the Home Assistant scanner entity base class."""
+
+        mac_address: str | None
+        name: str | None
+        pref_disable_new_entities: bool
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            """Initialize the scanner entity stub."""
+
+        async def async_added_to_hass(self) -> None:
+            """Mirror the Home Assistant callback hook."""
+else:
+    from homeassistant.components.device_tracker.config_entry import ScannerEntity
 
 
 def _device_data_from_arp_entry(
@@ -429,7 +445,7 @@ class OPNsenseScannerEntity(OPNsenseBaseEntity, ScannerEntity, RestoreEntity):
 
         self.async_write_ha_state()
 
-    @property  # type: ignore[misc] # overriding final from ScannerEntity
+    @property
     def device_info(self) -> DeviceInfo | None:
         """Return device registry metadata for the tracker.
 
