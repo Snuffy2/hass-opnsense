@@ -19,6 +19,83 @@ WORKFLOW_BODY_MARKER = "Automated update of `prek` hooks."
 REPOSITORY = "o/r"
 
 
+class FakeHTTPResponse:
+    """Fake HTTP response returned by workflow helper request tests."""
+
+    def __init__(self, *, status: int, body: str) -> None:
+        """Initialize a fake HTTP response.
+
+        Args:
+            status: HTTP status code.
+            body: Response body text.
+        """
+        self.status = status
+        self._body = body.encode()
+        self.headers: dict[str, str] = {}
+
+    def read(self) -> bytes:
+        """Return the encoded response body."""
+        return self._body
+
+
+class FakeHTTPSConnection:
+    """Fake HTTPS connection that records requests and returns one response."""
+
+    def __init__(self, response: FakeHTTPResponse) -> None:
+        """Initialize the connection with a single response.
+
+        Args:
+            response: Response returned by ``getresponse``.
+        """
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+        self.closed = False
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """Record the outgoing request."""
+        self.requests.append(
+            {
+                "method": method,
+                "path": path,
+                "body": body,
+                "headers": headers,
+            }
+        )
+
+    def getresponse(self) -> FakeHTTPResponse:
+        """Return the configured response."""
+        return self.response
+
+    def close(self) -> None:
+        """Record that the connection was closed."""
+        self.closed = True
+
+
+class FakeHTTPSConnectionFactory:
+    """Factory that supplies fake HTTPS connections to patched modules."""
+
+    def __init__(self, responses: list[FakeHTTPResponse]) -> None:
+        """Initialize the factory with ordered responses.
+
+        Args:
+            responses: Responses returned by successive connections.
+        """
+        self.responses = responses
+        self.connections: list[FakeHTTPSConnection] = []
+
+    def __call__(self, *_: object, **__: object) -> FakeHTTPSConnection:
+        """Return a fake connection for the next response."""
+        connection = FakeHTTPSConnection(self.responses.pop(0))
+        self.connections.append(connection)
+        return connection
+
+
 class FakeCleanupClient:
     """Fake GitHub cleanup client that records mutating calls."""
 
@@ -322,3 +399,43 @@ def test_github_headers_include_json_content_type(cleanup_script: ModuleType) ->
     headers = cleanup_script._github_headers("token")
 
     assert headers["Content-Type"] == "application/json"
+
+
+def test_request_json_handles_no_content_response(
+    cleanup_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup helper should treat no-content responses as empty payloads."""
+    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=204, body="")])
+    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+
+    payload, link_header = cleanup_script._request_json(
+        method="DELETE",
+        url="https://api.github.com/repos/o/r/git/refs/heads/b",
+        headers={},
+    )
+
+    assert payload == {}
+    assert link_header is None
+    assert factory.connections[0].closed is True
+
+
+def test_request_json_raises_api_error_for_non_success_status(
+    cleanup_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup helper should preserve failed GitHub response details."""
+    factory = FakeHTTPSConnectionFactory(
+        [FakeHTTPResponse(status=422, body='{"message": "Reference does not exist"}')]
+    )
+    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+
+    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
+        cleanup_script._request_json(
+            method="DELETE",
+            url="https://api.github.com/repos/o/r/git/refs/heads/b",
+            headers={},
+        )
+
+    assert exc_info.value.status == 422
+    assert "Reference does not exist" in exc_info.value.body

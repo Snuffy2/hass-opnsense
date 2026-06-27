@@ -14,6 +14,90 @@ RELEASE_NOTES_SCRIPT_PATH = Path(".github/scripts/build_aiopnsense_release_notes
 CLEANUP_SCRIPT_PATH = Path(".github/scripts/cleanup_aiopnsense_update_branches.py")
 
 
+class FakeHTTPResponse:
+    """Fake HTTP response returned by workflow helper request tests."""
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        body: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """Initialize a fake HTTP response.
+
+        Args:
+            status: HTTP status code.
+            body: Response body text.
+            headers: Optional response headers.
+        """
+        self.status = status
+        self._body = body.encode()
+        self.headers = headers or {}
+
+    def read(self) -> bytes:
+        """Return the encoded response body."""
+        return self._body
+
+
+class FakeHTTPSConnection:
+    """Fake HTTPS connection that records requests and returns one response."""
+
+    def __init__(self, response: FakeHTTPResponse) -> None:
+        """Initialize the connection with a single response.
+
+        Args:
+            response: Response returned by ``getresponse``.
+        """
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+        self.closed = False
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """Record the outgoing request."""
+        self.requests.append(
+            {
+                "method": method,
+                "path": path,
+                "body": body,
+                "headers": headers,
+            }
+        )
+
+    def getresponse(self) -> FakeHTTPResponse:
+        """Return the configured response."""
+        return self.response
+
+    def close(self) -> None:
+        """Record that the connection was closed."""
+        self.closed = True
+
+
+class FakeHTTPSConnectionFactory:
+    """Factory that supplies fake HTTPS connections to patched modules."""
+
+    def __init__(self, responses: list[FakeHTTPResponse]) -> None:
+        """Initialize the factory with ordered responses.
+
+        Args:
+            responses: Responses returned by successive connections.
+        """
+        self.responses = responses
+        self.connections: list[FakeHTTPSConnection] = []
+
+    def __call__(self, *_: object, **__: object) -> FakeHTTPSConnection:
+        """Return a fake connection for the next response."""
+        connection = FakeHTTPSConnection(self.responses.pop(0))
+        self.connections.append(connection)
+        return connection
+
+
 class FakeCleanupClient:
     """Fake GitHub cleanup client that records mutating calls."""
 
@@ -387,6 +471,113 @@ def test_release_note_script_handles_url_errors(
     )
 
     assert result == 1
+
+
+def test_release_note_fetch_releases_paginates_with_link_header(
+    release_notes_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Release-note helper should follow GitHub Link pagination."""
+    factory = FakeHTTPSConnectionFactory(
+        [
+            FakeHTTPResponse(
+                status=200,
+                body='[{"tag_name": "1.0.8"}]',
+                headers={"Link": '<https://api.github.com/repos/o/r/releases?page=2>; rel="next"'},
+            ),
+            FakeHTTPResponse(status=200, body='[{"tag_name": "1.0.9"}]'),
+        ]
+    )
+    monkeypatch.setattr(release_notes_script.http.client, "HTTPSConnection", factory)
+
+    releases = release_notes_script.fetch_releases(owner="o", repo="r")
+
+    assert [release["tag_name"] for release in releases] == ["1.0.8", "1.0.9"]
+    assert [connection.requests[0]["path"] for connection in factory.connections] == [
+        "/repos/o/r/releases?per_page=100",
+        "/repos/o/r/releases?page=2",
+    ]
+    assert all(connection.closed for connection in factory.connections)
+
+
+def test_release_note_request_json_raises_for_non_success_status(
+    release_notes_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Release-note helper should expose failed HTTP responses."""
+    factory = FakeHTTPSConnectionFactory(
+        [FakeHTTPResponse(status=500, body='{"message": "server failed"}')]
+    )
+    monkeypatch.setattr(release_notes_script.http.client, "HTTPSConnection", factory)
+
+    with pytest.raises(release_notes_script.URLError, match="HTTP 500"):
+        release_notes_script._request_json(
+            url="https://api.github.com/repos/o/r/releases",
+            headers={},
+        )
+
+
+def test_updater_request_json_rejects_non_object_payload(
+    updater_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Updater helper should reject unexpected JSON payload shapes."""
+    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=200, body="[]")])
+    monkeypatch.setattr(updater_script.http.client, "HTTPSConnection", factory)
+
+    with pytest.raises(TypeError, match="Expected a JSON object"):
+        updater_script._request_json("https://pypi.org/pypi/aiopnsense/json")
+
+
+def test_updater_request_json_raises_for_non_success_status(
+    updater_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Updater helper should fail clearly for non-success HTTP responses."""
+    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=503, body="unavailable")])
+    monkeypatch.setattr(updater_script.http.client, "HTTPSConnection", factory)
+
+    with pytest.raises(ValueError, match="HTTP 503"):
+        updater_script._request_json("https://pypi.org/pypi/aiopnsense/json")
+
+
+def test_cleanup_request_json_handles_no_content_response(
+    cleanup_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup helper should treat no-content responses as empty payloads."""
+    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=204, body="")])
+    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+
+    payload, link_header = cleanup_script._request_json(
+        method="DELETE",
+        url="https://api.github.com/repos/o/r/git/refs/heads/b",
+        headers={},
+    )
+
+    assert payload == {}
+    assert link_header is None
+
+
+def test_cleanup_request_json_raises_api_error_for_non_success_status(
+    cleanup_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup helper should preserve failed GitHub response details."""
+    factory = FakeHTTPSConnectionFactory(
+        [FakeHTTPResponse(status=422, body='{"message": "Reference does not exist"}')]
+    )
+    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+
+    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
+        cleanup_script._request_json(
+            method="DELETE",
+            url="https://api.github.com/repos/o/r/git/refs/heads/b",
+            headers={},
+        )
+
+    assert exc_info.value.status == 422
+    assert "Reference does not exist" in exc_info.value.body
 
 
 def test_cleanup_script_closes_stale_prs_and_deletes_workflow_branches(
