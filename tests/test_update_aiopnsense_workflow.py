@@ -7,6 +7,7 @@ import sys
 from types import ModuleType
 
 import pytest
+import requests
 
 WORKFLOW_PATH = Path(".github/workflows/update_aiopnsense.yml")
 SCRIPT_PATH = Path(".github/scripts/update_aiopnsense_pins.py")
@@ -15,87 +16,67 @@ CLEANUP_SCRIPT_PATH = Path(".github/scripts/cleanup_aiopnsense_update_branches.p
 
 
 class FakeHTTPResponse:
-    """Fake HTTP response returned by workflow helper request tests."""
+    """Fake requests response returned by workflow helper request tests."""
 
     def __init__(
         self,
         *,
-        status: int,
+        status_code: int,
         body: str,
         headers: dict[str, str] | None = None,
     ) -> None:
-        """Initialize a fake HTTP response.
+        """Initialize a fake requests response.
 
         Args:
-            status: HTTP status code.
+            status_code: HTTP status code.
             body: Response body text.
             headers: Optional response headers.
         """
-        self.status = status
-        self._body = body.encode()
+        self.status_code = status_code
+        self.text = body
+        self.content = body.encode()
         self.headers = headers or {}
 
-    def read(self) -> bytes:
-        """Return the encoded response body."""
-        return self._body
+    def json(self) -> object:
+        """Return the decoded JSON response body."""
+        return json.loads(self.text)
 
 
-class FakeHTTPSConnection:
-    """Fake HTTPS connection that records requests and returns one response."""
-
-    def __init__(self, response: FakeHTTPResponse) -> None:
-        """Initialize the connection with a single response.
-
-        Args:
-            response: Response returned by ``getresponse``.
-        """
-        self.response = response
-        self.requests: list[dict[str, object]] = []
-        self.closed = False
-
-    def request(
-        self,
-        method: str,
-        path: str,
-        body: bytes | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        """Record the outgoing request."""
-        self.requests.append(
-            {
-                "method": method,
-                "path": path,
-                "body": body,
-                "headers": headers,
-            }
-        )
-
-    def getresponse(self) -> FakeHTTPResponse:
-        """Return the configured response."""
-        return self.response
-
-    def close(self) -> None:
-        """Record that the connection was closed."""
-        self.closed = True
-
-
-class FakeHTTPSConnectionFactory:
-    """Factory that supplies fake HTTPS connections to patched modules."""
+class FakeRequestsGet:
+    """Fake ``requests.get`` callable returning ordered responses."""
 
     def __init__(self, responses: list[FakeHTTPResponse]) -> None:
-        """Initialize the factory with ordered responses.
+        """Initialize the fake with ordered responses.
 
         Args:
-            responses: Responses returned by successive connections.
+            responses: Responses returned by successive calls.
         """
         self.responses = responses
-        self.connections: list[FakeHTTPSConnection] = []
+        self.calls: list[dict[str, object]] = []
 
-    def __call__(self, *_: object, **__: object) -> FakeHTTPSConnection:
-        """Return a fake connection for the next response."""
-        connection = FakeHTTPSConnection(self.responses.pop(0))
-        self.connections.append(connection)
-        return connection
+    def __call__(self, url: str, **kwargs: object) -> FakeHTTPResponse:
+        """Return the next fake response."""
+        self.calls.append({"url": url, **kwargs})
+        return self.responses.pop(0)
+
+
+class FakeRequestsRequest:
+    """Fake ``requests.request`` callable returning one response."""
+
+    def __init__(self, response: FakeHTTPResponse) -> None:
+        """Initialize the fake with a response."""
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self,
+        method: str,
+        url: str,
+        **kwargs: object,
+    ) -> FakeHTTPResponse:
+        """Record the request and return the fake response."""
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return self.response
 
 
 class FakeCleanupClient:
@@ -478,26 +459,25 @@ def test_release_note_fetch_releases_paginates_with_link_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Release-note helper should follow GitHub Link pagination."""
-    factory = FakeHTTPSConnectionFactory(
+    fake_get = FakeRequestsGet(
         [
             FakeHTTPResponse(
-                status=200,
+                status_code=200,
                 body='[{"tag_name": "1.0.8"}]',
                 headers={"Link": '<https://api.github.com/repos/o/r/releases?page=2>; rel="next"'},
             ),
-            FakeHTTPResponse(status=200, body='[{"tag_name": "1.0.9"}]'),
+            FakeHTTPResponse(status_code=200, body='[{"tag_name": "1.0.9"}]'),
         ]
     )
-    monkeypatch.setattr(release_notes_script.http.client, "HTTPSConnection", factory)
+    monkeypatch.setattr(release_notes_script.requests, "get", fake_get)
 
     releases = release_notes_script.fetch_releases(owner="o", repo="r")
 
     assert [release["tag_name"] for release in releases] == ["1.0.8", "1.0.9"]
-    assert [connection.requests[0]["path"] for connection in factory.connections] == [
-        "/repos/o/r/releases?per_page=100",
-        "/repos/o/r/releases?page=2",
+    assert [call["url"] for call in fake_get.calls] == [
+        "https://api.github.com/repos/o/r/releases?per_page=100",
+        "https://api.github.com/repos/o/r/releases?page=2",
     ]
-    assert all(connection.closed for connection in factory.connections)
 
 
 def test_release_note_request_json_raises_for_non_success_status(
@@ -505,12 +485,31 @@ def test_release_note_request_json_raises_for_non_success_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Release-note helper should expose failed HTTP responses."""
-    factory = FakeHTTPSConnectionFactory(
-        [FakeHTTPResponse(status=500, body='{"message": "server failed"}')]
+    fake_get = FakeRequestsGet(
+        [FakeHTTPResponse(status_code=500, body='{"message": "server failed"}')]
     )
-    monkeypatch.setattr(release_notes_script.http.client, "HTTPSConnection", factory)
+    monkeypatch.setattr(release_notes_script.requests, "get", fake_get)
 
     with pytest.raises(release_notes_script.URLError, match="HTTP 500"):
+        release_notes_script._request_json(
+            url="https://api.github.com/repos/o/r/releases",
+            headers={},
+        )
+
+
+def test_release_note_request_json_normalizes_transport_errors(
+    release_notes_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Release-note helper should keep network failures on the URLError path."""
+
+    def raise_timeout(*_: object, **__: object) -> None:
+        """Raise a requests transport error."""
+        raise requests.Timeout("timed out")
+
+    monkeypatch.setattr(release_notes_script.requests, "get", raise_timeout)
+
+    with pytest.raises(release_notes_script.URLError, match="timed out"):
         release_notes_script._request_json(
             url="https://api.github.com/repos/o/r/releases",
             headers={},
@@ -522,8 +521,8 @@ def test_updater_request_json_rejects_non_object_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Updater helper should reject unexpected JSON payload shapes."""
-    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=200, body="[]")])
-    monkeypatch.setattr(updater_script.http.client, "HTTPSConnection", factory)
+    fake_get = FakeRequestsGet([FakeHTTPResponse(status_code=200, body="[]")])
+    monkeypatch.setattr(updater_script.requests, "get", fake_get)
 
     with pytest.raises(TypeError, match="Expected a JSON object"):
         updater_script._request_json("https://pypi.org/pypi/aiopnsense/json")
@@ -534,8 +533,8 @@ def test_updater_request_json_raises_for_non_success_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Updater helper should fail clearly for non-success HTTP responses."""
-    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=503, body="unavailable")])
-    monkeypatch.setattr(updater_script.http.client, "HTTPSConnection", factory)
+    fake_get = FakeRequestsGet([FakeHTTPResponse(status_code=503, body="unavailable")])
+    monkeypatch.setattr(updater_script.requests, "get", fake_get)
 
     with pytest.raises(ValueError, match="HTTP 503"):
         updater_script._request_json("https://pypi.org/pypi/aiopnsense/json")
@@ -546,8 +545,8 @@ def test_cleanup_request_json_handles_no_content_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cleanup helper should treat no-content responses as empty payloads."""
-    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=204, body="")])
-    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+    fake_request = FakeRequestsRequest(FakeHTTPResponse(status_code=204, body=""))
+    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
 
     payload, link_header = cleanup_script._request_json(
         method="DELETE",
@@ -564,10 +563,10 @@ def test_cleanup_request_json_raises_api_error_for_non_success_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cleanup helper should preserve failed GitHub response details."""
-    factory = FakeHTTPSConnectionFactory(
-        [FakeHTTPResponse(status=422, body='{"message": "Reference does not exist"}')]
+    fake_request = FakeRequestsRequest(
+        FakeHTTPResponse(status_code=422, body='{"message": "Reference does not exist"}')
     )
-    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
 
     with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
         cleanup_script._request_json(
@@ -578,6 +577,29 @@ def test_cleanup_request_json_raises_api_error_for_non_success_status(
 
     assert exc_info.value.status == 422
     assert "Reference does not exist" in exc_info.value.body
+
+
+def test_cleanup_request_json_normalizes_transport_errors(
+    cleanup_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup helper should convert request transport failures into API errors."""
+
+    def raise_timeout(*_: object, **__: object) -> None:
+        """Raise a requests transport error."""
+        raise requests.Timeout("timed out")
+
+    monkeypatch.setattr(cleanup_script.requests, "request", raise_timeout)
+
+    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
+        cleanup_script._request_json(
+            method="GET",
+            url="https://api.github.com/repos/o/r/pulls",
+            headers={},
+        )
+
+    assert exc_info.value.status == 0
+    assert "timed out" in exc_info.value.body
 
 
 def test_cleanup_script_closes_stale_prs_and_deletes_workflow_branches(

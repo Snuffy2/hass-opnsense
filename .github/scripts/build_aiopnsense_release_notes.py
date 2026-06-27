@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
-import http.client
-import json
 import logging
 import os
 from pathlib import Path
 import re
-import ssl
 import sys
 from urllib.error import URLError
-from urllib.parse import urlsplit
+
+import requests
 
 GITHUB_API_URL = "https://api.github.com"
 LOGGER = logging.getLogger(__name__)
@@ -212,29 +210,16 @@ def _request_json(*, url: str, headers: Mapping[str, str]) -> tuple[object, str 
     Raises:
         URLError: If the request fails or the response is not successful.
     """
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or not parsed.netloc:
+    if not url.startswith("https://"):
         raise URLError(f"Unsupported URL: {url}")
 
-    connection = http.client.HTTPSConnection(
-        parsed.netloc,
-        timeout=30,
-        context=ssl.create_default_context(),
-    )
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-
     try:
-        connection.request("GET", path, headers=dict(headers))
-        response = connection.getresponse()
-        body = response.read().decode("utf-8", errors="replace")
-        if response.status < 200 or response.status >= 300:
-            raise URLError(f"HTTP {response.status} for {url}: {body}")
-        payload = json.loads(body)
-        return payload, response.headers.get("Link")
-    finally:
-        connection.close()
+        response = requests.get(url, headers=dict(headers), timeout=30)
+    except requests.RequestException as err:
+        raise URLError(str(err)) from err
+    if response.status_code < 200 or response.status_code >= 300:
+        raise URLError(f"HTTP {response.status_code} for {url}: {response.text}")
+    return response.json(), response.headers.get("Link")
 
 
 def _github_headers(token: str | None) -> dict[str, str]:

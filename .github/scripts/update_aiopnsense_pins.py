@@ -5,14 +5,13 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import http.client
 import json
 from pathlib import Path
 import re
-import ssl
 import sys
 import tomllib
-from urllib.parse import urlsplit
+
+import requests
 
 PYPI_URL = "https://pypi.org/pypi/aiopnsense/json"
 PIN_PREFIX = "aiopnsense=="
@@ -118,31 +117,19 @@ def _request_json(url: str) -> Mapping[str, object]:
     Raises:
         ValueError: If the URL is unsupported or the response is not a JSON object.
     """
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or not parsed.netloc:
+    if not url.startswith("https://"):
         raise ValueError(f"Unsupported URL: {url}")
 
-    connection = http.client.HTTPSConnection(
-        parsed.netloc,
-        timeout=30,
-        context=ssl.create_default_context(),
-    )
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-
     try:
-        connection.request("GET", path)
-        response = connection.getresponse()
-        body = response.read().decode("utf-8", errors="replace")
-        if response.status < 200 or response.status >= 300:
-            raise ValueError(f"HTTP {response.status} for {url}: {body}")
-        payload = json.loads(body)
-        if not isinstance(payload, dict):
-            raise TypeError(f"Expected a JSON object from {url}")
-        return payload
-    finally:
-        connection.close()
+        response = requests.get(url, timeout=30)
+    except requests.RequestException as err:
+        raise ValueError(str(err)) from err
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ValueError(f"HTTP {response.status_code} for {url}: {response.text}")
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise TypeError(f"Expected a JSON object from {url}")
+    return payload
 
 
 def _select_latest_stable_version(payload: Mapping[str, object]) -> str:

@@ -2,11 +2,13 @@
 
 from collections.abc import Generator
 from importlib import util
+import json
 from pathlib import Path
 import sys
 from types import ModuleType
 
 import pytest
+import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_SCRIPT_PATH = ".github/scripts/cleanup_prek_update_branches.py"
@@ -20,80 +22,46 @@ REPOSITORY = "o/r"
 
 
 class FakeHTTPResponse:
-    """Fake HTTP response returned by workflow helper request tests."""
+    """Fake requests response returned by workflow helper request tests."""
 
-    def __init__(self, *, status: int, body: str) -> None:
-        """Initialize a fake HTTP response.
+    def __init__(self, *, status_code: int, body: str) -> None:
+        """Initialize a fake requests response.
 
         Args:
-            status: HTTP status code.
+            status_code: HTTP status code.
             body: Response body text.
         """
-        self.status = status
-        self._body = body.encode()
+        self.status_code = status_code
+        self.text = body
+        self.content = body.encode()
         self.headers: dict[str, str] = {}
 
-    def read(self) -> bytes:
-        """Return the encoded response body."""
-        return self._body
+    def json(self) -> object:
+        """Return the decoded JSON response body."""
+        return json.loads(self.text)
 
 
-class FakeHTTPSConnection:
-    """Fake HTTPS connection that records requests and returns one response."""
+class FakeRequestsRequest:
+    """Fake ``requests.request`` callable returning one response."""
 
     def __init__(self, response: FakeHTTPResponse) -> None:
-        """Initialize the connection with a single response.
+        """Initialize the fake with a response.
 
         Args:
-            response: Response returned by ``getresponse``.
+            response: Response returned by the fake.
         """
         self.response = response
-        self.requests: list[dict[str, object]] = []
-        self.closed = False
+        self.calls: list[dict[str, object]] = []
 
-    def request(
+    def __call__(
         self,
         method: str,
-        path: str,
-        body: bytes | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        """Record the outgoing request."""
-        self.requests.append(
-            {
-                "method": method,
-                "path": path,
-                "body": body,
-                "headers": headers,
-            }
-        )
-
-    def getresponse(self) -> FakeHTTPResponse:
-        """Return the configured response."""
+        url: str,
+        **kwargs: object,
+    ) -> FakeHTTPResponse:
+        """Record the request and return the fake response."""
+        self.calls.append({"method": method, "url": url, **kwargs})
         return self.response
-
-    def close(self) -> None:
-        """Record that the connection was closed."""
-        self.closed = True
-
-
-class FakeHTTPSConnectionFactory:
-    """Factory that supplies fake HTTPS connections to patched modules."""
-
-    def __init__(self, responses: list[FakeHTTPResponse]) -> None:
-        """Initialize the factory with ordered responses.
-
-        Args:
-            responses: Responses returned by successive connections.
-        """
-        self.responses = responses
-        self.connections: list[FakeHTTPSConnection] = []
-
-    def __call__(self, *_: object, **__: object) -> FakeHTTPSConnection:
-        """Return a fake connection for the next response."""
-        connection = FakeHTTPSConnection(self.responses.pop(0))
-        self.connections.append(connection)
-        return connection
 
 
 class FakeCleanupClient:
@@ -406,8 +374,8 @@ def test_request_json_handles_no_content_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cleanup helper should treat no-content responses as empty payloads."""
-    factory = FakeHTTPSConnectionFactory([FakeHTTPResponse(status=204, body="")])
-    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+    fake_request = FakeRequestsRequest(FakeHTTPResponse(status_code=204, body=""))
+    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
 
     payload, link_header = cleanup_script._request_json(
         method="DELETE",
@@ -417,7 +385,7 @@ def test_request_json_handles_no_content_response(
 
     assert payload == {}
     assert link_header is None
-    assert factory.connections[0].closed is True
+    assert fake_request.calls[0]["method"] == "DELETE"
 
 
 def test_request_json_raises_api_error_for_non_success_status(
@@ -425,10 +393,10 @@ def test_request_json_raises_api_error_for_non_success_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cleanup helper should preserve failed GitHub response details."""
-    factory = FakeHTTPSConnectionFactory(
-        [FakeHTTPResponse(status=422, body='{"message": "Reference does not exist"}')]
+    fake_request = FakeRequestsRequest(
+        FakeHTTPResponse(status_code=422, body='{"message": "Reference does not exist"}')
     )
-    monkeypatch.setattr(cleanup_script.http.client, "HTTPSConnection", factory)
+    monkeypatch.setattr(cleanup_script.requests, "request", fake_request)
 
     with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
         cleanup_script._request_json(
@@ -439,3 +407,26 @@ def test_request_json_raises_api_error_for_non_success_status(
 
     assert exc_info.value.status == 422
     assert "Reference does not exist" in exc_info.value.body
+
+
+def test_request_json_normalizes_transport_errors(
+    cleanup_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup helper should convert request transport failures into API errors."""
+
+    def raise_timeout(*_: object, **__: object) -> None:
+        """Raise a requests transport error."""
+        raise requests.Timeout("timed out")
+
+    monkeypatch.setattr(cleanup_script.requests, "request", raise_timeout)
+
+    with pytest.raises(cleanup_script.GithubAPIError) as exc_info:
+        cleanup_script._request_json(
+            method="GET",
+            url="https://api.github.com/repos/o/r/pulls",
+            headers={},
+        )
+
+    assert exc_info.value.status == 0
+    assert "timed out" in exc_info.value.body

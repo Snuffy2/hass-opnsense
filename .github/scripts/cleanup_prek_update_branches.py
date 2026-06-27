@@ -5,14 +5,13 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-import http.client
 import json
 import logging
 import os
-import ssl
 import sys
 from typing import Protocol
-from urllib.parse import urlsplit
+
+import requests
 
 GITHUB_API_URL = "https://api.github.com"
 CLOSED_PULL_PAGE_LIMIT = 5
@@ -176,33 +175,20 @@ def _request_json(
     Raises:
         GithubAPIError: If the response is not successful.
     """
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or not parsed.netloc:
+    if not url.startswith("https://"):
         raise GithubAPIError(0, f"Unsupported URL: {url}")
 
-    connection = http.client.HTTPSConnection(
-        parsed.netloc,
-        timeout=30,
-        context=ssl.create_default_context(),
-    )
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
     data = json.dumps(payload).encode() if payload is not None else None
 
     try:
-        connection.request(method, path, body=data, headers=dict(headers))
-        response = connection.getresponse()
-        body = response.read().decode("utf-8", errors="replace")
-        if response.status < 200 or response.status >= 300:
-            raise GithubAPIError(response.status, body)
-        if response.status == 204:
-            return {}, response.headers.get("Link")
-        if not body:
-            return {}, response.headers.get("Link")
-        return json.loads(body), response.headers.get("Link")
-    finally:
-        connection.close()
+        response = requests.request(method, url, data=data, headers=dict(headers), timeout=30)
+    except requests.RequestException as err:
+        raise GithubAPIError(0, str(err)) from err
+    if response.status_code < 200 or response.status_code >= 300:
+        raise GithubAPIError(response.status_code, response.text)
+    if response.status_code == 204 or not response.content:
+        return {}, response.headers.get("Link")
+    return response.json(), response.headers.get("Link")
 
 
 def cleanup_update_branches(
