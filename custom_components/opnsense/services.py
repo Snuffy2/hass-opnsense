@@ -278,7 +278,9 @@ async def _get_clients(
         try:
             device_entry = dr.async_get(hass).async_get(opndevice_id)
         except (TypeError, AttributeError, HomeAssistantError) as err:
-            _LOGGER.debug("Unable to resolve OPNsense service device target: %s", err)
+            _LOGGER.debug(
+                "Unable to resolve OPNsense service device target %r: %s", opndevice_id, err
+            )
         else:
             # _LOGGER.debug(f"[get_clients] device_id: {opndevice_id}, device_entry:
             # {device_entry}")
@@ -288,7 +290,9 @@ async def _get_clients(
         try:
             entity_entry = er.async_get(hass).async_get(opnentity_id)
         except (TypeError, AttributeError, HomeAssistantError) as err:
-            _LOGGER.debug("Unable to resolve OPNsense service entity target: %s", err)
+            _LOGGER.debug(
+                "Unable to resolve OPNsense service entity target %r: %s", opnentity_id, err
+            )
         else:
             # _LOGGER.debug(f"[get_clients] entity_id: {opnentity_id}, entity_entry:
             # {entity_entry}")

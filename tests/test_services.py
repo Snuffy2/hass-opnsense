@@ -4,6 +4,7 @@ These tests exercise service helpers, validation paths, and error handling
 for operations such as starting/stopping services and generating vouchers.
 """
 
+import logging
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock
 
@@ -93,7 +94,9 @@ async def test_get_clients_single_and_multiple(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_get_clients_registry_errors_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_get_clients_registry_errors_are_ignored(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Verify that _get_clients returns all configured clients even when registry lookups raise exceptions. Device or entity registry lookups may raise exceptions; ensure these are ignored."""
     hass_local = MagicMock(spec=HomeAssistant)
     c1, c2 = MagicMock(name="c1"), MagicMock(name="c2")
@@ -123,8 +126,16 @@ async def test_get_clients_registry_errors_are_ignored(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(services_mod.dr, "async_get", _raises(TypeError()))
     monkeypatch.setattr(services_mod.er, "async_get", _raises(AttributeError()))
-    res = await services_mod._get_clients(hass_local, opndevice_id="d", opnentity_id="e")
+    with caplog.at_level(logging.DEBUG, logger=services_mod._LOGGER.name):
+        res = await services_mod._get_clients(hass_local, opndevice_id="d", opnentity_id="e")
     assert res == [c1, c2]
+    debug_args = [
+        record.args
+        for record in caplog.records
+        if record.name == services_mod._LOGGER.name and isinstance(record.args, tuple)
+    ]
+    assert any(args[0] == "d" for args in debug_args)
+    assert any(args[0] == "e" for args in debug_args)
 
 
 @pytest.mark.asyncio
