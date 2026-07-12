@@ -964,7 +964,7 @@ async def test_options_flow_init_for_carp_entry_only_allows_scan_interval(
 async def test_options_flow_init_for_carp_entry_saves_scan_interval(
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
-    """Submitting CARP options should persist scan interval only."""
+    """Submitting CARP options should normalize scan interval and preserve unrelated options."""
     cfg = make_config_entry(
         data={
             cf_mod.CONF_URL: "https://x",
@@ -975,6 +975,7 @@ async def test_options_flow_init_for_carp_entry_saves_scan_interval(
         options={
             cf_mod.CONF_SCAN_INTERVAL: 60,
             cf_mod.CONF_DEVICE_TRACKER_ENABLED: False,
+            cf_mod.CONF_DEVICE_TRACKING_MODE: cf_mod.DEVICE_TRACKING_MODE_SELECTED,
         },
     )
     flow = _make_options_flow(cfg)
@@ -987,8 +988,9 @@ async def test_options_flow_init_for_carp_entry_saves_scan_interval(
     assert flow._options == {
         cf_mod.CONF_SCAN_INTERVAL: 120,
         cf_mod.CONF_DEVICE_TRACKER_ENABLED: False,
+        cf_mod.CONF_DEVICE_TRACKING_MODE: cf_mod.DEVICE_TRACKING_MODE_SELECTED,
     }
-    flow.hass.config_entries.async_update_entry.assert_called_once()
+    assert flow._options[cf_mod.CONF_SCAN_INTERVAL] == 120
 
 
 @pytest.mark.asyncio
@@ -1012,6 +1014,28 @@ async def test_options_flow_init_with_user_triggers_update() -> None:
     assert res["type"] == "create_entry"
     assert flow._options.get(cf_mod.CONF_SCAN_INTERVAL) == 30
     assert isinstance(flow._options.get(cf_mod.CONF_SCAN_INTERVAL), int)
+
+
+@pytest.mark.asyncio
+async def test_options_flow_init_for_device_shows_resolved_description_scope(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Device options form render should include normal options-scope description placeholders."""
+    cfg = make_config_entry(
+        data={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
+        options={},
+    )
+    flow = _make_options_flow(cfg)
+    flow._config = dict(cfg.data)
+    flow._options = dict(cfg.options)
+
+    res = await flow.async_step_init()
+
+    assert res["type"] == "form"
+    assert res["step_id"] == "init"
+    assert res["description_placeholders"] == {
+        "options_scope": "all available integration and device-tracker options"
+    }
 
 
 @pytest.mark.asyncio

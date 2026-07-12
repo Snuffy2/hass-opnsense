@@ -1157,15 +1157,17 @@ class OPNsenseOptionsFlow(OptionsFlow):
 
         if is_carp_entry(self.config_entry):
             if user_input is not None:
-                self._options[CONF_SCAN_INTERVAL] = _normalize_int_option(
+                options = dict(self._options)
+                options[CONF_SCAN_INTERVAL] = _normalize_int_option(
                     user_input.get(
                         CONF_SCAN_INTERVAL,
-                        self._options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                        options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                     ),
                     10,
                     300,
                 )
-                return self._create_options_entry()
+                self._options = options
+                return self.async_create_entry(data=self._options)
 
             if not user_input:
                 user_input = {}
