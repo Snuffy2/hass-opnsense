@@ -492,6 +492,49 @@ async def test_async_step_carp_accepts_vip_identity_without_physical_interface(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "system_info",
+    [None, {}, {"name": None}, {"name": ""}, {"name": "  "}, {"name": 123}, []],
+)
+async def test_async_step_carp_rejects_missing_or_blank_responder_name(
+    monkeypatch: pytest.MonkeyPatch,
+    system_info: Any,
+) -> None:
+    """CARP validation should require a usable responder name from system info."""
+    client = _CarpFlowClient()
+    object.__setattr__(client, "get_system_info", AsyncMock(return_value=system_info))
+    patch_opnsense_client(monkeypatch, cf_mod, lambda **_kwargs: client)
+
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = MagicMock()
+
+    result = await flow.async_step_carp(user_input=_make_basic_carp_input())
+
+    assert result["type"] == "form"
+    assert result["errors"]["base"] == "carp_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_async_step_carp_custom_name_does_not_waive_responder_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A custom entry name should not bypass required responder metadata."""
+    client = _CarpFlowClient()
+    object.__setattr__(client, "get_system_info", AsyncMock(return_value={"name": "  "}))
+    patch_opnsense_client(monkeypatch, cf_mod, lambda **_kwargs: client)
+
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = MagicMock()
+    user_input = _make_basic_carp_input()
+    user_input[cf_mod.CONF_NAME] = "Custom CARP"
+
+    result = await flow.async_step_carp(user_input=user_input)
+
+    assert result["type"] == "form"
+    assert result["errors"]["base"] == "carp_not_configured"
+
+
+@pytest.mark.asyncio
 async def test_async_step_carp_rejects_below_min_firmware(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -390,7 +390,7 @@ async def test_entry_removed_during_unload_aborts_before_registry_mutation(
     hass = MagicMock()
     entry = _make_entry(state=ConfigEntryState.LOADED)
     _configure_hass(hass, entry)
-    hass.config_entries.async_get_entry.side_effect = [entry, None]
+    hass.config_entries.async_get_entry.side_effect = [entry, entry, None]
     entity_registry, device_registry = _patch_registries(
         monkeypatch,
         entities=[SimpleNamespace(entity_id="sensor.old")],
@@ -402,11 +402,74 @@ async def test_entry_removed_during_unload_aborts_before_registry_mutation(
     result = await flow.async_step_confirm({})
 
     assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "entry_not_found"
+    assert result["reason"] == "entry_changed"
     entity_registry.async_remove.assert_not_called()
     device_registry.async_update_device.assert_not_called()
     hass.config_entries.async_update_entry.assert_not_called()
     hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation_stage", ["probe", "unload"])
+@pytest.mark.parametrize("field", ["url", "username", "password", "options", "unique_id"])
+async def test_entry_changed_during_probe_or_unload_aborts_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation_stage: str,
+    field: str,
+) -> None:
+    """Config-entry changes during awaited work must stop the destructive repair."""
+    hass = MagicMock()
+    entry = _make_entry(
+        state=ConfigEntryState.LOADED if mutation_stage == "unload" else ConfigEntryState.NOT_LOADED
+    )
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch)
+
+    def _mutate_entry() -> None:
+        """Apply one persisted-entry mutation while the repair is awaiting."""
+        if field in {"url", "username", "password"}:
+            object.__setattr__(entry, "data", {**entry.data, field: f"changed-{field}"})
+        elif field == "options":
+            entry.options["scan_interval"] = 99
+        else:
+            object.__setattr__(entry, "unique_id", "changed-unique-id")
+
+    if mutation_stage == "probe":
+
+        async def _probe_and_mutate() -> str:
+            """Mutate the entry before the probe completes."""
+            _mutate_entry()
+            return "other"
+
+        client.get_device_unique_id.side_effect = _probe_and_mutate
+    else:
+
+        def _unload_and_mutate(entry_id: str) -> bool:
+            """Mutate the entry while unloading it."""
+            _mutate_entry()
+            return True
+
+        hass.config_entries.async_unload.side_effect = _unload_and_mutate
+
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_changed"
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+    if mutation_stage == "probe":
+        hass.config_entries.async_unload.assert_not_awaited()
+    else:
+        hass.config_entries.async_unload.assert_awaited_once_with(entry.entry_id)
 
 
 @pytest.mark.asyncio

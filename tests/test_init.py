@@ -12,6 +12,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -253,6 +254,7 @@ async def test_async_setup_entry_carp_entry_uses_identity_less_runtime(
             captured.update(kwargs)
             self.refreshed = False
             self.shut = False
+            self.data = {"carp": {"interfaces": [{"vhid": 1, "subnet": "192.0.2.1"}]}}
 
         async def async_config_entry_first_refresh(self) -> bool:
             """Mark the coordinator as refreshed when setup initializes."""
@@ -300,6 +302,98 @@ async def test_async_setup_entry_carp_entry_uses_identity_less_runtime(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_data",
+    [
+        {},
+        {"carp": {}},
+        {"carp": {"interfaces": []}},
+        {"carp": {"interfaces": [{}]}},
+    ],
+)
+async def test_async_setup_entry_carp_requires_usable_initial_vip_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+    initial_data: dict[str, Any],
+) -> None:
+    """CARP setup should retry when the first refresh has no usable VIP inventory."""
+    client = _make_valid_setup_client()
+    monkeypatch.setattr(
+        init_mod, "create_opnsense_client_from_config_entry", lambda **_kwargs: client
+    )
+    coordinator = _make_setup_coordinator()
+    coordinator.data = initial_data
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", lambda **_kwargs: coordinator)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+    hass = ph_hass
+    hass.data = {init_mod.DOMAIN: {entry.entry_id: client}}
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+    with pytest.raises(ConfigEntryNotReady, match="usable CARP VIP"):
+        await init_mod.async_setup_entry(hass, entry)
+
+    coordinator.async_shutdown.assert_awaited_once()
+    client.async_close.assert_awaited_once()
+    assert entry.entry_id not in hass.data.get(init_mod.DOMAIN, {})
+    hass.config_entries.async_forward_entry_setups.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "interface",
+    [
+        {"vhid": 1, "subnet": "192.0.2.1"},
+        {"vhid": " 2 ", "subnet": " 192.0.2.2 "},
+    ],
+)
+async def test_async_setup_entry_carp_accepts_usable_initial_vip_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+    interface: dict[str, Any],
+) -> None:
+    """CARP setup should forward platforms when the first inventory has a usable VIP."""
+    client = _make_valid_setup_client()
+    monkeypatch.setattr(
+        init_mod, "create_opnsense_client_from_config_entry", lambda **_kwargs: client
+    )
+    coordinator = _make_setup_coordinator()
+    coordinator.data = {"carp": {"interfaces": [interface]}}
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", lambda **_kwargs: coordinator)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+    hass = ph_hass
+    hass.data = {}
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+    assert await init_mod.async_setup_entry(hass, entry) is True
+
+    coordinator.async_shutdown.assert_not_awaited()
+    client.async_close.assert_not_awaited()
+    hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+        entry, [Platform.SENSOR]
+    )
+
+
+@pytest.mark.asyncio
 async def test_async_setup_entry_carp_first_refresh_failure_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
     ph_hass: Any,
@@ -312,6 +406,7 @@ async def test_async_setup_entry_carp_first_refresh_failure_cleans_up(
     )
     coordinator = _make_setup_coordinator()
     coordinator.async_config_entry_first_refresh.side_effect = RuntimeError("refresh failed")
+    coordinator.data = {"carp": {"interfaces": [{"vhid": 1, "subnet": "192.0.2.1"}]}}
     monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", lambda **_kwargs: coordinator)
 
     entry = make_config_entry(
@@ -348,6 +443,7 @@ async def test_async_setup_entry_carp_platform_forward_failure_cleans_up(
         init_mod, "create_opnsense_client_from_config_entry", lambda **_kwargs: client
     )
     coordinator = _make_setup_coordinator()
+    coordinator.data = {"carp": {"interfaces": [{"vhid": 1, "subnet": "192.0.2.1"}]}}
     monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", lambda **_kwargs: coordinator)
 
     entry = make_config_entry(

@@ -17,6 +17,7 @@ import awesomeversion
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL, CONF_VERIFY_SSL, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
@@ -52,6 +53,7 @@ from .helpers import (
     create_opnsense_client_from_config_entry,
     firewall_rule_switch_unique_ids_from_payload,
     is_carp_entry,
+    is_usable_carp_vip,
 )
 from .repairs import async_create_device_id_mismatch_issue
 from .services import async_setup_services
@@ -226,6 +228,14 @@ async def _async_setup_carp_entry(hass: HomeAssistant, entry: ConfigEntry) -> bo
         )
 
         await coordinator.async_config_entry_first_refresh()
+
+        coordinator_data = coordinator.data
+        carp_state = coordinator_data.get("carp") if isinstance(coordinator_data, Mapping) else None
+        carp_interfaces = carp_state.get("interfaces") if isinstance(carp_state, Mapping) else None
+        if not isinstance(carp_interfaces, list) or not any(
+            is_usable_carp_vip(interface) for interface in carp_interfaces
+        ):
+            raise ConfigEntryNotReady("No usable CARP VIPs were returned during initial refresh")
 
         platforms: list[Platform] = CARP_PLATFORMS.copy()
         hass.data.setdefault(DOMAIN, {})

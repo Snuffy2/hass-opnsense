@@ -59,7 +59,7 @@ from .const import (
     OPNSENSE_MIN_FIRMWARE,
     TRACKED_MACS,
 )
-from .helpers import create_opnsense_client, is_carp_entry
+from .helpers import create_opnsense_client, is_carp_entry, is_usable_carp_vip
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -540,44 +540,28 @@ async def _validate_carp_client_details(
         user_input[CONF_FIRMWARE_VERSION] = firmware
 
         system_info = await client.get_system_info()
+        if not isinstance(system_info, Mapping):
+            raise OPNsenseCarpNotConfiguredError("CARP responder information is unavailable")
+        responder_name = system_info.get("name")
+        if not isinstance(responder_name, str) or not responder_name.strip():
+            raise OPNsenseCarpNotConfiguredError("CARP responder name is unavailable")
+        responder_name = responder_name.strip()
+
         carp = await client.get_carp()
         carp_interfaces = carp.get("interfaces") if isinstance(carp, Mapping) else None
         if not isinstance(carp_interfaces, list) or not any(
-            _has_carp_vip_identity(interface) for interface in carp_interfaces
+            is_usable_carp_vip(interface) for interface in carp_interfaces
         ):
             raise OPNsenseCarpNotConfiguredError("No CARP VIPs were returned")
 
-        responder_name = system_info.get("name") if isinstance(system_info, Mapping) else None
         if not user_input.get(CONF_NAME):
-            base_name = responder_name if isinstance(responder_name, str) else "OPNsense"
-            user_input[CONF_NAME] = f"{base_name} CARP VIP"
+            user_input[CONF_NAME] = f"{responder_name} CARP VIP"
 
         user_input[CONF_ENTRY_TYPE] = ENTRY_TYPE_CARP
         user_input.pop(CONF_DEVICE_UNIQUE_ID, None)
         user_input.pop(CONF_GRANULAR_SYNC_OPTIONS, None)
     finally:
         await client.async_close()
-
-
-def _has_carp_vip_identity(value: object) -> bool:
-    """Return whether a CARP row contains normalized VHID and subnet values.
-
-    Args:
-        value: Raw CARP interface/VIP row from the OPNsense API.
-
-    Returns:
-        bool: ``True`` when the row has non-empty VHID and subnet identities.
-    """
-    if not isinstance(value, Mapping):
-        return False
-
-    vhid = value.get("vhid")
-    if isinstance(vhid, bool) or not isinstance(vhid, (int, str)):
-        return False
-    normalized_vhid = str(vhid).strip()
-    subnet = value.get("subnet")
-    normalized_subnet = subnet.strip() if isinstance(subnet, str) else ""
-    return bool(normalized_vhid and normalized_subnet)
 
 
 def _record_validation_error(errors: MutableMapping[str, Any], key: str, message: str) -> None:

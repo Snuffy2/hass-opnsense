@@ -183,6 +183,27 @@ def config_entry_identity(config_entry: ConfigEntry) -> str:
     return device_id if isinstance(device_id, str) and device_id else config_entry.entry_id
 
 
+def is_usable_carp_vip(value: object) -> bool:
+    """Return whether a CARP row has a usable VHID and subnet identity.
+
+    Args:
+        value: Raw CARP VIP row returned by the OPNsense API.
+
+    Returns:
+        bool: ``True`` when normalized VHID and subnet values are non-empty.
+    """
+    if not isinstance(value, Mapping):
+        return False
+
+    vhid = value.get("vhid")
+    if isinstance(vhid, bool) or not isinstance(vhid, (int, str)):
+        return False
+    normalized_vhid = str(vhid).strip()
+    subnet = value.get("subnet")
+    normalized_subnet = subnet.strip() if isinstance(subnet, str) else ""
+    return bool(normalized_vhid and normalized_subnet)
+
+
 def coerce_bool(value: Any) -> bool | None:
     """Normalize values that may represent booleans.
 

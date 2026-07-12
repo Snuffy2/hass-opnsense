@@ -18,6 +18,35 @@ _ISSUE_SUFFIX = "_device_id_mismatched"
 _LOGGER = logging.getLogger(__name__)
 
 
+def _entry_matches_snapshot(
+    entry: ConfigEntry | None,
+    entry_id: str,
+    data_snapshot: dict[str, object],
+    options_snapshot: dict[str, object],
+    unique_id_snapshot: str | None,
+) -> bool:
+    """Return whether a re-fetched entry still matches the repair snapshot.
+
+    Args:
+        entry: Current config entry, if it still exists.
+        entry_id: Entry ID captured when the repair started.
+        data_snapshot: Original config-entry data mapping.
+        options_snapshot: Original config-entry options mapping.
+        unique_id_snapshot: Original config-entry unique ID.
+
+    Returns:
+        bool: ``True`` when the entry identity and persisted values are unchanged.
+    """
+    return bool(
+        entry is not None
+        and entry.entry_id == entry_id
+        and not is_carp_entry(entry)
+        and dict(entry.data) == data_snapshot
+        and dict(entry.options) == options_snapshot
+        and entry.unique_id == unique_id_snapshot
+    )
+
+
 def async_create_device_id_mismatch_issue(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -83,6 +112,9 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         entry = self.hass.config_entries.async_get_entry(self._entry_id)
         if entry is None or is_carp_entry(entry):
             return self.async_abort(reason="entry_not_found")
+        entry_data_snapshot = dict(entry.data)
+        entry_options_snapshot = dict(entry.options)
+        entry_unique_id_snapshot = entry.unique_id
 
         try:
             client = create_opnsense_client_from_config_entry(
@@ -96,6 +128,19 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 await client.async_close()
         except OPNsenseError, aiohttp.ClientError, TimeoutError:
             return self.async_abort(reason="cannot_connect")
+
+        current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if current_entry is None:
+            return self.async_abort(reason="entry_changed")
+        if not _entry_matches_snapshot(
+            current_entry,
+            self._entry_id,
+            entry_data_snapshot,
+            entry_options_snapshot,
+            entry_unique_id_snapshot,
+        ):
+            return self.async_abort(reason="entry_changed")
+        entry = current_entry
 
         if not isinstance(observed_device_id, str) or not observed_device_id:
             return self.async_abort(reason="cannot_connect")
@@ -119,12 +164,16 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             return self.async_abort(reason="cannot_unload")
 
         current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
-        if (
-            current_entry is None
-            or current_entry.entry_id != self._entry_id
-            or is_carp_entry(current_entry)
+        if current_entry is None:
+            return self.async_abort(reason="entry_changed")
+        if not _entry_matches_snapshot(
+            current_entry,
+            self._entry_id,
+            entry_data_snapshot,
+            entry_options_snapshot,
+            entry_unique_id_snapshot,
         ):
-            return self.async_abort(reason="entry_not_found")
+            return self.async_abort(reason="entry_changed")
         entry = current_entry
 
         try:

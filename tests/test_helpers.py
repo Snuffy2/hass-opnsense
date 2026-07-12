@@ -23,6 +23,7 @@ from custom_components.opnsense.helpers import (
     firewall_rule_id_from_payload,
     firewall_rule_switch_unique_ids_from_payload,
     is_carp_entry,
+    is_usable_carp_vip,
 )
 
 
@@ -62,6 +63,29 @@ def test_coerce_bool_parses_bool_like_values(value: Any, expected: bool) -> None
 def test_coerce_bool_returns_none_for_unknown_values(value: Any) -> None:
     """Verify unknown values are not coerced into a boolean."""
     assert coerce_bool(value) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"vhid": 1, "subnet": "192.0.2.1"},
+        {"vhid": " 2 ", "subnet": " 192.0.2.2 "},
+    ],
+)
+def test_is_usable_carp_vip_accepts_normalized_identity_without_interface(
+    value: dict[str, Any],
+) -> None:
+    """CARP VIP usability should accept integer/string VHIDs without interface names."""
+    assert is_usable_carp_vip(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, {}, [], {"vhid": "", "subnet": "192.0.2.1"}, {"vhid": 1, "subnet": ""}],
+)
+def test_is_usable_carp_vip_rejects_missing_or_blank_identity(value: Any) -> None:
+    """CARP VIP usability should reject malformed or blank identity rows."""
+    assert is_usable_carp_vip(value) is False
 
 
 @pytest.mark.parametrize(

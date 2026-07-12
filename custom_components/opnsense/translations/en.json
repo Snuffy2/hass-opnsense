@@ -170,6 +170,7 @@
         },
         "abort": {
           "entry_not_found": "The OPNsense device entry no longer exists or is a CARP VIP entry.",
+          "entry_changed": "The OPNsense device entry changed while the repair was running. No registry changes were made.",
           "cannot_connect": "The replacement hardware could not be confirmed. No changes were made.",
           "already_configured": "Another OPNsense device entry already uses the replacement device ID. No changes were made.",
           "cannot_unload": "The OPNsense device entry could not be unloaded safely. No registry changes were made.",
