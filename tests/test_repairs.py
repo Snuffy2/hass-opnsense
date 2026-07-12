@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 from homeassistant.components.repairs import ConfirmRepairFlow
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
@@ -110,6 +111,7 @@ def _patch_probe_client(
     monkeypatch: pytest.MonkeyPatch,
     *,
     observed_device_id: Any = "other",
+    probe_error: BaseException | None = None,
     events: list[str] | None = None,
 ) -> MagicMock:
     """Patch strict client construction and return the client mock."""
@@ -126,7 +128,9 @@ def _patch_probe_client(
         if events is not None:
             events.append("close")
 
-    client.get_device_unique_id = AsyncMock(side_effect=_probe)
+    client.get_device_unique_id = AsyncMock(
+        side_effect=probe_error if probe_error is not None else _probe
+    )
     client.async_close = AsyncMock(side_effect=_close)
     factory = MagicMock(return_value=client)
     client.factory = factory
@@ -226,6 +230,23 @@ async def test_loaded_entry_unloads_before_registry_cleanup(
         events.append("unload")
         return True
 
+    class _OtherEntry:
+        """Duplicate-scan candidate whose ID access is observable."""
+
+        entry_id = "entry-2"
+
+        @property
+        def unique_id(self) -> str:
+            """Record the duplicate candidate comparison."""
+            events.append("duplicate_check")
+            return "different"
+
+    def _entries(domain: str) -> list[Any]:
+        """Record the duplicate scan and return only non-conflicting entries."""
+        events.append("duplicate_scan")
+        return [entry, _OtherEntry()]
+
+    hass.config_entries.async_entries.side_effect = _entries
     hass.config_entries.async_unload.side_effect = _unload
     entity = SimpleNamespace(entity_id="sensor.old", disabled_by=None)
     device = SimpleNamespace(id="device")
@@ -236,13 +257,117 @@ async def test_loaded_entry_unloads_before_registry_cleanup(
     device_registry.async_update_device.side_effect = lambda device_id, **kwargs: events.append(
         "device"
     )
+    hass.config_entries.async_update_entry.side_effect = lambda *args, **kwargs: events.append(
+        "config_update"
+    )
+    hass.config_entries.async_schedule_reload.side_effect = lambda entry_id: events.append("reload")
     _patch_probe_client(monkeypatch, events=events)
     monkeypatch.setattr(repairs.ir, "async_delete_issue", lambda *args: events.append("delete"))
     flow = _make_flow(hass, entry)
 
     await flow.async_step_confirm({})
 
-    assert events.index("unload") < events.index("entity") < events.index("device")
+    assert events == [
+        "probe",
+        "close",
+        "duplicate_scan",
+        "duplicate_check",
+        "unload",
+        "entity",
+        "device",
+        "config_update",
+        "delete",
+        "reload",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe_error", [aiohttp.ClientError("transport"), TimeoutError("timeout")])
+async def test_transport_probe_error_aborts_without_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+    probe_error: BaseException,
+) -> None:
+    """Raw transport errors from strict probing should abort and close the client."""
+    hass = MagicMock()
+    entry = _make_entry()
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch, probe_error=probe_error)
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+    client.async_close.assert_awaited_once_with()
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_unload.assert_not_awaited()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("observed_device_id", [None, ""])
+async def test_invalid_observed_device_id_aborts_without_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+    observed_device_id: str | None,
+) -> None:
+    """Empty replacement IDs should abort after closing the probe client."""
+    hass = MagicMock()
+    entry = _make_entry()
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch, observed_device_id=observed_device_id)
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+    client.async_close.assert_awaited_once_with()
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_unload.assert_not_awaited()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unload_failure_aborts_before_registry_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed unload must leave entity/device registries and entry data intact."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    _configure_hass(hass, entry)
+    hass.config_entries.async_unload.return_value = False
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch)
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_unload"
+    client.async_close.assert_awaited_once_with()
+    hass.config_entries.async_unload.assert_awaited_once_with(entry.entry_id)
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
 
 
 @pytest.mark.asyncio

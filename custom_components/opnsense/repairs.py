@@ -1,5 +1,6 @@
 """Repair flows for the OPNsense integration."""
 
+import aiohttp
 from aiopnsense.exceptions import OPNsenseError
 from homeassistant.components.repairs import ConfirmRepairFlow, RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -89,7 +90,7 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 observed_device_id = await client.get_device_unique_id()
             finally:
                 await client.async_close()
-        except OPNsenseError:
+        except OPNsenseError, aiohttp.ClientError, TimeoutError:
             return self.async_abort(reason="cannot_connect")
 
         if not isinstance(observed_device_id, str) or not observed_device_id:
