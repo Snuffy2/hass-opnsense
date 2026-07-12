@@ -7,15 +7,16 @@ and removal/unload behaviors for the hass-opnsense integration.
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
-from typing import Any, Never
+from typing import Any, Never, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call
 
-from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 import custom_components.opnsense as opnsense_mod
+from custom_components.opnsense.const import CONF_ENTRY_TYPE, ENTRY_TYPE_CARP
 from tests.utilities import patch_opnsense_client
 
 init_mod: Any = opnsense_mod
@@ -138,9 +139,10 @@ async def test_async_setup_entry_success(
     )
 
     # use migration fixture which may wrap the real hass or provide a MagicMock
-    hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = AsyncMock()
+    hass = cast("MagicMock", ph_hass)
+    assert hass is not None
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    hass.config_entries.async_reload = AsyncMock()  # type: ignore[method-assign]
 
     # ensure hass.data is a real dict for the integration to populate
     hass.data = {}
@@ -197,7 +199,8 @@ async def test_async_setup_entry_validates_client_before_probes(
         options={},
     )
 
-    hass = ph_hass
+    hass = cast("MagicMock", ph_hass)
+    assert hass is not None
     hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
     hass.config_entries.async_reload = AsyncMock()
     hass.data = {}
@@ -209,6 +212,91 @@ async def test_async_setup_entry_validates_client_before_probes(
         "get_device_unique_id",
         "get_host_firmware_version",
     ]
+    assert entry.runtime_data.device_unique_id == "dev1"
+    expected_platforms = [Platform.SENSOR, Platform.SWITCH, Platform.BINARY_SENSOR, Platform.UPDATE]
+    assert entry.runtime_data.loaded_platforms == expected_platforms
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_carp_entry_uses_identity_less_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP entries use identity-less coordinator state and Sensor-only platform setup."""
+    validate_calls: list[dict[str, Any]] = []
+    create_calls: dict[str, Any] = {}
+    client = MagicMock()
+    client.get_host_firmware_version = AsyncMock(return_value="99.0")
+
+    async def _validate(**kwargs: Any) -> bool:
+        """Record setup validation kwargs and return successful validation."""
+        validate_calls.append(kwargs)
+        return True
+
+    client.validate = _validate
+    client.get_device_unique_id = AsyncMock(return_value="ignore-me")
+    client.async_close = AsyncMock(return_value=True)
+
+    def _create_client(**kwargs: Any) -> Any:
+        """Record how the client factory is called and return the fake client."""
+        create_calls.update(kwargs)
+        return client
+
+    monkeypatch.setattr(init_mod, "create_opnsense_client_from_config_entry", _create_client)
+
+    captured = {}
+
+    class _CarpCoordinator:
+        def __init__(self, **kwargs: Any) -> None:
+            """Capture coordinator construction kwargs for CARP assertions."""
+            captured.update(kwargs)
+            self.refreshed = False
+            self.shut = False
+
+        async def async_config_entry_first_refresh(self) -> bool:
+            """Mark the coordinator as refreshed when setup initializes."""
+            self.refreshed = True
+            return True
+
+        async def async_shutdown(self) -> bool:
+            """Record coordinator shutdown during failure cleanup."""
+            self.shut = True
+            return True
+
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", _CarpCoordinator)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+
+    hass = cast("MagicMock", ph_hass)
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    hass.config_entries.async_reload = MagicMock()  # type: ignore[method-assign]
+    hass.data = {}
+
+    res = await init_mod.async_setup_entry(hass, entry)
+    assert res is True
+    assert create_calls.get("hass") is hass
+    assert create_calls.get("config_entry") is entry
+    assert create_calls.get("throw_errors", False) is False
+    assert captured["device_unique_id"] is None
+    assert captured["config_entry"] is entry
+    assert validate_calls == [{"require_device_id": False}]
+    client.get_device_unique_id.assert_not_awaited()
+    client.get_host_firmware_version.assert_not_awaited()
+
+    assert entry.runtime_data.device_unique_id is None
+    assert entry.runtime_data.loaded_platforms == init_mod.CARP_PLATFORMS
+    assert entry.runtime_data.device_tracker_coordinator is None
+    assert hass.config_entries.async_forward_entry_setups.await_count == 1  # type: ignore[union-attr]
+    hass.config_entries.async_forward_entry_setups.assert_awaited_with(entry, [Platform.SENSOR])  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio

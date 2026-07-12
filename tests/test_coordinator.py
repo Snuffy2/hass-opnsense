@@ -20,6 +20,7 @@ from custom_components.opnsense import coordinator as coordinator_module
 from custom_components.opnsense.const import (
     ATTR_UNBOUND_BLOCKLIST,
     CONF_DEVICE_UNIQUE_ID,
+    CONF_ENTRY_TYPE,
     CONF_FIRMWARE_VERSION,
     CONF_SYNC_CARP,
     CONF_SYNC_CERTIFICATES,
@@ -36,6 +37,7 @@ from custom_components.opnsense.const import (
     CONF_SYNC_UNBOUND,
     CONF_SYNC_VNSTAT,
     CONF_SYNC_VPN,
+    ENTRY_TYPE_CARP,
 )
 from custom_components.opnsense.coordinator import OPNsenseDataUpdateCoordinator
 
@@ -329,6 +331,46 @@ async def test_get_states_uses_single_carp_call(
     client.get_carp.assert_awaited_once()
     assert state["carp"]["interfaces"][0]["status"] == "MASTER"
     assert state["carp"]["status_summary"]["state"] == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_build_categories_for_carp_entries_only_include_system_info_and_carp(
+    make_config_entry: Callable[..., MockConfigEntry], fake_client: Any
+) -> None:
+    """CARP entries should only request system info and CARP state."""
+    entry = make_config_entry(
+        {
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+            CONF_SYNC_INTERFACES: True,
+            CONF_SYNC_TELEMETRY: True,
+        }
+    )
+    client = fake_client()()
+    object.__setattr__(
+        client,
+        "get_device_unique_id",
+        AsyncMock(return_value="should_not_be_called"),
+    )
+    coord = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id=None,
+        config_entry=entry,
+    )
+
+    assert coord._build_categories() == [
+        {"function": "get_system_info", "state_key": "system_info"},
+        {"function": "get_carp", "state_key": "carp"},
+    ]
+    coord._state = {
+        "system_info": {"name": "fw"},
+        "carp": {"interfaces": [], "status_summary": {"state": "healthy"}},
+    }
+
+    assert await coord._check_device_unique_id() is True
+    client.get_device_unique_id.assert_not_awaited()
 
 
 @pytest.mark.asyncio

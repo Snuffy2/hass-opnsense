@@ -26,6 +26,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    CARP_PLATFORMS,
     CONF_DEVICE_TRACKER_ENABLED,
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
     CONF_DEVICE_UNIQUE_ID,
@@ -50,6 +51,7 @@ from .coordinator import OPNsenseDataUpdateCoordinator
 from .helpers import (
     create_opnsense_client_from_config_entry,
     firewall_rule_switch_unique_ids_from_payload,
+    is_carp_entry,
 )
 from .services import async_setup_services
 
@@ -195,6 +197,62 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def _async_setup_carp_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up a CARP integration entry with a runtime ID-less coordinator."""
+    client: OPNsenseClient | None = None
+    setup_succeeded: bool = False
+    coordinator: OPNsenseDataUpdateCoordinator | None = None
+
+    try:
+        client = create_opnsense_client_from_config_entry(hass=hass, config_entry=entry)
+        try:
+            await client.validate(require_device_id=False)
+        except OPNsenseBelowMinFirmware, OPNsenseUnknownFirmware:
+            _LOGGER.debug(
+                "Client validation reported firmware issues; continuing to firmware probes"
+            )
+
+        scan_interval: int = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        _LOGGER.info("Starting hass-opnsense %s", VERSION)
+
+        coordinator = OPNsenseDataUpdateCoordinator(
+            hass=hass,
+            name=f"{entry.title} state",
+            update_interval=timedelta(seconds=scan_interval),
+            client=client,
+            device_unique_id=None,
+            config_entry=entry,
+        )
+
+        await coordinator.async_config_entry_first_refresh()
+
+        platforms: list[Platform] = CARP_PLATFORMS.copy()
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = client
+        entry.runtime_data = OPNsenseData(
+            coordinator=coordinator,
+            device_tracker_coordinator=None,
+            opnsense_client=client,
+            device_unique_id=None,
+            loaded_platforms=platforms,
+        )
+        remove_listener = entry.add_update_listener(_async_update_listener)
+        entry.async_on_unload(remove_listener)
+
+        await hass.config_entries.async_forward_entry_setups(entry, platforms)
+
+        setup_succeeded = True
+        return True
+    finally:
+        if not setup_succeeded:
+            if coordinator is not None:
+                await coordinator.async_shutdown()
+            if DOMAIN in hass.data:
+                hass.data[DOMAIN].pop(entry.entry_id, None)
+            if client is not None:
+                await client.async_close()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OPNsense integration state for a config entry.
 
@@ -209,6 +267,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         OPNsenseError: Raised when validation cannot complete because of
             authentication, privilege, firmware, or transport failures.
     """
+    if is_carp_entry(entry):
+        return await _async_setup_carp_entry(hass, entry)
+
     config: Mapping[str, Any] = entry.data
     options: Mapping[str, Any] = entry.options
     # _LOGGER.debug("[async_setup_entry] entry: %s", entry.as_dict())
