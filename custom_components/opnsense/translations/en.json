@@ -23,8 +23,8 @@
       "user": {
         "title": "Add a hass-opnsense instance",
         "menu_options": {
-          "device": "Device entry",
-          "carp": "CARP VIP entry"
+          "device": "OPNsense device",
+          "carp": "CARP virtual IP"
         }
       },
       "device": {
@@ -39,6 +39,7 @@
         "title": "Connect to the OPNsense firewall / router"
       },
       "carp": {
+        "description": "CARP virtual IP entries are read-only. Configure each physical node with its own management address in a separate entry.",
         "data": {
           "url": "URL",
           "username": "API Key",
@@ -46,7 +47,10 @@
           "name": "CARP VIP display name",
           "verify_ssl": "Verify SSL certificate"
         },
-        "title": "Connect to the OPNsense CARP VIP endpoint"
+        "title": "Connect to the OPNsense CARP virtual IP endpoint",
+        "data_description": {
+          "url": "Use the CARP virtual IP endpoint URL; individual physical nodes must also be configured separately via their management addresses."
+        }
       },
       "granular_sync": {
         "data": {
@@ -93,8 +97,10 @@
           "device_tracker_consider_home": "Device Tracker Consider Home",
           "granular_sync_options": "Enable Granular Sync Options"
         },
+        "description": "This screen exposes {options_scope}.",
         "data_description": {
-          "device_tracking_mode": "For `Track only selected devices`, a next step lets you pick devices from recent ARP detections and add MAC addresses manually"
+          "device_tracking_mode": "For `Track only selected devices`, a next step lets you pick devices from recent ARP detections and add MAC addresses manually",
+          "scan_interval": "Scan interval controls how often this entry polls its source."
         }
       },
       "granular_sync": {

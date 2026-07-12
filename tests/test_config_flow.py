@@ -337,7 +337,7 @@ async def test_async_step_user_shows_menu() -> None:
 
     result = await flow.async_step_user()
 
-    assert result["type"] in {"form", "menu"}
+    assert result["type"] == "menu"
     assert result["step_id"] == "user"
     assert result["menu_options"] == ["device", "carp"]
 
@@ -972,7 +972,10 @@ async def test_options_flow_init_for_carp_entry_saves_scan_interval(
             cf_mod.CONF_PASSWORD: "p",
             cf_mod.CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
         },
-        options={cf_mod.CONF_SCAN_INTERVAL: 60},
+        options={
+            cf_mod.CONF_SCAN_INTERVAL: 60,
+            cf_mod.CONF_DEVICE_TRACKER_ENABLED: False,
+        },
     )
     flow = _make_options_flow(cfg)
     flow._config = dict(cfg.data)
@@ -981,7 +984,10 @@ async def test_options_flow_init_for_carp_entry_saves_scan_interval(
     res = await flow.async_step_init(user_input={cf_mod.CONF_SCAN_INTERVAL: 120})
 
     assert res["type"] == "create_entry"
-    assert flow._options == {cf_mod.CONF_SCAN_INTERVAL: 120}
+    assert flow._options == {
+        cf_mod.CONF_SCAN_INTERVAL: 120,
+        cf_mod.CONF_DEVICE_TRACKER_ENABLED: False,
+    }
     flow.hass.config_entries.async_update_entry.assert_called_once()
 
 

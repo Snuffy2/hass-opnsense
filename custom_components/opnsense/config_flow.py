@@ -343,6 +343,7 @@ async def validate_input(
     user_input: MutableMapping[str, Any],
     errors: dict[str, Any],
     expected_id: str | None = None,
+    *,
     carp: bool = False,
 ) -> dict[str, Any]:
     """Validate user input and map failures to config-flow error keys.
@@ -1156,22 +1157,15 @@ class OPNsenseOptionsFlow(OptionsFlow):
 
         if is_carp_entry(self.config_entry):
             if user_input is not None:
-                self._options = {
-                    CONF_SCAN_INTERVAL: _normalize_int_option(
-                        user_input.get(
-                            CONF_SCAN_INTERVAL,
-                            self._options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                        ),
-                        10,
-                        300,
-                    )
-                }
-                self.hass.config_entries.async_update_entry(
-                    entry=self.config_entry,
-                    data=self._config,
-                    options=self._options,
+                self._options[CONF_SCAN_INTERVAL] = _normalize_int_option(
+                    user_input.get(
+                        CONF_SCAN_INTERVAL,
+                        self._options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                    ),
+                    10,
+                    300,
                 )
-                return self.async_create_entry(data=self._options)
+                return self._create_options_entry()
 
             if not user_input:
                 user_input = {}
@@ -1183,6 +1177,9 @@ class OPNsenseOptionsFlow(OptionsFlow):
                     stored_options=self._options,
                 ),
                 errors=errors,
+                description_placeholders={
+                    "options_scope": "scan interval only for this CARP virtual IP entry",
+                },
             )
 
         if user_input is not None:
@@ -1219,6 +1216,9 @@ class OPNsenseOptionsFlow(OptionsFlow):
                 user_input=user_input, stored_config=self._config, stored_options=self._options
             ),
             errors=errors,
+            description_placeholders={
+                "options_scope": "all available integration and device-tracker options",
+            },
         )
 
     async def async_step_granular_sync(
