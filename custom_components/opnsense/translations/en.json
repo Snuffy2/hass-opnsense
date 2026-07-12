@@ -23,8 +23,8 @@
       "user": {
         "title": "Add a hass-opnsense instance",
         "menu_options": {
-          "device": "OPNsense device",
-          "carp": "CARP virtual IP"
+          "device": "OPNsense device entry",
+          "carp": "CARP VIP entry"
         }
       },
       "device": {
@@ -39,7 +39,7 @@
         "title": "Connect to the OPNsense firewall / router"
       },
       "carp": {
-        "description": "CARP virtual IP entries are read-only. Configure each physical node with its own management address in a separate entry.",
+        "description": "CARP VIP entries are read-only. Configure each physical node with its own management address in a separate OPNsense device entry.",
         "data": {
           "url": "URL",
           "username": "API Key",
@@ -47,9 +47,9 @@
           "name": "CARP VIP display name",
           "verify_ssl": "Verify SSL certificate"
         },
-        "title": "Connect to the OPNsense CARP virtual IP endpoint",
+        "title": "Connect to the OPNsense CARP VIP entry",
         "data_description": {
-          "url": "Use the CARP virtual IP endpoint URL; individual physical nodes must also be configured separately via their management addresses."
+          "url": "Use the CARP virtual URL; individual physical nodes must also be configured separately via their management addresses."
         }
       },
       "granular_sync": {
@@ -139,10 +139,10 @@
   "entity": {
     "sensor": {
       "carp_active_responder": {
-        "name": "Active CARP Responder"
+        "name": "Active responder"
       },
       "carp_status_summary": {
-        "name": "CARP Status"
+        "name": "CARP VIP status"
       },
       "carp_vip": {
         "name": "CARP VIP {subnet} (VHID {vhid})"
@@ -159,19 +159,19 @@
       "description": "Some hass-opnsense {version} functions require OPNsense firmware {ltd_firmware} or later. With firmware {firmware}, some functions may not work and there may be errors in the logs."
     },
     "device_id_mismatched": {
-      "title": "OPNsense Hardware Has Changed",
-      "description": "OPNsense hardware for {entry_title} changed from device ID {old_device_id} to {new_device_id}. Confirm the replacement repair below to rebuild this config entry.",
+      "title": "Replacement hardware detected",
+      "description": "Replacement hardware for {entry_title} changed the device ID from {old_device_id} to {new_device_id}. Confirm below to rebuild entities for this OPNsense device entry.",
       "fix_flow": {
         "step": {
           "confirm": {
-            "title": "Rebuild OPNsense entities for replacement hardware",
-            "description": "This destructive repair will remove all current entities and devices for {entry_title}, including disabled entities, then rebuild them from device ID {new_device_id}. The URL, credentials, and options will be preserved. Entity registry names, enabled/disabled selections, areas, and other customizations will be discarded. Recreated entity IDs may differ, so dashboards and automations may need updates. The previous device ID was {old_device_id}."
+            "title": "Rebuild entities for replacement hardware",
+            "description": "This destructive repair will remove all current entities and devices for {entry_title}, including disabled entities, then rebuild entities from device ID {new_device_id}. The URL, credentials, and options will be preserved. Entity registry names, enabled/disabled selections, areas, and other customizations will be discarded. Recreated entity IDs may differ, so dashboards and automations may need updates. The previous device ID was {old_device_id}."
           }
         },
         "abort": {
-          "entry_not_found": "The OPNsense config entry no longer exists or is a CARP entry.",
-          "cannot_connect": "The replacement OPNsense hardware could not be confirmed. No changes were made.",
-          "already_configured": "Another OPNsense config entry already uses the replacement device ID. No changes were made.",
+          "entry_not_found": "The OPNsense device entry no longer exists or is a CARP VIP entry.",
+          "cannot_connect": "The replacement hardware could not be confirmed. No changes were made.",
+          "already_configured": "Another OPNsense device entry already uses the replacement device ID. No changes were made.",
           "cannot_unload": "The OPNsense config entry could not be unloaded safely. No registry changes were made."
         }
       }

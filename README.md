@@ -35,6 +35,9 @@ A Discord server to discuss the integration is available. Click the Discord badg
     * [Manual Installation](#manual-installation)
 
 * [Configuration](#configuration)
+  * [OPNsense Device Entry](#opnsense-device-entry)
+  * [CARP VIP Entry](#carp-vip-entry)
+  * [Recommended CARP Topology](#recommended-carp-topology)
   * [OPNsense User](#opnsense-user)
     * [Granular Sync Options](#granular-sync-options)
   * [Basic Configuration](#basic-configuration)
@@ -45,11 +48,12 @@ A Discord server to discuss the integration is available. Click the Discord badg
   * [Sensor](#sensor)
   * [Switch](#switch)
   * [Device Tracker](#device-tracker)
+  * [CARP VIP Entities and Limitations](#carp-vip-entities-and-limitations)
 
 * [Actions](#actions-services)
 
 * [Known Issues](#known-issues)
-  * [Hardware Changes](#hardware-changes)
+  * [Replacing OPNsense Hardware](#replacing-opnsense-hardware)
 
 ## Installation
 
@@ -89,6 +93,26 @@ Copy the contents of the custom_components folder to the Home Assistant config/c
 ## Configuration
 
 Configuration is managed entirely from the Home Assistant UI. Simply go to `Configuration -> Integrations -> Add Integration` and search for <ins>OPNsense</ins> in the search box. If it isn't in the list (well-known HA issue), do a 'hard-refresh' of the browser (ctrl-F5) then open the list again.
+
+### OPNsense Device Entry
+
+Choose **OPNsense device entry** for each physical node's management URL. This is the full integration: telemetry, interfaces, services, gateways, firmware, optional CARP data, actions, and switches follow the selected sync options. Existing entries remain OPNsense device entries automatically and require no migration.
+
+### CARP VIP Entry
+
+Choose **CARP VIP entry** for the shared virtual URL when you want read-only CARP visibility. A CARP VIP entry follows the active responder and exposes only the CARP entities described in [CARP VIP Entities and Limitations](#carp-vip-entities-and-limitations). Configure each physical node separately with an OPNsense device entry; the VIP entry does not replace node entries.
+
+### Recommended CARP Topology
+
+Use one OPNsense device entry per physical node and add the optional CARP VIP entry for the shared endpoint:
+
+```text
+Node A management URL -> full OPNsense device entry
+Node B management URL -> full OPNsense device entry
+CARP virtual URL      -> optional read-only CARP VIP entry
+```
+
+Node entries are required for complete monitoring because a VIP endpoint cannot prove the health of a standby node.
 
 ### OPNsense User
 
@@ -148,7 +172,7 @@ Many entities are created by `hass-opnsense` for statistics etc. Due to the volu
 * Filesystem usage
 * Interface details (status, stats, pps, kbs, etc.) *[speeds are based on the `Scan Interval (seconds)` config option]*
 * Gateways details (status, delay, stddev, loss, address)
-* CARP Status (aggregate)
+* CARP VIP status (aggregate)
 * CARP Interface status
 * DHCP Leases
 * OpenVPN and Wireguard server and client stats
@@ -180,6 +204,18 @@ The selectable device list is built from the current OPNsense ARP table, so only
 
 See [Device Tracker Guide](docs/device_tracker.md) for setup details, ARP behavior, and troubleshooting.
 
+### CARP VIP Entities and Limitations
+
+A CARP VIP entry creates only these read-only entities:
+
+* **active responder:** the name of the node currently answering through the VIP;
+* **CARP VIP status:** aggregate CARP status reported by that active responder;
+* **CARP VIP state:** one state sensor for each virtual IP keyed by VHID and subnet.
+
+A CARP VIP entry does not expose node hardware telemetry, firmware/update entities, general interfaces, services, gateways, VPN, DHCP, firewall/NAT, SMART, disks, temperatures, device trackers, actions, or switches. The VIP cannot prove standby-node health; configure OPNsense device entries for each node when complete monitoring is required.
+
+The persistent CARP maintenance switch remains on physical-node entries. Enabling maintenance through the VIP can move the VIP; a later disable request could then reach the other node. Use the physical node's OPNsense device entry when changing maintenance mode.
+
 ## Actions *(Services)*
 
 * **opnsense.close_notice:** Close any open notices
@@ -200,9 +236,13 @@ See [Device Tracker Guide](docs/device_tracker.md) for setup details, ARP behavi
 
 ## Known Issues
 
-### Hardware Changes
+### Replacing OPNsense Hardware
 
-If you partially or fully change the <ins>OPNsense</ins> hardware, it will require a removal and reinstall of this integration. This is to ensure changed interfaces, services, gateways, etc. are accounted for and don't leave duplicate or non-functioning entities. 
+Hardware replacement is an entity-inventory boundary: interfaces, services, gateways, disks, and other inventory can change even when the connection URL and credentials stay the same. Keeping stale disabled entities is dangerous because they can look valid while referring to hardware that no longer exists.
+
+When an OPNsense device entry reports a device-ID mismatch, Home Assistant offers a fixable repair. Confirm it only after the replacement hardware is reachable and is the intended node. The repair unloads the entry, removes all current entities and devices for it (including disabled entities), updates the device ID, and schedules a reload to rebuild entities.
+
+The repair preserves the URL, credentials, and options. It discards entity registry names, enabled/disabled selections, areas, and other customizations. Recreated entity IDs may differ, so dashboards and automations that reference those IDs may need updates. CARP VIP entries are excluded from this repair; they do not use physical device IDs.
 
 [commits-shield]: https://img.shields.io/github/last-commit/travisghansen/hass-opnsense?style=for-the-badge
 [commits]: https://github.com/travisghansen/hass-opnsense/commits/main
