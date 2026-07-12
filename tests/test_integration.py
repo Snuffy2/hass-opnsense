@@ -293,8 +293,8 @@ async def test_e2e_basic_config_flow_and_setup(
     object.__setattr__(flow, "_abort_if_unique_id_configured", lambda: None)
 
     user_input = _make_basic_user_input()
-    # Run user step -> should create entry directly (no granular sync)
-    result = await flow.async_step_user(user_input=user_input)
+    # Run device step -> should create entry directly (no granular sync)
+    result = await flow.async_step_device(user_input=user_input)
     assert result["type"] == "create_entry"
     data = result["data"]
     assert data[CONF_DEVICE_UNIQUE_ID] == "dev-basic"
@@ -366,10 +366,10 @@ async def test_e2e_granular_sync_and_options_device_tracker(
     object.__setattr__(flow, "async_set_unique_id", _noop_unique_id)
     object.__setattr__(flow, "_abort_if_unique_id_configured", lambda: None)
 
-    # Step 1: user chooses granular sync
+    # Step 1: device step chooses granular sync
     user_input = _make_basic_user_input()
     user_input[CONF_GRANULAR_SYNC_OPTIONS] = True
-    res1 = await flow.async_step_user(user_input=user_input)
+    res1 = await flow.async_step_device(user_input=user_input)
     assert res1["type"] == "form" and res1["step_id"] == "granular_sync"
 
     # Step 2: granular sync submission (empty -> defaults True)
@@ -483,7 +483,7 @@ async def test_e2e_reload_and_unload(
     object.__setattr__(flow, "async_set_unique_id", _noop_unique_id)
     object.__setattr__(flow, "_abort_if_unique_id_configured", lambda: None)
 
-    result = await flow.async_step_user(user_input=_make_basic_user_input())
+    result = await flow.async_step_device(user_input=_make_basic_user_input())
     data = result["data"]
 
     # Runtime path patches

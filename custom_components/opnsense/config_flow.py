@@ -41,6 +41,7 @@ from .const import (
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
     CONF_DEVICE_UNIQUE_ID,
     CONF_DEVICES,
+    CONF_ENTRY_TYPE,
     CONF_FIRMWARE_VERSION,
     CONF_GRANULAR_SYNC_OPTIONS,
     CONF_MANUAL_DEVICES,
@@ -52,15 +53,22 @@ from .const import (
     DEFAULT_SYNC_OPTION_VALUE,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
+    ENTRY_TYPE_CARP,
+    ENTRY_TYPE_DEVICE,
     GRANULAR_SYNC_ITEMS,
     OPNSENSE_MIN_FIRMWARE,
     TRACKED_MACS,
 )
-from .helpers import create_opnsense_client
+from .helpers import create_opnsense_client, is_carp_entry
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
 DeviceEntries = dict[str, str]
+
+
+class OPNsenseCarpNotConfiguredError(OPNsenseError):
+    """Raised when an endpoint has no usable CARP VIP rows."""
+
 
 CONF_DEVICE_TRACKING_MODE = "device_tracking_mode"
 DEVICE_TRACKING_MODE_DISABLED = "disabled"
@@ -335,6 +343,7 @@ async def validate_input(
     user_input: MutableMapping[str, Any],
     errors: dict[str, Any],
     expected_id: str | None = None,
+    carp: bool = False,
 ) -> dict[str, Any]:
     """Validate user input and map failures to config-flow error keys.
 
@@ -343,12 +352,18 @@ async def validate_input(
         user_input: Input payload being validated for this flow step.
         errors: Mutable error mapping populated by this validator.
         expected_id: Expected device unique ID for reconfigure and options validation.
+        carp: Validate CARP VIP-specific client details instead of standard details.
 
     Returns:
         dict[str, Any]: Updated error mapping suitable for form rendering.
     """
     try:
-        await _validate_client_details(hass=hass, user_input=user_input, expected_id=expected_id)
+        if carp:
+            await _validate_carp_client_details(hass=hass, user_input=user_input)
+        else:
+            await _validate_client_details(
+                hass=hass, user_input=user_input, expected_id=expected_id
+            )
     except OPNsenseError as err:
         validation_error = _get_validation_error_details(err, user_input)
         if validation_error is None:
@@ -391,6 +406,8 @@ def _get_validation_error_details(
             "unknown_firmware",
             "Unable to get OPNsense Firmware version",
         )
+    if isinstance(error, OPNsenseCarpNotConfiguredError):
+        return ("carp_not_configured", "No CARP VIPs were returned")
     if isinstance(error, OPNsenseMissingDeviceUniqueID):
         return (
             "missing_device_unique_id",
@@ -501,6 +518,44 @@ async def _validate_client_details(
         await client.async_close()
 
 
+async def _validate_carp_client_details(
+    hass: HomeAssistant,
+    user_input: MutableMapping[str, Any],
+) -> None:
+    """Validate and enrich a CARP VIP flow submission without a device-ID probe."""
+    await _clean_and_parse_url(user_input)
+
+    client = create_opnsense_client(
+        hass=hass,
+        url=user_input[CONF_URL],
+        username=user_input[CONF_USERNAME],
+        password=user_input[CONF_PASSWORD],
+        verify_ssl=user_input.get(CONF_VERIFY_SSL),
+        throw_errors=True,
+    )
+    try:
+        await client.validate(require_device_id=False)
+        firmware = await client.get_host_firmware_version()
+        user_input[CONF_FIRMWARE_VERSION] = firmware
+
+        system_info = await client.get_system_info()
+        carp = await client.get_carp()
+        carp_interfaces = carp.get("interfaces") if isinstance(carp, Mapping) else None
+        if not isinstance(carp_interfaces, list) or not carp_interfaces:
+            raise OPNsenseCarpNotConfiguredError("No CARP VIPs were returned")
+
+        responder_name = system_info.get("name") if isinstance(system_info, Mapping) else None
+        if not user_input.get(CONF_NAME):
+            base_name = responder_name if isinstance(responder_name, str) else "OPNsense"
+            user_input[CONF_NAME] = f"{base_name} CARP VIP"
+
+        user_input[CONF_ENTRY_TYPE] = ENTRY_TYPE_CARP
+        user_input.pop(CONF_DEVICE_UNIQUE_ID, None)
+        user_input.pop(CONF_GRANULAR_SYNC_OPTIONS, None)
+    finally:
+        await client.async_close()
+
+
 def _record_validation_error(errors: MutableMapping[str, Any], key: str, message: str) -> None:
     """Log an error and set the form-level `base` error key.
 
@@ -564,6 +619,77 @@ def _build_user_input_schema(
             }
         )
     return vol.Schema(schema_fields)
+
+
+def _build_carp_input_schema(
+    user_input: Mapping[str, Any] | None,
+    stored_values: Mapping[str, Any] | None = None,
+    reconf: bool = False,
+) -> vol.Schema:
+    """Build the CARP-only user input schema.
+
+    Args:
+        user_input: Values submitted for the current configuration or options flow step.
+        stored_values: Stored config-entry values used to prefill the form.
+        reconf: Whether the schema is being built for the reconfigure flow instead of initial setup.
+
+    Returns:
+        vol.Schema: Form schema for a CARP flow connection step.
+    """
+    defaults = {
+        CONF_URL: "https://",
+        CONF_VERIFY_SSL: DEFAULT_VERIFY_SSL,
+        CONF_USERNAME: "",
+        CONF_PASSWORD: "",
+        CONF_NAME: "",
+        **(stored_values or {}),
+        **(user_input or {}),
+    }
+
+    del reconf
+    return vol.Schema(
+        {
+            vol.Required(CONF_URL, default=defaults[CONF_URL]): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+            ),
+            vol.Optional(CONF_VERIFY_SSL, default=defaults[CONF_VERIFY_SSL]): bool,
+            vol.Required(CONF_USERNAME, default=defaults[CONF_USERNAME]): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+            ),
+            vol.Required(CONF_PASSWORD, default=defaults[CONF_PASSWORD]): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+            ),
+            vol.Optional(CONF_NAME, default=defaults[CONF_NAME]): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+            ),
+        }
+    )
+
+
+def _build_carp_options_schema(
+    user_input: Mapping[str, Any] | None,
+    stored_options: Mapping[str, Any] | None,
+) -> vol.Schema:
+    """Build the scan-interval-only options schema for a CARP VIP entry."""
+    defaults = {
+        CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+        **(stored_options or {}),
+        **(user_input or {}),
+    }
+    scan_interval = _normalize_int_option(defaults[CONF_SCAN_INTERVAL], 10, 300)
+
+    return vol.Schema(
+        {
+            vol.Optional(CONF_SCAN_INTERVAL, default=scan_interval): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=10,
+                    max=300,
+                    step=1,
+                    unit_of_measurement="seconds",
+                )
+            )
+        }
+    )
 
 
 def _build_granular_sync_schema(
@@ -787,16 +913,16 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: MutableMapping[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial user config step.
+        """Handle the initial user config step."""
+        return self.async_show_menu(step_id="user", menu_options=["device", "carp"])
 
-        Args:
-            user_input: Submitted form payload, or `None` for first render.
-
-        Returns:
-            ConfigFlowResult: Next flow step or created config entry.
-        """
+    async def async_step_device(
+        self, user_input: MutableMapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle the legacy device setup flow."""
         errors: dict[str, Any] = {}
         if user_input is not None:
+            user_input[CONF_ENTRY_TYPE] = ENTRY_TYPE_DEVICE
             errors = await validate_input(hass=self.hass, user_input=user_input, errors=errors)
             if not errors:
                 # https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
@@ -817,8 +943,44 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
         firmware = user_input.get(CONF_FIRMWARE_VERSION, "Unknown")
 
         return self.async_show_form(
-            step_id="user",
+            step_id="device",
             data_schema=_build_user_input_schema(user_input=user_input),
+            errors=errors,
+            description_placeholders={
+                "firmware": firmware,
+                "min_firmware": OPNSENSE_MIN_FIRMWARE,
+            },
+        )
+
+    async def async_step_carp(
+        self, user_input: MutableMapping[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle CARP setup flow."""
+        errors: dict[str, Any] = {}
+        if user_input is not None:
+            errors = await validate_input(
+                hass=self.hass,
+                user_input=user_input,
+                errors=errors,
+                carp=True,
+            )
+            if not errors:
+                abort = self._async_abort_entries_match({CONF_URL: user_input[CONF_URL]})
+                if abort:
+                    return abort
+
+                return self.async_create_entry(
+                    title=user_input[CONF_NAME],
+                    data=user_input,
+                )
+
+        if not user_input:
+            user_input = {}
+        firmware = user_input.get(CONF_FIRMWARE_VERSION, "Unknown")
+
+        return self.async_show_form(
+            step_id="carp",
+            data_schema=_build_carp_input_schema(user_input=user_input),
             errors=errors,
             description_placeholders={
                 "firmware": firmware,
@@ -878,26 +1040,39 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             self._config.update(user_input)
-            errors = await validate_input(
-                hass=self.hass,
-                user_input=self._config,
-                errors=errors,
-                expected_id=self._config.get(CONF_DEVICE_UNIQUE_ID),
-            )
-
-            if not errors:
-                # https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
-                await self.async_set_unique_id(self._config.get(CONF_DEVICE_UNIQUE_ID))
-                self._abort_if_unique_id_mismatch()
-
-                # Keep this non-reloading helper paired with the config-entry
-                # update listener registered in async_setup_entry.
-                # async_update_reload_and_abort is deprecated for entries that
-                # also use add_update_listener.
-                return self.async_update_and_abort(
-                    entry=reconfigure_entry,
-                    data=self._config,
+            if is_carp_entry(reconfigure_entry):
+                errors = await validate_input(
+                    hass=self.hass,
+                    user_input=self._config,
+                    errors=errors,
+                    carp=True,
                 )
+                if not errors:
+                    return self.async_update_and_abort(
+                        entry=reconfigure_entry,
+                        data=self._config,
+                    )
+            else:
+                errors = await validate_input(
+                    hass=self.hass,
+                    user_input=self._config,
+                    errors=errors,
+                    expected_id=self._config.get(CONF_DEVICE_UNIQUE_ID),
+                )
+
+                if not errors:
+                    # https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
+                    await self.async_set_unique_id(self._config.get(CONF_DEVICE_UNIQUE_ID))
+                    self._abort_if_unique_id_mismatch()
+
+                    # Keep this non-reloading helper paired with the config-entry
+                    # update listener registered in async_setup_entry.
+                    # async_update_reload_and_abort is deprecated for entries that
+                    # also use add_update_listener.
+                    return self.async_update_and_abort(
+                        entry=reconfigure_entry,
+                        data=self._config,
+                    )
 
         if not user_input:
             user_input = {}
@@ -905,8 +1080,12 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=_build_user_input_schema(
-                user_input=user_input, stored_values=self._config, reconf=True
+            data_schema=(
+                _build_carp_input_schema(user_input=user_input, stored_values=self._config)
+                if is_carp_entry(reconfigure_entry)
+                else _build_user_input_schema(
+                    user_input=user_input, stored_values=self._config, reconf=True
+                )
             ),
             errors=errors,
             description_placeholders={
@@ -924,7 +1103,7 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
         Returns:
             ConfigFlowResult: Result from `async_step_user`.
         """
-        return await self.async_step_user(user_input)
+        return await self.async_step_device(user_input)
 
     @staticmethod
     @callback
@@ -974,6 +1153,38 @@ class OPNsenseOptionsFlow(OptionsFlow):
         errors: dict[str, Any] = {}
         self._config = dict(self.config_entry.data)
         self._options = dict(self.config_entry.options)
+
+        if is_carp_entry(self.config_entry):
+            if user_input is not None:
+                self._options = {
+                    CONF_SCAN_INTERVAL: _normalize_int_option(
+                        user_input.get(
+                            CONF_SCAN_INTERVAL,
+                            self._options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                        ),
+                        10,
+                        300,
+                    )
+                }
+                self.hass.config_entries.async_update_entry(
+                    entry=self.config_entry,
+                    data=self._config,
+                    options=self._options,
+                )
+                return self.async_create_entry(data=self._options)
+
+            if not user_input:
+                user_input = {}
+
+            return self.async_show_form(
+                step_id="init",
+                data_schema=_build_carp_options_schema(
+                    user_input=user_input,
+                    stored_options=self._options,
+                ),
+                errors=errors,
+            )
+
         if user_input is not None:
             tracking_mode = _resolve_device_tracking_mode(self._options, user_input)
             self._options.update(

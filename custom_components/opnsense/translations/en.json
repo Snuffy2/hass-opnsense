@@ -16,10 +16,18 @@
       "url_redirect": "Incorrect URL (redirect)",
       "missing_device_unique_id": "Unable to get MAC addresses from OPNsense to use as Device Unique ID",
       "below_min_firmware": "OPNsense Firmware of {firmware} is below the minimum supported version of {min_firmware}",
+      "carp_not_configured": "No CARP VIP interfaces are configured on the selected OPNsense host",
       "unknown_firmware": "Unable to get OPNsense Firmware version"
     },
     "step": {
       "user": {
+        "title": "Add a hass-opnsense instance",
+        "menu_options": {
+          "device": "Device entry",
+          "carp": "CARP VIP entry"
+        }
+      },
+      "device": {
         "data": {
           "url": "URL",
           "username": "API Key",
@@ -29,6 +37,16 @@
           "granular_sync_options": "Enable Granular Sync Options"
         },
         "title": "Connect to the OPNsense firewall / router"
+      },
+      "carp": {
+        "data": {
+          "url": "URL",
+          "username": "API Key",
+          "password": "API Secret",
+          "name": "CARP VIP display name",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "title": "Connect to the OPNsense CARP VIP endpoint"
       },
       "granular_sync": {
         "data": {
