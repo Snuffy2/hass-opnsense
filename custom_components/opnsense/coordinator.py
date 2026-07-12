@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
@@ -30,9 +29,9 @@ from .const import (
     CONF_SYNC_VNSTAT,
     CONF_SYNC_VPN,
     DEFAULT_SYNC_OPTION_VALUE,
-    DOMAIN,
 )
 from .helpers import dict_get, is_carp_entry
+from .repairs import async_create_device_id_mismatch_issue
 
 if TYPE_CHECKING:
     from aiopnsense import OPNsenseClient
@@ -285,15 +284,12 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
             self._mismatched_count += 1
             # Trigger repair task and shutdown if this happens 3 times in a row
             if self._mismatched_count == 3:
-                ir.async_create_issue(
-                    hass=self.hass,
-                    domain=DOMAIN,
-                    issue_id=f"{self._device_unique_id}_device_id_mismatched",
-                    is_fixable=False,
-                    is_persistent=False,
-                    severity=ir.IssueSeverity.ERROR,
-                    translation_key="device_id_mismatched",
-                )
+                if self.config_entry is not None:
+                    async_create_device_id_mismatch_issue(
+                        self.hass,
+                        self.config_entry,
+                        self._state["device_unique_id"],
+                    )
                 _LOGGER.error(
                     "OPNsense Device ID has changed which indicates new or changed hardware. "
                     "In order to accommodate this, hass-opnsense needs to be removed and "

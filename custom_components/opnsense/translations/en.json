@@ -160,7 +160,21 @@
     },
     "device_id_mismatched": {
       "title": "OPNsense Hardware Has Changed",
-      "description": "OPNsense Device ID has changed which indicates new or changed hardware. In order to accommodate this, hass-opnsense needs to be removed and reinstalled for this router. hass-opnsense is shutting down."
+      "description": "OPNsense hardware for {entry_title} changed from device ID {old_device_id} to {new_device_id}. Confirm the replacement repair below to rebuild this config entry.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Rebuild OPNsense entities for replacement hardware",
+            "description": "This destructive repair will remove all current entities and devices for {entry_title}, including disabled entities, then rebuild them from device ID {new_device_id}. The URL, credentials, and options will be preserved. Entity registry names, enabled/disabled selections, areas, and other customizations will be discarded. Recreated entity IDs may differ, so dashboards and automations may need updates. The previous device ID was {old_device_id}."
+          }
+        },
+        "abort": {
+          "entry_not_found": "The OPNsense config entry no longer exists or is a CARP entry.",
+          "cannot_connect": "The replacement OPNsense hardware could not be confirmed. No changes were made.",
+          "already_configured": "Another OPNsense config entry already uses the replacement device ID. No changes were made.",
+          "cannot_unload": "The OPNsense config entry could not be unloaded safely. No registry changes were made."
+        }
+      }
     }
   },
   "exceptions": {

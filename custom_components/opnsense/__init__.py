@@ -53,6 +53,7 @@ from .helpers import (
     firewall_rule_switch_unique_ids_from_payload,
     is_carp_entry,
 )
+from .repairs import async_create_device_id_mismatch_issue
 from .services import async_setup_services
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -318,15 +319,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             router_device_id,
         )
         if router_device_id != config_device_id and router_device_id:
-            ir.async_create_issue(
-                hass=hass,
-                domain=DOMAIN,
-                issue_id=f"{config_device_id}_device_id_mismatched",
-                is_fixable=False,
-                is_persistent=False,
-                severity=ir.IssueSeverity.ERROR,
-                translation_key="device_id_mismatched",
-            )
+            async_create_device_id_mismatch_issue(hass, entry, router_device_id)
             _LOGGER.error(
                 "OPNsense Device ID has changed which indicates new or changed hardware. "
                 "In order to accommodate this, hass-opnsense needs to be removed "
