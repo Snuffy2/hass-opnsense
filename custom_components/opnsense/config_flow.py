@@ -645,14 +645,12 @@ def _build_user_input_schema(
 def _build_carp_input_schema(
     user_input: Mapping[str, Any] | None,
     stored_values: Mapping[str, Any] | None = None,
-    reconf: bool = False,
 ) -> vol.Schema:
     """Build the CARP-only user input schema.
 
     Args:
         user_input: Values submitted for the current configuration or options flow step.
         stored_values: Stored config-entry values used to prefill the form.
-        reconf: Whether the schema is being built for the reconfigure flow instead of initial setup.
 
     Returns:
         vol.Schema: Form schema for a CARP flow connection step.
@@ -667,7 +665,6 @@ def _build_carp_input_schema(
         **(user_input or {}),
     }
 
-    del reconf
     return vol.Schema(
         {
             vol.Required(CONF_URL, default=defaults[CONF_URL]): selector.TextSelector(

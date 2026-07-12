@@ -81,8 +81,6 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
     def __init__(self, entry_id: str, old_device_id: str, new_device_id: str) -> None:
         """Initialize a repair flow from issue data."""
         self._entry_id = entry_id
-        self._old_device_id = old_device_id
-        self._new_device_id = new_device_id
         self._description_placeholders: dict[str, str] = {
             "entry_title": "",
             "old_device_id": old_device_id,

@@ -142,7 +142,6 @@ async def test_async_setup_entry_success(
 
     # use migration fixture which may wrap the real hass or provide a MagicMock
     hass = cast("MagicMock", ph_hass)
-    assert hass is not None
     hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)  # type: ignore[method-assign]
     hass.config_entries.async_reload = AsyncMock()  # type: ignore[method-assign]
 
@@ -202,7 +201,6 @@ async def test_async_setup_entry_validates_client_before_probes(
     )
 
     hass = cast("MagicMock", ph_hass)
-    assert hass is not None
     hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
     hass.config_entries.async_reload = AsyncMock()
     hass.data = {}
