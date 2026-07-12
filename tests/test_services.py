@@ -4,6 +4,7 @@ These tests exercise service helpers, validation paths, and error handling
 for operations such as starting/stopping services and generating vouchers.
 """
 
+from collections.abc import Callable
 import json
 import logging
 from pathlib import Path
@@ -16,11 +17,15 @@ from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util.yaml import load_yaml_dict
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 import voluptuous as vol
 
 from custom_components.opnsense import services as services_mod
 from custom_components.opnsense.const import (
+    CONF_ENTRY_TYPE,
     DOMAIN,
+    ENTRY_TYPE_CARP,
+    ENTRY_TYPE_DEVICE,
     SERVICE_CLOSE_NOTICE,
     SERVICE_GENERATE_VOUCHERS,
     SERVICE_GET_VNSTAT_METRICS,
@@ -116,6 +121,26 @@ def _patch_device_registry_entry(
     device_registry = MagicMock()
     device_registry.async_get.return_value = device_entry
     monkeypatch.setattr(services_mod.dr, "async_get", lambda _hass: device_registry)
+
+
+def _patch_config_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    hass: HomeAssistant,
+    config_entries: list[MockConfigEntry],
+) -> None:
+    """Patch ``hass.config_entries.async_get_entry`` with MockConfigEntry records.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture used to patch helper methods.
+        hass: Home Assistant instance carrying the service state.
+        config_entries: Config entries that should be resolvable by config-entry id.
+    """
+    config_entry_lookup = {entry.entry_id: entry for entry in config_entries}
+
+    def _get_entry(entry_id: str) -> MockConfigEntry | None:
+        return config_entry_lookup.get(entry_id)
+
+    monkeypatch.setattr(hass.config_entries, "async_get_entry", _get_entry)
 
 
 def _patch_entity_registry_entry(
@@ -278,6 +303,92 @@ async def test_get_clients_single_and_multiple(monkeypatch: pytest.MonkeyPatch) 
     _patch_device_registry_entry(monkeypatch, None, {"e1"})
     res = await services_mod._get_clients(hass_local, opndevice_id="dev123")
     assert res == [client]
+
+
+@pytest.mark.asyncio
+async def test_get_clients_untargeted_resolution_skips_carp_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Untargeted resolution returns normal-device clients and omits CARP clients."""
+    hass_local = MagicMock(spec=HomeAssistant)
+    normal_client = MagicMock(name="normal")
+    normal_client.name = "normal"
+    carp_client = MagicMock(name="carp")
+    carp_client.name = "carp"
+    hass_local.data = {DOMAIN: {"normal": normal_client, "carp": carp_client}}
+
+    normal_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_DEVICE},
+        entry_id="normal",
+    )
+    carp_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_CARP},
+        entry_id="carp",
+    )
+    _patch_config_entries(monkeypatch, hass_local, [normal_entry, carp_entry])
+
+    assert await services_mod._get_clients(hass_local) == [normal_client]
+
+
+@pytest.mark.asyncio
+async def test_get_clients_explicit_carp_device_target_raises_no_target_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP device targets must raise no_target_clients even when other entries exist."""
+    hass_local = MagicMock(spec=HomeAssistant)
+    normal_client = MagicMock(name="normal")
+    normal_client.name = "normal"
+    carp_client = MagicMock(name="carp")
+    carp_client.name = "carp"
+    hass_local.data = {DOMAIN: {"normal": normal_client, "carp": carp_client}}
+
+    carp_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_CARP},
+        entry_id="carp",
+    )
+    normal_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_DEVICE},
+        entry_id="normal",
+    )
+    _patch_config_entries(monkeypatch, hass_local, [normal_entry, carp_entry])
+    _patch_device_registry_entry(monkeypatch, carp_entry.entry_id)
+
+    with pytest.raises(ServiceValidationError) as exc_info:
+        await services_mod._get_clients(hass_local, opndevice_id="carp-device")
+
+    assert exc_info.value.translation_key == "no_target_clients"
+
+
+@pytest.mark.asyncio
+async def test_get_clients_explicit_carp_entity_target_raises_no_target_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP entity targets must raise no_target_clients even when other entries exist."""
+    hass_local = MagicMock(spec=HomeAssistant)
+    normal_client = MagicMock(name="normal")
+    normal_client.name = "normal"
+    carp_client = MagicMock(name="carp")
+    carp_client.name = "carp"
+    hass_local.data = {DOMAIN: {"normal": normal_client, "carp": carp_client}}
+
+    carp_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_CARP},
+        entry_id="carp",
+    )
+    normal_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_DEVICE},
+        entry_id="normal",
+    )
+    _patch_config_entries(monkeypatch, hass_local, [normal_entry, carp_entry])
+    _patch_entity_registry_entry(monkeypatch, carp_entry.entry_id)
+
+    with pytest.raises(ServiceValidationError) as exc_info:
+        await services_mod._get_clients(hass_local, opnentity_id="sensor.carp")
+
+    assert exc_info.value.translation_key == "no_target_clients"
 
 
 @pytest.mark.asyncio
@@ -776,6 +887,72 @@ async def test_get_clients_no_data_returns_empty() -> None:
     hass.data = {}
     res = await services_mod._get_clients(hass)
     assert res == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target_kwargs", "include_normal", "expect_error"),
+    [
+        ({}, True, False),
+        ({"device_id": "carp-device"}, True, True),
+        ({"entity_id": "sensor.carp"}, True, True),
+        ({}, False, False),
+    ],
+)
+async def test_service_system_reboot_does_not_call_carp_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+    target_kwargs: dict[str, str],
+    include_normal: bool,
+    expect_error: bool,
+) -> None:
+    """system_reboot must run only non-CARP clients and skip CARP targets/errors."""
+    hass = MagicMock(spec=HomeAssistant)
+    normal_client = MagicMock(name="normal")
+    normal_client.name = "normal"
+    normal_client.system_reboot = AsyncMock(return_value=None)
+    carp_client = MagicMock(name="carp")
+    carp_client.name = "carp"
+    carp_client.system_reboot = AsyncMock(return_value=None)
+    hass.data = {DOMAIN: {}}
+    if include_normal:
+        hass.data[DOMAIN]["normal"] = normal_client
+    hass.data[DOMAIN]["carp"] = carp_client
+
+    normal_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_DEVICE},
+        entry_id="normal",
+    )
+    carp_entry = make_config_entry(
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_CARP},
+        entry_id="carp",
+    )
+    entries = [carp_entry]
+    if include_normal:
+        entries.append(normal_entry)
+    _patch_config_entries(monkeypatch, hass, entries)
+
+    if "device_id" in target_kwargs:
+        _patch_device_registry_entry(monkeypatch, carp_entry.entry_id)
+    if "entity_id" in target_kwargs:
+        _patch_entity_registry_entry(monkeypatch, carp_entry.entry_id)
+
+    call = _service_call(target_kwargs)
+    if expect_error:
+        with pytest.raises(ServiceValidationError) as exc_info:
+            await services_mod._service_system_reboot(hass, call)
+        assert exc_info.value.translation_key == "no_target_clients"
+    else:
+        await services_mod._service_system_reboot(hass, call)
+        if include_normal:
+            normal_client.system_reboot.assert_awaited_once_with()
+
+    if include_normal:
+        if expect_error:
+            normal_client.system_reboot.assert_not_awaited()
+    else:
+        normal_client.system_reboot.assert_not_awaited()
+    carp_client.system_reboot.assert_not_awaited()
 
 
 @pytest.fixture
