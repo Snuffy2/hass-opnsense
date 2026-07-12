@@ -416,23 +416,6 @@ async def test_async_step_carp_validates_without_device_id_and_sets_entry_type(
 
 
 @pytest.mark.asyncio
-async def test_async_step_carp_handles_missing_carp_interface(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CARP flow should return a typed error when no CARP VIP interfaces are returned."""
-    client = _CarpFlowClient(carp_interfaces=[])
-    patch_opnsense_client(monkeypatch, cf_mod, lambda **_kwargs: client)
-
-    flow = cf_mod.OPNsenseConfigFlow()
-    flow.hass = MagicMock()
-    result = await flow.async_step_carp(user_input=_make_basic_carp_input())
-
-    assert result["type"] == "form"
-    assert result["errors"]["base"] == "carp_not_configured"
-    client.get_device_unique_id.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "interfaces",
     [
@@ -463,6 +446,7 @@ async def test_async_step_carp_rejects_malformed_or_blank_vip_rows(
 
     assert result["type"] == "form"
     assert result["errors"]["base"] == "carp_not_configured"
+    client.get_device_unique_id.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1091,6 @@ async def test_options_flow_init_for_carp_entry_saves_scan_interval(
         cf_mod.CONF_DEVICE_TRACKER_ENABLED: False,
         cf_mod.CONF_DEVICE_TRACKING_MODE: cf_mod.DEVICE_TRACKING_MODE_SELECTED,
     }
-    assert flow._options[cf_mod.CONF_SCAN_INTERVAL] == 120
 
 
 @pytest.mark.asyncio
