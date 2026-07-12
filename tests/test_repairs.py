@@ -185,6 +185,34 @@ async def test_confirmation_reprobes_with_strict_client_and_closes_it(
 
 
 @pytest.mark.asyncio
+async def test_stale_observed_device_id_aborts_without_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale issue with matching observed ID should abort without destructive work."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch, observed_device_id="dev1")
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_changed"
+    client.async_close.assert_awaited_once_with()
+    hass.config_entries.async_unload.assert_not_awaited()
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_duplicate_entry_aborts_before_unload_or_registry_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

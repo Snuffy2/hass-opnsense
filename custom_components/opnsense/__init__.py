@@ -208,12 +208,7 @@ async def _async_setup_carp_entry(hass: HomeAssistant, entry: ConfigEntry) -> bo
 
     try:
         client = create_opnsense_client_from_config_entry(hass=hass, config_entry=entry)
-        try:
-            await client.validate(require_device_id=False)
-        except OPNsenseBelowMinFirmware, OPNsenseUnknownFirmware:
-            _LOGGER.debug(
-                "Client validation reported firmware issues; continuing to firmware probes"
-            )
+        await client.validate(require_device_id=False)
 
         scan_interval: int = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         _LOGGER.info("Starting hass-opnsense %s", VERSION)

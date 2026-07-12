@@ -142,6 +142,9 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             return self.async_abort(reason="entry_changed")
         entry = current_entry
 
+        if observed_device_id == entry.data.get(CONF_DEVICE_UNIQUE_ID):
+            return self.async_abort(reason="entry_changed")
+
         if not isinstance(observed_device_id, str) or not observed_device_id:
             return self.async_abort(reason="cannot_connect")
 

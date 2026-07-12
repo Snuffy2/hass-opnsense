@@ -10,6 +10,7 @@ import logging
 from typing import Any, Never, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call
 
+from aiopnsense.exceptions import OPNsenseBelowMinFirmware, OPNsenseUnknownFirmware
 from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -299,6 +300,50 @@ async def test_async_setup_entry_carp_entry_uses_identity_less_runtime(
     assert entry.runtime_data.device_tracker_coordinator is None
     assert hass.config_entries.async_forward_entry_setups.await_count == 1  # type: ignore[union-attr]
     hass.config_entries.async_forward_entry_setups.assert_awaited_with(entry, [Platform.SENSOR])  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [OPNsenseBelowMinFirmware, OPNsenseUnknownFirmware])
+async def test_async_setup_entry_carp_validation_firmware_errors_fail_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+    exc: type[Exception],
+) -> None:
+    """CARP setup must fail fast on firmware validation exceptions."""
+    coordinator = AsyncMock()
+    coordinator.async_config_entry_first_refresh = AsyncMock(return_value=True)
+    coordinator.async_shutdown = AsyncMock(return_value=True)
+    coordinator.data = {"carp": {"interfaces": [{"vhid": 1, "subnet": "192.0.2.1"}]}}
+    coordinator_factory = MagicMock(return_value=coordinator)
+    client = MagicMock()
+    client.validate = AsyncMock(side_effect=exc("firmware"))
+    client.async_close = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        init_mod, "create_opnsense_client_from_config_entry", lambda **_kwargs: client
+    )
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", coordinator_factory)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+
+    hass = ph_hass
+    hass.data = {}
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+    with pytest.raises(exc):
+        await init_mod.async_setup_entry(hass, entry)
+
+    coordinator_factory.assert_not_called()
+    hass.config_entries.async_forward_entry_setups.assert_not_awaited()
+    client.async_close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
