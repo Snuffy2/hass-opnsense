@@ -251,18 +251,14 @@ async def test_async_setup_entry_carp_entry_uses_identity_less_runtime(
         def __init__(self, **kwargs: Any) -> None:
             """Capture coordinator construction kwargs for CARP assertions."""
             captured.update(kwargs)
-            self.refreshed = False
-            self.shut = False
             self.data = {"carp": {"interfaces": [{"vhid": 1, "subnet": "192.0.2.1"}]}}
 
         async def async_config_entry_first_refresh(self) -> bool:
-            """Mark the coordinator as refreshed when setup initializes."""
-            self.refreshed = True
+            """Complete the coordinator's initial refresh protocol."""
             return True
 
         async def async_shutdown(self) -> bool:
-            """Record coordinator shutdown during failure cleanup."""
-            self.shut = True
+            """Complete the coordinator's shutdown protocol."""
             return True
 
     monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", _CarpCoordinator)
