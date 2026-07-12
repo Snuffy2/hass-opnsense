@@ -1097,6 +1097,8 @@ async def _compile_carp_vip_sensors(
                 SensorEntityDescription(
                     key=key,
                     name=f"CARP VIP {subnet} (VHID {vhid})",
+                    translation_key="carp_vip",
+                    translation_placeholders={"subnet": subnet, "vhid": vhid},
                     native_unit_of_measurement=None,
                     device_class=None,
                     icon="mdi:ip-network",
@@ -1130,6 +1132,7 @@ async def _compile_carp_status_sensor(
             SensorEntityDescription(
                 key="carp.status_summary",
                 name="CARP Status",
+                translation_key="carp_status_summary",
                 native_unit_of_measurement=None,
                 device_class=None,
                 icon="mdi:gauge",
@@ -1372,6 +1375,7 @@ async def async_setup_entry(
                 SensorEntityDescription(
                     key="carp.active_responder",
                     name="Active CARP Responder",
+                    translation_key="carp_active_responder",
                     icon="mdi:server-network",
                     entity_registry_enabled_default=True,
                 ),
@@ -1439,7 +1443,10 @@ class OPNsenseSensor(OPNsenseEntity, SensorEntity):
     ) -> None:
         """Initialize the sensor."""
         name_suffix: str | None = (
-            entity_description.name if isinstance(entity_description.name, str) else None
+            entity_description.name
+            if isinstance(entity_description.name, str)
+            and entity_description.translation_key is None
+            else None
         )
         unique_id_suffix: str | None = (
             entity_description.key if isinstance(entity_description.key, str) else None

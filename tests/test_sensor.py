@@ -4,7 +4,11 @@ from collections.abc import Callable, Iterable
 from typing import Any, Never, cast
 from unittest.mock import MagicMock
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -132,6 +136,17 @@ async def test_carp_entry_setup_has_exact_read_only_vip_inventory(
     expected_unique_ids = {_carp_entry_sensor_unique_id(entry, key) for key in expected_keys}
     assert keys == expected_keys
     assert {entity.unique_id for entity in created} == expected_unique_ids
+    descriptions = {entity.entity_description.key: entity.entity_description for entity in created}
+    assert descriptions["carp.active_responder"].translation_key == "carp_active_responder"
+    assert descriptions["carp.status_summary"].translation_key == "carp_status_summary"
+    vip_descriptions = [
+        description for key, description in descriptions.items() if key.startswith("carp.vip.")
+    ]
+    assert {description.translation_key for description in vip_descriptions} == {"carp_vip"}
+    assert all(
+        set(description.translation_placeholders or {}) == {"subnet", "vhid"}
+        for description in vip_descriptions
+    )
     assert all(
         entity.entity_description.entity_registry_enabled_default is False
         for entity in created
@@ -172,6 +187,7 @@ async def test_carp_entry_failover_keeps_vip_identity_and_updates_responder(
                     "status": "BACKUP",
                     "advskew": 100,
                     "advbase": 1,
+                    "subnet_bits": 24,
                     "descr": "Primary VIP",
                     "mode": "carp",
                 }
@@ -217,7 +233,44 @@ async def test_carp_entry_failover_keeps_vip_identity_and_updates_responder(
     assert vip.native_value == "MASTER"
     assert vip.unique_id == initial_unique_id
     assert vip.extra_state_attributes is not None
-    assert vip.extra_state_attributes["interface"] == "ix0"
+    assert vip.extra_state_attributes == {
+        "interface": "ix0",
+        "vhid": 1,
+        "advskew": 100,
+        "advbase": 1,
+        "subnet_bits": 24,
+        "subnet": "192.0.2.1",
+        "descr": "Primary VIP",
+        "mode": "carp",
+    }
+
+
+@pytest.mark.parametrize("system_info", [{}, {"name": None}, {"name": ""}, {"name": "  "}])
+def test_carp_active_responder_unavailable_without_name(
+    system_info: dict[str, Any],
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """The active responder sensor should fail closed for missing or blank names."""
+    entry = make_config_entry(data={"entry_type": "carp"}, entry_id="carp-entry")
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = {"system_info": system_info}
+    sensor = OPNsenseCarpActiveResponderSensor(
+        config_entry=entry,
+        coordinator=coordinator,
+        entity_description=SensorEntityDescription(
+            key="carp.active_responder",
+            name="Active CARP Responder",
+            translation_key="carp_active_responder",
+        ),
+    )
+    sensor.hass = MagicMock()
+    sensor.entity_id = "sensor.carp_active_responder_unavailable"
+    object.__setattr__(sensor, "async_write_ha_state", lambda: None)
+
+    sensor._handle_coordinator_update()
+
+    assert sensor.available is False
+    assert sensor.extra_state_attributes == {}
 
 
 @pytest.mark.asyncio

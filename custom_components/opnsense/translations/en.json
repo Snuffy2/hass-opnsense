@@ -145,7 +145,7 @@
         "name": "CARP Status"
       },
       "carp_vip": {
-        "name": "CARP VIP"
+        "name": "CARP VIP {subnet} (VHID {vhid})"
       }
     }
   },
