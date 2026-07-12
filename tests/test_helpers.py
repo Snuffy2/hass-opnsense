@@ -1,5 +1,6 @@
 """Unit tests for shared OPNsense integration helpers."""
 
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -8,13 +9,20 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.opnsense import helpers as helpers_mod
-from custom_components.opnsense.const import DEFAULT_VERIFY_SSL
+from custom_components.opnsense.const import (
+    CONF_DEVICE_UNIQUE_ID,
+    CONF_ENTRY_TYPE,
+    DEFAULT_VERIFY_SSL,
+    ENTRY_TYPE_CARP,
+)
 from custom_components.opnsense.helpers import (
     coerce_bool,
+    config_entry_identity,
     create_opnsense_client,
     create_opnsense_client_from_config_entry,
     firewall_rule_id_from_payload,
     firewall_rule_switch_unique_ids_from_payload,
+    is_carp_entry,
 )
 
 
@@ -224,3 +232,22 @@ def test_firewall_rule_switch_unique_ids_from_payload_skips_invalid_rules() -> N
         "deviceid_firewall_rule_r1",
         "deviceid_firewall_rule_uuid_4",
     }
+
+
+def test_entry_type_and_identity_helpers(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Validate config entry identity rules for device and CARP entries."""
+    device_entry = make_config_entry(
+        entry_id="device-entry",
+        data={CONF_DEVICE_UNIQUE_ID: "aa_bb_cc_dd_ee_ff"},
+    )
+    carp_entry = make_config_entry(
+        entry_id="carp-entry",
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_CARP},
+    )
+
+    assert is_carp_entry(device_entry) is False
+    assert config_entry_identity(device_entry) == "aa_bb_cc_dd_ee_ff"
+    assert is_carp_entry(carp_entry) is True
+    assert config_entry_identity(carp_entry) == "carp-entry"

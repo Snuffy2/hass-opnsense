@@ -6,9 +6,15 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.opnsense.const import CONF_DEVICE_UNIQUE_ID, DOMAIN
+from custom_components.opnsense.const import (
+    CONF_DEVICE_UNIQUE_ID,
+    CONF_ENTRY_TYPE,
+    DOMAIN,
+    ENTRY_TYPE_CARP,
+)
 from custom_components.opnsense.coordinator import OPNsenseDataUpdateCoordinator
 from custom_components.opnsense.entity import OPNsenseBaseEntity, OPNsenseEntity
+from custom_components.opnsense.helpers import config_entry_identity
 
 
 def test_payload_display_name_uses_scalar_fallback() -> None:
@@ -95,6 +101,18 @@ def test_init_sets_unique_and_name_suffixes(
     assert ent.unique_id == "dev_123_suf"
     assert ent.has_entity_name is True
     assert ent.name == "Name"
+
+    carp_entry = make_config_entry(
+        entry_id="carp-entry",
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_CARP},
+        title="CARP VIP",
+    )
+    carp_ent = OPNsenseBaseEntity(
+        config_entry=carp_entry, coordinator=dummy_coordinator, unique_id_suffix="test"
+    )
+    assert config_entry_identity(carp_entry) == "carp-entry"
+    assert carp_ent._device_unique_id == "carp-entry"
+    assert carp_ent.unique_id == "carp_entry_test"
 
 
 def test_available_property_toggle(

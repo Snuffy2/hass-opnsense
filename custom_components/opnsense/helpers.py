@@ -14,7 +14,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.util import slugify
 
-from .const import DEFAULT_VERIFY_SSL
+from .const import (
+    CONF_DEVICE_UNIQUE_ID,
+    CONF_ENTRY_TYPE,
+    DEFAULT_VERIFY_SSL,
+    ENTRY_TYPE_CARP,
+    ENTRY_TYPE_DEVICE,
+)
 
 
 def dict_get(data: MutableMapping[str, Any], path: str, default: Any | None = None) -> Any | None:
@@ -164,6 +170,17 @@ def create_opnsense_client_from_config_entry(
         throw_errors=throw_errors,
         name=config_entry.title,
     )
+
+
+def is_carp_entry(config_entry: ConfigEntry) -> bool:
+    """Return whether a config entry represents a CARP virtual endpoint."""
+    return config_entry.data.get(CONF_ENTRY_TYPE, ENTRY_TYPE_DEVICE) == ENTRY_TYPE_CARP
+
+
+def config_entry_identity(config_entry: ConfigEntry) -> str:
+    """Return the stable Home Assistant identity prefix for a config entry."""
+    device_id = config_entry.data.get(CONF_DEVICE_UNIQUE_ID)
+    return device_id if isinstance(device_id, str) and device_id else config_entry.entry_id
 
 
 def coerce_bool(value: Any) -> bool | None:
