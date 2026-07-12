@@ -25,8 +25,10 @@ from custom_components.opnsense.const import (
 )
 from custom_components.opnsense.coordinator import OPNsenseDataUpdateCoordinator
 from custom_components.opnsense.sensor import (
+    OPNsenseCarpActiveResponderSensor,
     OPNsenseCarpInterfaceSensor,
     OPNsenseCarpStatusSensor,
+    OPNsenseCarpVipSensor,
     OPNsenseDHCPLeasesSensor,
     OPNsenseFilesystemSensor,
     OPNsenseGatewaySensor,
@@ -41,6 +43,11 @@ from custom_components.opnsense.sensor import (
     normalize_filesystem_mountpoint,
     slugify_filesystem_mountpoint,
 )
+
+
+def _carp_entry_sensor_unique_id(entry: MockConfigEntry, key: str) -> str:
+    """Return the repository-normalized unique ID for a CARP entry sensor."""
+    return sensor_module.slugify(f"{entry.entry_id}_{key}")
 
 
 def test_static_sensor_descriptions_live_in_sensor_module() -> None:
@@ -77,6 +84,140 @@ async def test_async_setup_entry_invalid_state(
 
     await async_setup_entry(MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities))
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_carp_entry_setup_has_exact_read_only_vip_inventory(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP entries should expose only the responder, summary, and VIP sensors."""
+    entry = make_config_entry(
+        data={"entry_type": "carp"},
+        entry_id="carp-entry",
+        title="CARP VIP",
+    )
+    state: dict[str, Any] = {
+        "system_info": {"name": "node-a"},
+        "carp": {
+            "interfaces": [
+                {"vhid": 1, "subnet": "192.0.2.1", "interface": "igc0", "status": "BACKUP"},
+                {
+                    "vhid": "2",
+                    "subnet": "198.51.100.1",
+                    "interface": "igc1",
+                    "status": "MASTER",
+                },
+            ],
+            "status_summary": {"state": "healthy"},
+        },
+    }
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = state
+    setattr(entry.runtime_data, COORDINATOR, coordinator)
+    created: list[Any] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Collect entities created by the sensor platform."""
+        created.extend(entities)
+
+    await async_setup_entry(MagicMock(), entry, cast("AddEntitiesCallback", add_entities))
+
+    keys = {entity.entity_description.key for entity in created}
+    expected_keys = {
+        "carp.active_responder",
+        "carp.status_summary",
+        sensor_module._build_carp_vip_sensor_key("1", "192.0.2.1"),
+        sensor_module._build_carp_vip_sensor_key("2", "198.51.100.1"),
+    }
+    expected_unique_ids = {_carp_entry_sensor_unique_id(entry, key) for key in expected_keys}
+    assert keys == expected_keys
+    assert {entity.unique_id for entity in created} == expected_unique_ids
+    assert all(
+        entity.entity_description.entity_registry_enabled_default is False
+        for entity in created
+        if entity.entity_description.key.startswith("carp.vip.")
+    )
+    assert isinstance(
+        next(
+            entity for entity in created if entity.entity_description.key == "carp.active_responder"
+        ),
+        OPNsenseCarpActiveResponderSensor,
+    )
+    assert all(
+        isinstance(entity, OPNsenseCarpVipSensor)
+        for entity in created
+        if entity.entity_description.key.startswith("carp.vip.")
+    )
+    assert all(entity.entity_description.key.startswith("carp.") for entity in created)
+
+
+@pytest.mark.asyncio
+async def test_carp_entry_failover_keeps_vip_identity_and_updates_responder(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP failover should update the responder while retaining each VIP entity."""
+    entry = make_config_entry(
+        data={"entry_type": "carp"},
+        entry_id="carp-entry",
+        title="CARP VIP",
+    )
+    state: dict[str, Any] = {
+        "system_info": {"name": "node-a"},
+        "carp": {
+            "interfaces": [
+                {
+                    "vhid": 1,
+                    "subnet": "192.0.2.1",
+                    "interface": "igc0",
+                    "status": "BACKUP",
+                    "advskew": 100,
+                    "advbase": 1,
+                    "descr": "Primary VIP",
+                    "mode": "carp",
+                }
+            ],
+            "status_summary": {"state": "healthy"},
+        },
+    }
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = state
+    setattr(entry.runtime_data, COORDINATOR, coordinator)
+    created: list[Any] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Collect entities created by the sensor platform."""
+        created.extend(entities)
+
+    await async_setup_entry(MagicMock(), entry, cast("AddEntitiesCallback", add_entities))
+    responder = next(
+        entity for entity in created if entity.entity_description.key == "carp.active_responder"
+    )
+    vip = next(
+        entity for entity in created if entity.entity_description.key.startswith("carp.vip.")
+    )
+    initial_unique_id = vip.unique_id
+    for entity in (responder, vip):
+        entity.hass = MagicMock()
+        object.__setattr__(entity, "async_write_ha_state", lambda: None)
+        entity._handle_coordinator_update()
+
+    assert responder.native_value == "node-a"
+    assert responder.extra_state_attributes == {}
+    assert vip.available is True
+    assert vip.native_value == "BACKUP"
+
+    state["system_info"]["name"] = "node-b"
+    state["carp"]["interfaces"][0]["interface"] = "ix0"
+    state["carp"]["interfaces"][0]["status"] = "MASTER"
+    responder._handle_coordinator_update()
+    vip._handle_coordinator_update()
+
+    assert responder.native_value == "node-b"
+    assert vip.available is True
+    assert vip.native_value == "MASTER"
+    assert vip.unique_id == initial_unique_id
+    assert vip.extra_state_attributes is not None
+    assert vip.extra_state_attributes["interface"] == "ix0"
 
 
 @pytest.mark.asyncio

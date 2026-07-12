@@ -45,7 +45,7 @@ from .const import (
 )
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity
-from .helpers import coerce_bool, dict_get
+from .helpers import coerce_bool, dict_get, is_carp_entry
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -1015,6 +1015,99 @@ def _parse_carp_interface_sensor_key(key: str) -> tuple[str, str] | None:
     return (interface_slug, subnet_slug)
 
 
+def _normalize_carp_value(value: Any) -> str:
+    """Normalize a CARP identifier or subnet value for matching.
+
+    Args:
+        value: Raw CARP value, which may be a number or string.
+
+    Returns:
+        str: Trimmed value, or an empty string when it cannot be normalized.
+    """
+    if value is None:
+        return ""
+    try:
+        return str(value).strip()
+    except AttributeError, RuntimeError, TypeError, ValueError:
+        return ""
+
+
+def _build_carp_vip_sensor_key(vhid: str, subnet: str) -> str:
+    """Build a node-independent CARP VIP key from synchronized values."""
+    return f"carp.vip.{slugify(vhid.strip())}.{slugify(subnet.strip())}"
+
+
+def _parse_carp_vip_sensor_key(key: str) -> tuple[str, str] | None:
+    """Parse a CARP VIP key into its VHID and subnet slugs.
+
+    Args:
+        key: Sensor description key to parse.
+
+    Returns:
+        tuple[str, str] | None: VHID and subnet slugs when the key is valid.
+    """
+    key_parts = key.split(".")
+    if len(key_parts) != 4 or key_parts[:2] != ["carp", "vip"]:
+        return None
+    vhid_slug, subnet_slug = (part.strip() for part in key_parts[2:])
+    if not vhid_slug or not subnet_slug:
+        return None
+    return vhid_slug, subnet_slug
+
+
+async def _compile_carp_vip_sensors(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+    state: MutableMapping[str, Any],
+) -> list:
+    """Compile stable, read-only CARP VIP sensors.
+
+    Args:
+        config_entry: CARP config entry being exercised by the helper or test.
+        coordinator: Data update coordinator that caches CARP state.
+        state: Coordinator state snapshot that contains CARP interface rows.
+
+    Returns:
+        list: CARP VIP sensors disabled by default.
+    """
+    if not isinstance(state, MutableMapping):
+        return []
+    carp_interfaces = dict_get(state, "carp.interfaces", []) or []
+    if not isinstance(carp_interfaces, list):
+        return []
+
+    entities: list[OPNsenseCarpVipSensor] = []
+    seen_keys: set[str] = set()
+    for interface in carp_interfaces:
+        if not isinstance(interface, Mapping):
+            continue
+        vhid = _normalize_carp_value(interface.get("vhid"))
+        subnet = _normalize_carp_value(interface.get("subnet"))
+        if not vhid or not subnet:
+            continue
+        key = _build_carp_vip_sensor_key(vhid, subnet)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        entities.append(
+            _create_sensor(
+                OPNsenseCarpVipSensor,
+                config_entry,
+                coordinator,
+                SensorEntityDescription(
+                    key=key,
+                    name=f"CARP VIP {subnet} (VHID {vhid})",
+                    native_unit_of_measurement=None,
+                    device_class=None,
+                    icon="mdi:ip-network",
+                    state_class=None,
+                    entity_registry_enabled_default=False,
+                ),
+            )
+        )
+    return entities
+
+
 async def _compile_carp_status_sensor(
     config_entry: ConfigEntry,
     coordinator: OPNsenseDataUpdateCoordinator,
@@ -1268,8 +1361,26 @@ async def async_setup_entry(
         _LOGGER.error("Missing state data in sensor async_setup_entry")
         return
     config: Mapping[str, Any] = config_entry.data
-
     entities: list = []
+
+    if is_carp_entry(config_entry):
+        entities = [
+            _create_sensor(
+                OPNsenseCarpActiveResponderSensor,
+                config_entry,
+                coordinator,
+                SensorEntityDescription(
+                    key="carp.active_responder",
+                    name="Active CARP Responder",
+                    icon="mdi:server-network",
+                    entity_registry_enabled_default=True,
+                ),
+            )
+        ]
+        entities.extend(await _compile_carp_status_sensor(config_entry, coordinator, state))
+        entities.extend(await _compile_carp_vip_sensors(config_entry, coordinator, state))
+        async_add_entities(entities)
+        return
 
     if config.get(CONF_SYNC_TELEMETRY, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_static_telemetry_sensors(config_entry, coordinator))
@@ -1671,6 +1782,28 @@ class OPNsenseInterfaceSensor(OPNsenseSensor):
         return super().icon
 
 
+class OPNsenseCarpActiveResponderSensor(OPNsenseSensor):
+    """Class for the active OPNsense node observed by a CARP endpoint."""
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator updates for the active CARP responder."""
+        system_info = self._mapping_at("system_info")
+        if system_info is None:
+            self._mark_unavailable(clear_attributes=True)
+            return
+
+        responder_name = system_info.get("name")
+        if not isinstance(responder_name, str) or not responder_name.strip():
+            self._mark_unavailable(clear_attributes=True)
+            return
+
+        self._available = True
+        self._attr_native_value = responder_name.strip()
+        self._attr_extra_state_attributes = {}
+        self.async_write_ha_state()
+
+
 class OPNsenseCarpInterfaceSensor(OPNsenseSensor):
     """Class for OPNsense Carp Sensors."""
 
@@ -1797,6 +1930,71 @@ class OPNsenseCarpStatusSensor(OPNsenseSensor):
         if state_value in {"degraded", "disabled"}:
             return "mdi:close-network-outline"
         return super().icon
+
+
+class OPNsenseCarpVipSensor(OPNsenseSensor):
+    """Class for an individual read-only CARP virtual IP sensor."""
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator updates for a CARP virtual IP."""
+        key_data = _parse_carp_vip_sensor_key(self.entity_description.key)
+        carp_interfaces = self._list_at("carp.interfaces")
+        if key_data is None or carp_interfaces is None:
+            self._mark_unavailable()
+            return
+
+        expected_vhid_slug, expected_subnet_slug = key_data
+        carp_vip: dict[str, Any] = {}
+        for interface in carp_interfaces:
+            if not isinstance(interface, Mapping):
+                continue
+            vhid = _normalize_carp_value(interface.get("vhid"))
+            subnet = _normalize_carp_value(interface.get("subnet"))
+            if not vhid or not subnet:
+                continue
+            if slugify(vhid) != expected_vhid_slug or slugify(subnet) != expected_subnet_slug:
+                continue
+            carp_vip = dict(interface)
+            break
+
+        if not carp_vip:
+            self._mark_unavailable()
+            return
+
+        status = carp_vip.get("status")
+        if status is None:
+            self._mark_unavailable()
+            return
+
+        self._available = True
+        self._attr_native_value = status
+        self._attr_extra_state_attributes = {}
+        for attr in (
+            "interface",
+            "vhid",
+            "advskew",
+            "advbase",
+            "subnet_bits",
+            "subnet",
+            "descr",
+            "mode",
+        ):
+            if attr in carp_vip:
+                self._attr_extra_state_attributes[attr] = carp_vip[attr]
+        self.async_write_ha_state()
+
+    @property
+    def icon(self) -> str | None:
+        """Return an icon based on the current CARP VIP status."""
+        if not self.native_value or not isinstance(self.native_value, str):
+            return "mdi:close-network-outline"
+        status = self.native_value.upper()
+        if status == "MASTER":
+            return "mdi:check-network"
+        if status == "BACKUP":
+            return "mdi:backup-restore"
+        return "mdi:close-network-outline"
 
 
 class OPNsenseGatewaySensor(OPNsenseSensor):

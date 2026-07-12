@@ -136,6 +136,19 @@
       }
     }
   },
+  "entity": {
+    "sensor": {
+      "carp_active_responder": {
+        "name": "Active CARP Responder"
+      },
+      "carp_status_summary": {
+        "name": "CARP Status"
+      },
+      "carp_vip": {
+        "name": "CARP VIP"
+      }
+    }
+  },
   "issues": {
     "below_min_firmware": {
       "title": "OPNsense Firmware below Minimum Version",
