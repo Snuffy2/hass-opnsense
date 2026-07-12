@@ -1,10 +1,13 @@
 """Repair flows for the OPNsense integration."""
 
+import logging
+
 import aiohttp
 from aiopnsense.exceptions import OPNsenseError
 from homeassistant.components.repairs import ConfirmRepairFlow, RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
 import voluptuous as vol
 
@@ -12,6 +15,7 @@ from .const import CONF_DEVICE_UNIQUE_ID, DOMAIN
 from .helpers import create_opnsense_client_from_config_entry, is_carp_entry
 
 _ISSUE_SUFFIX = "_device_id_mismatched"
+_LOGGER = logging.getLogger(__name__)
 
 
 def async_create_device_id_mismatch_issue(
@@ -114,29 +118,42 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         ):
             return self.async_abort(reason="cannot_unload")
 
-        entity_registry = er.async_get(self.hass)
-        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
-            entity_registry.async_remove(entity.entity_id)
+        current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if (
+            current_entry is None
+            or current_entry.entry_id != self._entry_id
+            or is_carp_entry(current_entry)
+        ):
+            return self.async_abort(reason="entry_not_found")
+        entry = current_entry
 
-        device_registry = dr.async_get(self.hass)
-        for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
-            device_registry.async_update_device(
-                device.id,
-                remove_config_entry_id=entry.entry_id,
+        try:
+            entity_registry = er.async_get(self.hass)
+            for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
+                entity_registry.async_remove(entity.entity_id)
+
+            device_registry = dr.async_get(self.hass)
+            for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+                device_registry.async_update_device(
+                    device.id,
+                    remove_config_entry_id=entry.entry_id,
+                )
+
+            new_data = {**entry.data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
+            self.hass.config_entries.async_update_entry(
+                entry,
+                data=new_data,
+                unique_id=observed_device_id,
             )
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        except HomeAssistantError, KeyError:
+            _LOGGER.exception(
+                "Device-ID repair did not finish for %s; some registry cleanup may already "
+                "have occurred",
+                entry.title,
+            )
+            return self.async_abort(reason="repair_failed")
 
-        new_data = {**entry.data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
-        self.hass.config_entries.async_update_entry(
-            entry,
-            data=new_data,
-            unique_id=observed_device_id,
-        )
-        ir.async_delete_issue(
-            self.hass,
-            DOMAIN,
-            f"{entry.entry_id}{_ISSUE_SUFFIX}",
-        )
-        self.hass.config_entries.async_schedule_reload(entry.entry_id)
         return self.async_create_entry(data={})
 
 

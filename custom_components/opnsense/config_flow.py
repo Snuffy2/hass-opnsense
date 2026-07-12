@@ -542,7 +542,9 @@ async def _validate_carp_client_details(
         system_info = await client.get_system_info()
         carp = await client.get_carp()
         carp_interfaces = carp.get("interfaces") if isinstance(carp, Mapping) else None
-        if not isinstance(carp_interfaces, list) or not carp_interfaces:
+        if not isinstance(carp_interfaces, list) or not any(
+            _has_carp_vip_identity(interface) for interface in carp_interfaces
+        ):
             raise OPNsenseCarpNotConfiguredError("No CARP VIPs were returned")
 
         responder_name = system_info.get("name") if isinstance(system_info, Mapping) else None
@@ -555,6 +557,27 @@ async def _validate_carp_client_details(
         user_input.pop(CONF_GRANULAR_SYNC_OPTIONS, None)
     finally:
         await client.async_close()
+
+
+def _has_carp_vip_identity(value: object) -> bool:
+    """Return whether a CARP row contains normalized VHID and subnet values.
+
+    Args:
+        value: Raw CARP interface/VIP row from the OPNsense API.
+
+    Returns:
+        bool: ``True`` when the row has non-empty VHID and subnet identities.
+    """
+    if not isinstance(value, Mapping):
+        return False
+
+    vhid = value.get("vhid")
+    if isinstance(vhid, bool) or not isinstance(vhid, (int, str)):
+        return False
+    normalized_vhid = str(vhid).strip()
+    subnet = value.get("subnet")
+    normalized_subnet = subnet.strip() if isinstance(subnet, str) else ""
+    return bool(normalized_vhid and normalized_subnet)
 
 
 def _record_validation_error(errors: MutableMapping[str, Any], key: str, message: str) -> None:
@@ -1049,6 +1072,9 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
                     carp=True,
                 )
                 if not errors:
+                    abort = self._async_abort_entries_match({CONF_URL: self._config[CONF_URL]})
+                    if abort:
+                        return abort
                     return self.async_update_and_abort(
                         entry=reconfigure_entry,
                         data=self._config,
@@ -1180,7 +1206,7 @@ class OPNsenseOptionsFlow(OptionsFlow):
                 ),
                 errors=errors,
                 description_placeholders={
-                    "options_scope": "scan interval only for this CARP virtual IP entry",
+                    "options_scope": "scan interval only for this CARP VIP entry",
                 },
             )
 

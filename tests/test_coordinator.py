@@ -378,8 +378,10 @@ async def test_check_device_unique_id_mismatch_triggers_issue(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     fake_client: Any,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Mismatched device_unique_id should create an issue and shutdown after threshold."""
+    caplog.set_level(logging.ERROR, logger=coordinator_module.__name__)
     entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "expected"})
     client = fake_client()()
     coord = OPNsenseDataUpdateCoordinator(
@@ -441,6 +443,8 @@ async def test_check_device_unique_id_mismatch_triggers_issue(
         "old_device_id": "expected",
         "new_device_id": "other",
     }
+    assert "fixable repair issue" in caplog.text
+    assert "rebuild entities" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -292,8 +292,8 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                     )
                 _LOGGER.error(
                     "OPNsense Device ID has changed which indicates new or changed hardware. "
-                    "In order to accommodate this, hass-opnsense needs to be removed and "
-                    "reinstalled for this router. "
+                    "A fixable repair issue is available to rebuild entities for this "
+                    "OPNsense device. "
                     "hass-opnsense is shutting down."
                 )
                 await self.async_shutdown()

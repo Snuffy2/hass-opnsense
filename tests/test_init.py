@@ -300,6 +300,80 @@ async def test_async_setup_entry_carp_entry_uses_identity_less_runtime(
 
 
 @pytest.mark.asyncio
+async def test_async_setup_entry_carp_first_refresh_failure_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP setup should stop its coordinator, close the client, and remove hass data."""
+    client = _make_valid_setup_client()
+    monkeypatch.setattr(
+        init_mod, "create_opnsense_client_from_config_entry", lambda **_kwargs: client
+    )
+    coordinator = _make_setup_coordinator()
+    coordinator.async_config_entry_first_refresh.side_effect = RuntimeError("refresh failed")
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", lambda **_kwargs: coordinator)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+    hass = ph_hass
+    hass.data = {init_mod.DOMAIN: {entry.entry_id: client}}
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        await init_mod.async_setup_entry(hass, entry)
+
+    coordinator.async_shutdown.assert_awaited_once()
+    client.async_close.assert_awaited_once()
+    assert entry.entry_id not in hass.data.get(init_mod.DOMAIN, {})
+    hass.config_entries.async_forward_entry_setups.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_carp_platform_forward_failure_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP platform-forward failures should clean up runtime state and the client."""
+    client = _make_valid_setup_client()
+    monkeypatch.setattr(
+        init_mod, "create_opnsense_client_from_config_entry", lambda **_kwargs: client
+    )
+    coordinator = _make_setup_coordinator()
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", lambda **_kwargs: coordinator)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+    hass = ph_hass
+    hass.data = {}
+    hass.config_entries.async_forward_entry_setups = AsyncMock(
+        side_effect=RuntimeError("CARP platform forwarding failed")
+    )
+
+    with pytest.raises(RuntimeError, match="CARP platform forwarding failed"):
+        await init_mod.async_setup_entry(hass, entry)
+
+    coordinator.async_shutdown.assert_awaited_once()
+    client.async_close.assert_awaited_once()
+    assert entry.entry_id not in hass.data.get(init_mod.DOMAIN, {})
+
+
+@pytest.mark.asyncio
 async def test_async_setup_entry_closes_client_when_validation_fails(
     monkeypatch: pytest.MonkeyPatch,
     ph_hass: Any,
@@ -476,8 +550,10 @@ async def test_async_setup_entry_device_id_mismatch(
     fake_client: Any,
     fake_coordinator: Any,
     make_config_entry: Callable[..., MockConfigEntry],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """async_setup_entry should fail when client reports mismatched device id."""
+    caplog.set_level(logging.ERROR, logger=init_mod.__name__)
     patch_opnsense_client(monkeypatch, init_mod, fake_client(device_id="other"))
     # use shared coordinator capture fixture
     monkeypatch.setattr(
@@ -526,6 +602,8 @@ async def test_async_setup_entry_device_id_mismatch(
         "old_device_id": "dev1",
         "new_device_id": "other",
     }
+    assert "fixable repair issue" in caplog.text
+    assert "rebuild entities" in caplog.text
 
 
 @pytest.mark.asyncio
