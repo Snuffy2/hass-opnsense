@@ -70,6 +70,14 @@ class OPNsenseCarpNotConfiguredError(OPNsenseError):
     """Raised when an endpoint has no usable CARP VIP rows."""
 
 
+class OPNsenseCarpResponderUnavailableError(OPNsenseError):
+    """Signal missing or invalid active CARP responder metadata.
+
+    This error distinguishes responder discovery failures from empty or invalid
+    CARP VIP inventories.
+    """
+
+
 CONF_DEVICE_TRACKING_MODE = "device_tracking_mode"
 DEVICE_TRACKING_MODE_DISABLED = "disabled"
 DEVICE_TRACKING_MODE_ALL = "all_detected"
@@ -407,6 +415,11 @@ def _get_validation_error_details(
             "unknown_firmware",
             "Unable to get OPNsense Firmware version",
         )
+    if isinstance(error, OPNsenseCarpResponderUnavailableError):
+        return (
+            "carp_responder_unavailable",
+            "Unable to determine the active CARP responder",
+        )
     if isinstance(error, OPNsenseCarpNotConfiguredError):
         return ("carp_not_configured", "No CARP VIPs were returned")
     if isinstance(error, OPNsenseMissingDeviceUniqueID):
@@ -541,10 +554,10 @@ async def _validate_carp_client_details(
 
         system_info = await client.get_system_info()
         if not isinstance(system_info, Mapping):
-            raise OPNsenseCarpNotConfiguredError("CARP responder information is unavailable")
+            raise OPNsenseCarpResponderUnavailableError("CARP responder information is unavailable")
         responder_name = system_info.get("name")
         if not isinstance(responder_name, str) or not responder_name.strip():
-            raise OPNsenseCarpNotConfiguredError("CARP responder name is unavailable")
+            raise OPNsenseCarpResponderUnavailableError("CARP responder name is unavailable")
         responder_name = responder_name.strip()
 
         carp = await client.get_carp()

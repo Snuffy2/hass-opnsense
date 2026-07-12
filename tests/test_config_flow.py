@@ -511,7 +511,7 @@ async def test_async_step_carp_rejects_missing_or_blank_responder_name(
     result = await flow.async_step_carp(user_input=_make_basic_carp_input())
 
     assert result["type"] == "form"
-    assert result["errors"]["base"] == "carp_not_configured"
+    assert result["errors"]["base"] == "carp_responder_unavailable"
 
 
 @pytest.mark.asyncio
@@ -531,7 +531,19 @@ async def test_async_step_carp_custom_name_does_not_waive_responder_validation(
     result = await flow.async_step_carp(user_input=user_input)
 
     assert result["type"] == "form"
-    assert result["errors"]["base"] == "carp_not_configured"
+    assert result["errors"]["base"] == "carp_responder_unavailable"
+
+
+def test_validation_error_details_maps_carp_responder_unavailable() -> None:
+    """Responder validation errors should use their dedicated form error key."""
+    result = cf_mod._get_validation_error_details(
+        cf_mod.OPNsenseCarpResponderUnavailableError("missing responder"),
+        _make_basic_carp_input(),
+    )
+
+    assert result is not None
+    assert result[0] == "carp_responder_unavailable"
+    assert result[1] == "Unable to determine the active CARP responder"
 
 
 @pytest.mark.asyncio

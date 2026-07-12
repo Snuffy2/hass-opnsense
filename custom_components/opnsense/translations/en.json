@@ -17,6 +17,7 @@
       "missing_device_unique_id": "Unable to get MAC addresses from OPNsense to use as Device Unique ID",
       "below_min_firmware": "OPNsense Firmware of {firmware} is below the minimum supported version of {min_firmware}",
       "carp_not_configured": "No CARP VIP interfaces are configured on the selected OPNsense host",
+      "carp_responder_unavailable": "Unable to determine the active CARP responder from the selected OPNsense host",
       "unknown_firmware": "Unable to get OPNsense Firmware version"
     },
     "step": {
