@@ -926,6 +926,21 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize transient config-flow storage."""
         self._config: dict[str, Any] = {}
 
+    def _async_abort_if_url_conflict(self, *, url: str, carp: bool) -> ConfigFlowResult | None:
+        """Abort when a device and CARP entry reuse the same URL.
+
+        Args:
+            url: Normalized OPNsense URL being configured.
+            carp: Whether the submitted entry is a CARP entry.
+
+        Returns:
+            ConfigFlowResult | None: Conflict abort result, if applicable.
+        """
+        for existing_entry in self.hass.config_entries.async_entries(DOMAIN):
+            if is_carp_entry(existing_entry) != carp and existing_entry.data.get(CONF_URL) == url:
+                return self.async_abort(reason="carp_device_url_conflict")
+        return None
+
     # gets invoked without user input initially
     # when user submits has user_input
     async def async_step_user(
@@ -937,19 +952,18 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_device(
         self, user_input: MutableMapping[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the legacy device setup flow."""
+        """Handle the device setup flow."""
         errors: dict[str, Any] = {}
         if user_input is not None:
             user_input[CONF_ENTRY_TYPE] = ENTRY_TYPE_DEVICE
             errors = await validate_input(hass=self.hass, user_input=user_input, errors=errors)
             if not errors:
-                existing_entries = self.hass.config_entries.async_entries(DOMAIN)
-                for existing_entry in existing_entries:
-                    if (
-                        is_carp_entry(existing_entry)
-                        and existing_entry.data.get(CONF_URL) == user_input[CONF_URL]
-                    ):
-                        return self.async_abort(reason="already_configured")
+                abort = self._async_abort_if_url_conflict(
+                    url=user_input[CONF_URL],
+                    carp=False,
+                )
+                if abort:
+                    return abort
 
                 # https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
                 await self.async_set_unique_id(user_input.get(CONF_DEVICE_UNIQUE_ID))
@@ -991,6 +1005,13 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
                 carp=True,
             )
             if not errors:
+                abort = self._async_abort_if_url_conflict(
+                    url=user_input[CONF_URL],
+                    carp=True,
+                )
+                if abort:
+                    return abort
+
                 abort = self._async_abort_entries_match({CONF_URL: user_input[CONF_URL]})
                 if abort:
                     return abort

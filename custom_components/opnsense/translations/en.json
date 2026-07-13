@@ -3,6 +3,7 @@
   "config": {
     "abort": {
       "already_configured": "Device is already configured",
+      "carp_device_url_conflict": "A CARP entry and a device entry cannot use the same URL. Use the actual firewall IP address or hostname for the device entry and the CARP VIP IP address or hostname for the CARP entry.",
       "reconfigure_successful": "OPNsense integration reconfigured"
     },
     "error": {

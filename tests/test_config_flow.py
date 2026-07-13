@@ -429,10 +429,44 @@ async def test_async_step_device_aborts_on_duplicate_carp_url(
     result = await flow.async_step_device(user_input=user_input)
 
     assert result["type"] == "abort"
-    assert result["reason"] == "already_configured"
+    assert result["reason"] == "carp_device_url_conflict"
     flow.hass.config_entries.async_entries.assert_called_once_with(cf_mod.DOMAIN)
     set_unique_id.assert_not_awaited()
     abort_if_configured.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_step_carp_aborts_on_device_url_conflict(
+    monkeypatch: pytest.MonkeyPatch, make_config_entry: Callable[..., MockConfigEntry]
+) -> None:
+    """CARP flow should reject a URL already used by a device entry."""
+    client = _CarpFlowClient()
+    patch_opnsense_client(monkeypatch, cf_mod, lambda **_kwargs: client)
+
+    existing_entry = make_config_entry(
+        data={
+            cf_mod.CONF_URL: "https://router.example",
+            cf_mod.CONF_USERNAME: "device-user",
+            cf_mod.CONF_PASSWORD: "device-pass",
+        },
+        options={},
+    )
+
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = MagicMock()
+    flow.hass.config_entries = MagicMock()
+    flow.hass.config_entries.async_entries = MagicMock(return_value=[existing_entry])
+    abort_match = MagicMock(return_value={"type": "abort", "reason": "already_configured"})
+    object.__setattr__(flow, "_async_abort_entries_match", abort_match)
+
+    user_input = _make_basic_carp_input()
+    user_input[cf_mod.CONF_URL] = "https://router.example/"
+    result = await flow.async_step_carp(user_input=user_input)
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "carp_device_url_conflict"
+    flow.hass.config_entries.async_entries.assert_called_once_with(cf_mod.DOMAIN)
+    abort_match.assert_not_called()
 
 
 @pytest.mark.asyncio
