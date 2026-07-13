@@ -365,6 +365,9 @@ async def validate_input(
 
     Returns:
         dict[str, Any]: Updated error mapping suitable for form rendering.
+
+    Raises:
+        OPNsenseError: If an OPNsense validation error cannot be mapped to a form error.
     """
     try:
         if carp:
@@ -536,7 +539,15 @@ async def _validate_carp_client_details(
     hass: HomeAssistant,
     user_input: MutableMapping[str, Any],
 ) -> None:
-    """Validate and enrich a CARP VIP flow submission without a device-ID probe."""
+    """Validate and enrich a CARP VIP flow submission without a device-ID probe.
+
+    Args:
+        hass: Home Assistant instance used to create the OPNsense client.
+        user_input: Mutable flow payload updated with normalized and discovered values.
+
+    Raises:
+        OPNsenseError: If URL, client, responder, or CARP VIP validation fails.
+    """
     await _clean_and_parse_url(user_input)
 
     client = create_opnsense_client(
@@ -688,7 +699,15 @@ def _build_carp_options_schema(
     user_input: Mapping[str, Any] | None,
     stored_options: Mapping[str, Any] | None,
 ) -> vol.Schema:
-    """Build the scan-interval-only options schema for a CARP VIP entry."""
+    """Build the scan-interval-only options schema for a CARP VIP entry.
+
+    Args:
+        user_input: Values submitted for the current options-flow step.
+        stored_options: Existing config-entry options used to prefill the form.
+
+    Returns:
+        vol.Schema: Options schema containing the CARP scan interval selector.
+    """
     defaults = {
         CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
         **(stored_options or {}),
@@ -946,13 +965,27 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: MutableMapping[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial user config step."""
+        """Handle the initial user config step.
+
+        Args:
+            user_input: Ignored initial menu payload.
+
+        Returns:
+            ConfigFlowResult: Menu containing device and CARP setup choices.
+        """
         return self.async_show_menu(step_id="user", menu_options=["device", "carp"])
 
     async def async_step_device(
         self, user_input: MutableMapping[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the device setup flow."""
+        """Handle the device setup flow.
+
+        Args:
+            user_input: Submitted device connection and synchronization settings.
+
+        Returns:
+            ConfigFlowResult: Device form, granular-sync form, entry, or abort result.
+        """
         errors: dict[str, Any] = {}
         if user_input is not None:
             user_input[CONF_ENTRY_TYPE] = ENTRY_TYPE_DEVICE
@@ -995,7 +1028,14 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_carp(
         self, user_input: MutableMapping[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle CARP setup flow."""
+        """Handle CARP setup flow.
+
+        Args:
+            user_input: Submitted CARP VIP connection settings.
+
+        Returns:
+            ConfigFlowResult: CARP form, created entry, or duplicate/conflict abort result.
+        """
         errors: dict[str, Any] = {}
         if user_input is not None:
             errors = await validate_input(

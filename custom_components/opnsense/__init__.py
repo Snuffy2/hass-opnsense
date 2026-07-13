@@ -201,7 +201,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def _async_setup_carp_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a CARP integration entry with a runtime ID-less coordinator."""
+    """Set up a CARP integration entry with a runtime ID-less coordinator.
+
+    Args:
+        hass: Home Assistant instance that owns the config entry.
+        entry: CARP config entry being set up.
+
+    Returns:
+        bool: ``True`` after the coordinator refresh and platform setup succeed.
+
+    Raises:
+        ConfigEntryNotReady: If the initial refresh returns no usable CARP VIPs.
+        OPNsenseError: If client validation or the initial refresh fails.
+    """
     client: OPNsenseClient | None = None
     setup_succeeded: bool = False
     coordinator: OPNsenseDataUpdateCoordinator | None = None

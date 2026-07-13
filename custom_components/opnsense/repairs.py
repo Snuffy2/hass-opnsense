@@ -52,7 +52,13 @@ def async_create_device_id_mismatch_issue(
     config_entry: ConfigEntry,
     observed_device_id: str,
 ) -> None:
-    """Create a fixable hardware-replacement issue for a normal device entry."""
+    """Create a fixable hardware-replacement issue for a normal device entry.
+
+    Args:
+        hass: Home Assistant instance that owns the issue registry.
+        config_entry: Device config entry with the stale identifier.
+        observed_device_id: Replacement device identifier observed at runtime.
+    """
     old_device_id = config_entry.data[CONF_DEVICE_UNIQUE_ID]
     ir.async_create_issue(
         hass=hass,
@@ -79,7 +85,13 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
     """Rebuild one OPNsense config entry after confirmed hardware replacement."""
 
     def __init__(self, entry_id: str, old_device_id: str, new_device_id: str) -> None:
-        """Initialize a repair flow from issue data."""
+        """Initialize a repair flow from issue data.
+
+        Args:
+            entry_id: Config-entry ID associated with the repair issue.
+            old_device_id: Device identifier stored before the repair.
+            new_device_id: Replacement identifier expected by the issue.
+        """
         self._entry_id = entry_id
         self._expected_device_id = new_device_id
         self._description_placeholders: dict[str, str] = {
@@ -89,7 +101,14 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         }
 
     async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
-        """Load issue placeholders and display the confirmation step."""
+        """Load issue placeholders and display the confirmation step.
+
+        Args:
+            user_input: Ignored initialization payload.
+
+        Returns:
+            RepairsFlowResult: Confirmation form result.
+        """
         del user_input
         issue_registry = ir.async_get(self.hass)
         issue = issue_registry.async_get_issue(self.handler, self.issue_id)
@@ -100,7 +119,14 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
     ) -> RepairsFlowResult:
-        """Confirm and perform the ordered registry rebuild."""
+        """Confirm and perform the ordered registry rebuild.
+
+        Args:
+            user_input: Confirmation payload, or ``None`` to render the form.
+
+        Returns:
+            RepairsFlowResult: Confirmation form, abort result, or successful completion.
+        """
         if user_input is None:
             return self.async_show_form(
                 step_id="confirm",
@@ -184,7 +210,11 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         new_data = {**entry.data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
 
         def _rollback_entry_update() -> bool:
-            """Restore the entry snapshot when this repair still owns its state."""
+            """Restore the entry snapshot when this repair still owns its state.
+
+            Returns:
+                bool: ``True`` when the original entry data was restored.
+            """
             current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
             if not _entry_matches_snapshot(
                 current_entry,
@@ -273,7 +303,16 @@ async def async_create_fix_flow(
     issue_id: str,
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
-    """Create a device-ID replacement flow for a well-formed issue."""
+    """Create a device-ID replacement flow for a well-formed issue.
+
+    Args:
+        hass: Home Assistant instance that owns the repair flow.
+        issue_id: Issue identifier used to select the repair type.
+        data: Issue data containing the entry and device identifiers.
+
+    Returns:
+        RepairsFlow: Device-ID repair flow or a generic confirmation flow.
+    """
     del hass
     if not issue_id.endswith(_ISSUE_SUFFIX) or data is None:
         return ConfirmRepairFlow()

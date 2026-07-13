@@ -160,7 +160,11 @@ def _register_service(
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
-    """Create the OPNsense HA Services/Actions."""
+    """Create the OPNsense HA Services/Actions.
+
+    Args:
+        hass: Home Assistant instance receiving the service registrations.
+    """
     _register_service(
         hass,
         SERVICE_CLOSE_NOTICE,
@@ -294,6 +298,9 @@ async def _get_clients(
 
     Raises:
         ServiceValidationError: If explicit target selectors do not resolve to configured clients.
+
+    Returns:
+        list[OPNsenseServiceClient]: Clients selected by the request.
     """
     if (
         DOMAIN not in hass.data
@@ -808,6 +815,9 @@ async def _service_generate_vouchers(hass: HomeAssistant, call: ServiceCall) -> 
     Raises:
         ServiceValidationError: If the service call payload is missing a valid target or
         required value.
+
+    Returns:
+        ServiceResponse: Generated voucher values grouped under ``vouchers``.
     """
     clients = await _get_target_clients(hass, call)
     voucher_list = await _collect_voucher_results(clients, dict(call.data))
@@ -829,6 +839,9 @@ async def _service_kill_states(hass: HomeAssistant, call: ServiceCall) -> Servic
     Raises:
         ServiceValidationError: If the service call payload is missing a valid target or
         required value.
+
+    Returns:
+        ServiceResponse: Dropped-state results grouped under ``dropped_states``.
     """
     clients = await _get_target_clients(hass, call)
     response_list = await _collect_kill_state_results(clients, call.data["ip_addr"])

@@ -24,7 +24,16 @@ from .const import (
 
 
 def dict_get(data: MutableMapping[str, Any], path: str, default: Any | None = None) -> Any | None:
-    """Parse the path to get the desired value out of the data."""
+    """Parse a dotted path to get a value from nested mapping or list data.
+
+    Args:
+        data: Mutable mapping containing the value to retrieve.
+        path: Case-insensitive dotted path, including numeric list indexes.
+        default: Value returned when any path segment is unavailable.
+
+    Returns:
+        Any | None: Value found at the path, or ``default`` when absent.
+    """
     path_list: list = re.split(r"\.", path, flags=re.IGNORECASE)
     result: Any | None = data
 
@@ -88,7 +97,14 @@ def firewall_rule_switch_unique_ids_from_payload(
 
 
 def is_private_ip(url: str) -> bool:
-    """Check if the address in the given URL is a private IP address."""
+    """Check whether the host address in a URL is private.
+
+    Args:
+        url: URL whose hostname should be inspected.
+
+    Returns:
+        bool: ``True`` when the URL hostname is a private IP address.
+    """
     parsed_url = urlparse(url)
     addr = parsed_url.hostname
     if not addr:
@@ -173,12 +189,26 @@ def create_opnsense_client_from_config_entry(
 
 
 def is_carp_entry(config_entry: ConfigEntry) -> bool:
-    """Return whether a config entry represents a CARP virtual endpoint."""
+    """Return whether a config entry represents a CARP virtual endpoint.
+
+    Args:
+        config_entry: Config entry to classify.
+
+    Returns:
+        bool: ``True`` when the entry type is CARP.
+    """
     return config_entry.data.get(CONF_ENTRY_TYPE, ENTRY_TYPE_DEVICE) == ENTRY_TYPE_CARP
 
 
 def config_entry_identity(config_entry: ConfigEntry) -> str:
-    """Return the stable Home Assistant identity prefix for a config entry."""
+    """Return the stable Home Assistant identity prefix for a config entry.
+
+    Args:
+        config_entry: Config entry whose device or entry identity is needed.
+
+    Returns:
+        str: Device unique ID for normal entries, otherwise the entry ID.
+    """
     device_id = config_entry.data.get(CONF_DEVICE_UNIQUE_ID)
     return device_id if isinstance(device_id, str) and device_id else config_entry.entry_id
 
