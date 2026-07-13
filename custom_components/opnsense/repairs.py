@@ -1,5 +1,6 @@
 """Repair flows for the OPNsense integration."""
 
+from copy import deepcopy
 import logging
 
 import aiohttp
@@ -219,8 +220,8 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         entry = self.hass.config_entries.async_get_entry(self._entry_id)
         if entry is None or is_carp_entry(entry):
             return self.async_abort(reason="entry_not_found")
-        entry_data_snapshot = dict(entry.data)
-        entry_options_snapshot = dict(entry.options)
+        entry_data_snapshot = deepcopy(dict(entry.data))
+        entry_options_snapshot = deepcopy(dict(entry.options))
         entry_unique_id_snapshot = entry.unique_id
 
         try:

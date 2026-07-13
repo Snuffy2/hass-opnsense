@@ -609,6 +609,45 @@ async def test_entry_changed_during_probe_or_unload_aborts_without_mutation(
 
 
 @pytest.mark.asyncio
+async def test_nested_mutable_options_mutation_during_probe_aborts_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutating a nested options list in-place during probe must still abort safely."""
+    hass = MagicMock()
+    nested_devices = ["aa:bb:cc:dd:ee:01"]
+    entry = _make_entry(
+        state=ConfigEntryState.NOT_LOADED,
+        options={"scan_interval": 30, "devices": nested_devices},
+    )
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch)
+
+    async def _probe_and_mutate() -> str:
+        nested_devices.append("aa:bb:cc:dd:ee:02")
+        return "other"
+
+    client.get_device_unique_id.side_effect = _probe_and_mutate
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert nested_devices == ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"]
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_changed"
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_reload.assert_not_awaited()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+    client.async_close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_cleanup_removes_disabled_entities_directly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
