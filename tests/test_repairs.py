@@ -349,42 +349,21 @@ async def test_loaded_entry_unloads_before_registry_cleanup(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("probe_error", [aiohttp.ClientError("transport"), TimeoutError("timeout")])
-async def test_transport_probe_error_aborts_without_mutations(
+@pytest.mark.parametrize(
+    ("probe_error", "observed_device_id"),
+    [
+        pytest.param(aiohttp.ClientError("transport"), None, id="transport-error"),
+        pytest.param(TimeoutError("timeout"), None, id="timeout-error"),
+        pytest.param(None, None, id="missing-device-id"),
+        pytest.param(None, "", id="blank-device-id"),
+    ],
+)
+async def test_invalid_probe_result_aborts_without_mutations(
     monkeypatch: pytest.MonkeyPatch,
-    probe_error: BaseException,
-) -> None:
-    """Raw transport errors from strict probing should abort and close the client."""
-    hass = MagicMock()
-    entry = _make_entry()
-    _configure_hass(hass, entry)
-    entity_registry, device_registry = _patch_registries(
-        monkeypatch,
-        entities=[SimpleNamespace(entity_id="sensor.old")],
-        devices=[SimpleNamespace(id="device")],
-    )
-    client = _patch_probe_client(monkeypatch, probe_error=probe_error)
-    flow = _make_flow(hass, entry)
-
-    result = await flow.async_step_confirm({})
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "cannot_connect"
-    client.async_close.assert_awaited_once_with()
-    entity_registry.async_remove.assert_not_called()
-    device_registry.async_update_device.assert_not_called()
-    hass.config_entries.async_unload.assert_not_awaited()
-    hass.config_entries.async_update_entry.assert_not_called()
-    hass.config_entries.async_schedule_reload.assert_not_called()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("observed_device_id", [None, ""])
-async def test_invalid_observed_device_id_aborts_without_mutations(
-    monkeypatch: pytest.MonkeyPatch,
+    probe_error: BaseException | None,
     observed_device_id: str | None,
 ) -> None:
-    """Empty replacement IDs should abort after closing the probe client."""
+    """Invalid strict-probe results should abort and close the client."""
     hass = MagicMock()
     entry = _make_entry()
     _configure_hass(hass, entry)
@@ -393,7 +372,11 @@ async def test_invalid_observed_device_id_aborts_without_mutations(
         entities=[SimpleNamespace(entity_id="sensor.old")],
         devices=[SimpleNamespace(id="device")],
     )
-    client = _patch_probe_client(monkeypatch, observed_device_id=observed_device_id)
+    client = _patch_probe_client(
+        monkeypatch,
+        observed_device_id=observed_device_id,
+        probe_error=probe_error,
+    )
     flow = _make_flow(hass, entry)
 
     result = await flow.async_step_confirm({})
