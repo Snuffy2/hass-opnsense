@@ -943,6 +943,14 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
             user_input[CONF_ENTRY_TYPE] = ENTRY_TYPE_DEVICE
             errors = await validate_input(hass=self.hass, user_input=user_input, errors=errors)
             if not errors:
+                existing_entries = self.hass.config_entries.async_entries(DOMAIN)
+                for existing_entry in existing_entries:
+                    if (
+                        is_carp_entry(existing_entry)
+                        and existing_entry.data.get(CONF_URL) == user_input[CONF_URL]
+                    ):
+                        return self.async_abort(reason="already_configured")
+
                 # https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
                 await self.async_set_unique_id(user_input.get(CONF_DEVICE_UNIQUE_ID))
                 self._abort_if_unique_id_configured()

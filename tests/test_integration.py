@@ -199,6 +199,20 @@ def _build_mock_hass() -> Any:
             """Initialize _Cfg."""
             self._entries: dict[str, Any] = {}
 
+        def async_entries(self, domain: str | None = None) -> list[MockConfigEntry]:
+            """Return config entries matching domain.
+
+            Args:
+                domain: Domain name used to filter registry entries.
+            """
+            if domain is None:
+                return list(self._entries.values())
+            return [
+                entry
+                for entry in self._entries.values()
+                if getattr(entry, "domain", None) == domain
+            ]
+
         def async_update_entry(
             self,
             entry: MockConfigEntry,

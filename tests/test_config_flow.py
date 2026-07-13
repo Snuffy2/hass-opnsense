@@ -358,6 +358,8 @@ async def test_async_step_device_creates_entry_and_sets_entry_type(
         AsyncMock(),
     )
     object.__setattr__(flow, "_abort_if_unique_id_configured", lambda: None)
+    flow.hass.config_entries = MagicMock()
+    flow.hass.config_entries.async_entries = MagicMock(return_value=[])
 
     result = await flow.async_step_device(user_input=_make_basic_device_input())
 
@@ -383,6 +385,8 @@ async def test_async_step_device_routes_to_granular_sync(
         AsyncMock(),
     )
     object.__setattr__(flow, "_abort_if_unique_id_configured", lambda: None)
+    flow.hass.config_entries = MagicMock()
+    flow.hass.config_entries.async_entries = MagicMock(return_value=[])
 
     ui = _make_basic_device_input()
     ui[cf_mod.CONF_GRANULAR_SYNC_OPTIONS] = True
@@ -390,6 +394,88 @@ async def test_async_step_device_routes_to_granular_sync(
 
     assert result["type"] == "form"
     assert result["step_id"] == "granular_sync"
+
+
+@pytest.mark.asyncio
+async def test_async_step_device_aborts_on_duplicate_carp_url(
+    monkeypatch: pytest.MonkeyPatch, make_config_entry: Callable[..., MockConfigEntry]
+) -> None:
+    """Device flow should reject a normalized URL already used by a CARP entry."""
+    client = _CarpFlowClient()
+    patch_opnsense_client(monkeypatch, cf_mod, lambda **_kwargs: client)
+
+    existing_entry = make_config_entry(
+        data={
+            cf_mod.CONF_URL: "https://router.example",
+            cf_mod.CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+            cf_mod.CONF_USERNAME: "carp-user",
+            cf_mod.CONF_PASSWORD: "carp-pass",
+        },
+        options={},
+    )
+    assert existing_entry.data[cf_mod.CONF_ENTRY_TYPE] == ENTRY_TYPE_CARP
+
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = MagicMock()
+    flow.hass.config_entries = MagicMock()
+    flow.hass.config_entries.async_entries = MagicMock(return_value=[existing_entry])
+    set_unique_id = AsyncMock()
+    abort_if_configured = MagicMock()
+    object.__setattr__(flow, "async_set_unique_id", set_unique_id)
+    object.__setattr__(flow, "_abort_if_unique_id_configured", abort_if_configured)
+
+    user_input = _make_basic_device_input()
+    user_input[cf_mod.CONF_URL] = "https://router.example/"
+    result = await flow.async_step_device(user_input=user_input)
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "already_configured"
+    flow.hass.config_entries.async_entries.assert_called_once_with(cf_mod.DOMAIN)
+    set_unique_id.assert_not_awaited()
+    abort_if_configured.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_step_device_allows_same_url_for_non_carp_entry(
+    monkeypatch: pytest.MonkeyPatch, make_config_entry: Callable[..., MockConfigEntry]
+) -> None:
+    """Device flow should not block URL duplicates when matching entry is not CARP."""
+    client = _CarpFlowClient()
+    patch_opnsense_client(monkeypatch, cf_mod, lambda **_kwargs: client)
+
+    existing_entry = make_config_entry(
+        data={
+            cf_mod.CONF_URL: "https://router.example",
+            cf_mod.CONF_USERNAME: "device-user",
+            cf_mod.CONF_PASSWORD: "device-pass",
+        },
+        options={},
+    )
+    assert existing_entry.data.get(cf_mod.CONF_ENTRY_TYPE, ENTRY_TYPE_DEVICE) == ENTRY_TYPE_DEVICE
+
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = MagicMock()
+    flow.hass.config_entries = MagicMock()
+    flow.hass.config_entries.async_entries = MagicMock(return_value=[existing_entry])
+    set_unique_id = AsyncMock()
+    abort_if_configured = MagicMock()
+
+    object.__setattr__(
+        flow,
+        "async_set_unique_id",
+        set_unique_id,
+    )
+    object.__setattr__(flow, "_abort_if_unique_id_configured", abort_if_configured)
+
+    user_input = _make_basic_device_input()
+    user_input[cf_mod.CONF_URL] = "https://router.example/"
+    result = await flow.async_step_device(user_input=user_input)
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_ENTRY_TYPE] == ENTRY_TYPE_DEVICE
+    assert result["data"][cf_mod.CONF_URL] == "https://router.example"
+    set_unique_id.assert_awaited_once_with("dev-id")
+    abort_if_configured.assert_called_once_with()
 
 
 @pytest.mark.asyncio
