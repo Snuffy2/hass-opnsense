@@ -2231,41 +2231,6 @@ async def test_async_migrate_entry_returns_false_when_migration_client_missing(
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_firmware_above_ltd_calls_delete(
-    monkeypatch: pytest.MonkeyPatch,
-    ph_hass: Any,
-    coordinator_capture: Any,
-    fake_client: Any,
-    fake_coordinator: Any,
-    make_config_entry: Callable[..., MockConfigEntry],
-) -> None:
-    """async_setup_entry deletes previous issues when firmware is at or above LTD."""
-    patch_opnsense_client(
-        monkeypatch, init_mod, fake_client(firmware_version=init_mod.OPNSENSE_LTD_FIRMWARE)
-    )
-    monkeypatch.setattr(
-        init_mod, "OPNsenseDataUpdateCoordinator", coordinator_capture.factory(fake_coordinator)
-    )
-    called = []
-    monkeypatch.setattr(init_mod.ir, "async_delete_issue", lambda *a, **k: called.append(True))
-
-    entry = make_config_entry(
-        data={
-            CONF_URL: "http://1.2.3.4",
-            CONF_USERNAME: "u",
-            CONF_PASSWORD: "p",
-            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-        }
-    )
-    hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = MagicMock()
-    res = await init_mod.async_setup_entry(hass, entry)
-    assert res is True
-    assert called, "async_delete_issue should have been called for firmware >= LTD"
-
-
-@pytest.mark.asyncio
 async def test_async_setup_entry_firmware_at_or_above_ltd_deletes_previous_issues(
     monkeypatch: pytest.MonkeyPatch,
     ph_hass: Any,
