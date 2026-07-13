@@ -74,39 +74,31 @@ def test_align_aiopnsense_log_level_mirrors_opnsense_when_unset() -> None:
         aiopnsense_helper_logger.setLevel(original_aiopnsense_helper_level)
 
 
-def test_align_aiopnsense_log_level_keeps_explicit_aiopnsense_level() -> None:
-    """aiopnsense-specific logger configuration should remain authoritative."""
+@pytest.mark.parametrize(
+    ("opnsense_level", "aiopnsense_level", "expected_level"),
+    [
+        pytest.param(logging.DEBUG, logging.WARNING, logging.WARNING, id="explicit-aiopnsense"),
+        pytest.param(logging.NOTSET, logging.NOTSET, logging.NOTSET, id="both-unset"),
+    ],
+)
+def test_align_aiopnsense_log_level_preserves_setting(
+    opnsense_level: int,
+    aiopnsense_level: int,
+    expected_level: int,
+) -> None:
+    """Aiopnsense logger settings should remain authoritative when already set."""
     opnsense_logger = logging.getLogger("custom_components.opnsense")
     aiopnsense_logger = logging.getLogger("aiopnsense")
     original_opnsense_level = opnsense_logger.level
     original_aiopnsense_level = aiopnsense_logger.level
 
     try:
-        opnsense_logger.setLevel(logging.DEBUG)
-        aiopnsense_logger.setLevel(logging.WARNING)
+        opnsense_logger.setLevel(opnsense_level)
+        aiopnsense_logger.setLevel(aiopnsense_level)
 
         init_mod._align_aiopnsense_log_level()
 
-        assert aiopnsense_logger.level == logging.WARNING
-    finally:
-        opnsense_logger.setLevel(original_opnsense_level)
-        aiopnsense_logger.setLevel(original_aiopnsense_level)
-
-
-def test_align_aiopnsense_log_level_leaves_both_loggers_unset() -> None:
-    """Unset loggers should continue to inherit the root logger level."""
-    opnsense_logger = logging.getLogger("custom_components.opnsense")
-    aiopnsense_logger = logging.getLogger("aiopnsense")
-    original_opnsense_level = opnsense_logger.level
-    original_aiopnsense_level = aiopnsense_logger.level
-
-    try:
-        opnsense_logger.setLevel(logging.NOTSET)
-        aiopnsense_logger.setLevel(logging.NOTSET)
-
-        init_mod._align_aiopnsense_log_level()
-
-        assert aiopnsense_logger.level == logging.NOTSET
+        assert aiopnsense_logger.level == expected_level
     finally:
         opnsense_logger.setLevel(original_opnsense_level)
         aiopnsense_logger.setLevel(original_aiopnsense_level)
