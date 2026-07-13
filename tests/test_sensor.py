@@ -1643,42 +1643,29 @@ def test_temp_sensor_basic_variants(
             assert attrs.get("device_id") == "dev0"
 
 
-def test_temp_sensor_key_malformed_key_marked_unavailable(
+@pytest.mark.parametrize(
+    "description_key",
+    [
+        pytest.param("telemetry.temps", id="missing-sensor-key"),
+        pytest.param("foo.bar.sensor1", id="wrong-prefix"),
+    ],
+)
+def test_temp_sensor_invalid_description_key_marked_unavailable(
+    description_key: str,
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
-    """Malformed temp sensor keys should fail closed to unavailable instead of raising."""
+    """Invalid temp sensor keys should fail closed to unavailable instead of raising."""
     coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     coord.data = {"telemetry": {"temps": {"sensor1": {"temperature": 55, "device_id": "dev0"}}}}
     entry = make_config_entry()
 
     desc = MagicMock()
-    desc.key = "telemetry.temps"
-    desc.name = "Malformed Temp Key"
+    desc.key = description_key
+    desc.name = "Invalid Temp Key"
 
     s = OPNsenseTempSensor(config_entry=entry, coordinator=coord, entity_description=desc)
     s.hass = MagicMock()
-    s.entity_id = "sensor.temp_malformed_key"
-    object.__setattr__(s, "async_write_ha_state", lambda: None)
-    s._handle_coordinator_update()
-
-    assert s.available is False
-
-
-def test_temp_sensor_key_wrong_prefix_marked_unavailable(
-    make_config_entry: Callable[..., MockConfigEntry],
-) -> None:
-    """Wrong key prefix should fail closed even when matching telemetry value exists."""
-    coord = MagicMock(spec=OPNsenseDataUpdateCoordinator)
-    coord.data = {"telemetry": {"temps": {"sensor1": {"temperature": 55, "device_id": "dev0"}}}}
-    entry = make_config_entry()
-
-    desc = MagicMock()
-    desc.key = "foo.bar.sensor1"
-    desc.name = "Wrong Prefix Temp Key"
-
-    s = OPNsenseTempSensor(config_entry=entry, coordinator=coord, entity_description=desc)
-    s.hass = MagicMock()
-    s.entity_id = "sensor.temp_wrong_prefix_key"
+    s.entity_id = "sensor.temp_invalid_key"
     object.__setattr__(s, "async_write_ha_state", lambda: None)
     s._handle_coordinator_update()
 
