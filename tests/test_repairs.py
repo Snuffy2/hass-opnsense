@@ -48,12 +48,20 @@ def _make_entry(
     return entry
 
 
-def _make_flow(hass: Any, entry: MockConfigEntry) -> repairs.DeviceIDMismatchRepairFlow:
+def _make_flow(
+    hass: Any,
+    entry: MockConfigEntry,
+    *,
+    old_device_id: str | None = None,
+    new_device_id: str = "other",
+) -> repairs.DeviceIDMismatchRepairFlow:
     """Create a configured repair flow for direct step testing."""
+    if old_device_id is None:
+        old_device_id = entry.data[CONF_DEVICE_UNIQUE_ID]
     flow = repairs.DeviceIDMismatchRepairFlow(
         entry_id=entry.entry_id,
-        old_device_id=entry.data[CONF_DEVICE_UNIQUE_ID],
-        new_device_id="other",
+        old_device_id=old_device_id,
+        new_device_id=new_device_id,
     )
     flow.hass = hass
     flow.handler = DOMAIN
@@ -242,6 +250,41 @@ async def test_observed_device_id_mismatch_with_issue_expected_id_aborts_before_
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_changed"
     hass.config_entries.async_unload.assert_not_awaited()
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_old_device_id_mismatch_aborts_without_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale issue with mismatched old_device_id should abort without mutation."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch)
+    flow = _make_flow(
+        hass,
+        entry,
+        old_device_id="stale-old-device-id",
+        new_device_id="other",
+    )
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_changed"
+    client.factory.assert_not_called()
+    hass.config_entries.async_unload.assert_not_awaited()
+    client.validate.assert_not_awaited()
+    client.get_device_unique_id.assert_not_awaited()
     entity_registry.async_remove.assert_not_called()
     device_registry.async_update_device.assert_not_called()
     hass.config_entries.async_update_entry.assert_not_called()
@@ -893,10 +936,23 @@ async def test_cleanup_failure_keeps_entry_update_and_recovers_with_reload(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reload_result", "reload_label"),
+    [
+        pytest.param(False, "reload-false", id="false-result"),
+        pytest.param(
+            HomeAssistantError("entry removed"), "homeassistant-error", id="homeassistant-error"
+        ),
+        pytest.param(KeyError("entry key"), "key-error", id="key-error"),
+    ],
+)
 async def test_reload_failure_keeps_entry_update_and_keeps_issue(
     monkeypatch: pytest.MonkeyPatch,
+    reload_result: bool | Exception,
+    reload_label: str,
 ) -> None:
-    """Reload failure should keep the new ID and repair issue."""
+    """Reload failures should keep the new ID and schedule a follow-up reload."""
+    del reload_label
     hass = MagicMock()
     entry = _make_entry()
     _configure_hass(hass, entry)
@@ -925,7 +981,10 @@ async def test_reload_failure_keeps_entry_update_and_keeps_issue(
         return True
 
     hass.config_entries.async_update_entry.side_effect = _update_entry
-    hass.config_entries.async_reload.side_effect = HomeAssistantError("entry removed")
+    if isinstance(reload_result, bool):
+        hass.config_entries.async_reload.return_value = reload_result
+    else:
+        hass.config_entries.async_reload.side_effect = reload_result
     flow = _make_flow(hass, entry)
 
     result = await flow.async_step_confirm({})
@@ -944,7 +1003,7 @@ async def test_reload_failure_keeps_entry_update_and_keeps_issue(
     assert len(hass.config_entries.async_update_entry.call_args_list) == 1
     issue_delete.assert_not_called()
     hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
-    hass.config_entries.async_schedule_reload.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
 
 
 @pytest.mark.asyncio
