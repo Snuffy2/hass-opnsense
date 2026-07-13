@@ -636,11 +636,11 @@ async def test_entry_update_failure_aborts_without_registry_mutation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure_point", ["entity", "device"])
-async def test_cleanup_failure_rolls_back_entry_update_without_reload_or_issue_delete(
+async def test_cleanup_failure_rolls_back_entry_update_and_recovers_with_reload(
     monkeypatch: pytest.MonkeyPatch,
     failure_point: str,
 ) -> None:
-    """Registry cleanup failure after entry update should rollback to keep retryable state."""
+    """Cleanup failure after entry update should rollback and request recovery reload."""
     hass = MagicMock()
     entry = _make_entry()
     _configure_hass(hass, entry)
@@ -671,9 +671,21 @@ async def test_cleanup_failure_rolls_back_entry_update_without_reload_or_issue_d
     hass.config_entries.async_update_entry.side_effect = _update_entry
 
     if failure_point == "entity":
-        entity_registry.async_remove.side_effect = HomeAssistantError("entity remove")
+
+        def _remove(entity_id: str) -> None:
+            """Fail entity cleanup to exercise recovery reload behavior."""
+            del entity_id
+            raise HomeAssistantError("entity remove")
+
+        entity_registry.async_remove.side_effect = _remove
     else:
-        device_registry.async_update_device.side_effect = HomeAssistantError("device update")
+
+        def _update_device(device_id: str, **_: Any) -> None:
+            """Fail device cleanup to exercise recovery reload behavior."""
+            del device_id
+            raise HomeAssistantError("device update")
+
+        device_registry.async_update_device.side_effect = _update_device
 
     flow = _make_flow(hass, entry)
 
@@ -682,12 +694,13 @@ async def test_cleanup_failure_rolls_back_entry_update_without_reload_or_issue_d
     expected_updated_data = {**old_data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "repair_failed"
-    assert entity_registry.async_remove.call_count == 1
+    entity_registry.async_remove.assert_called_once_with("sensor.old")
     if failure_point == "entity":
         device_registry.async_update_device.assert_not_called()
     else:
-        entity_registry.async_remove.assert_called_once_with("sensor.old")
-        device_registry.async_update_device.assert_called_once()
+        device_registry.async_update_device.assert_called_once_with(
+            "device", remove_config_entry_id=entry.entry_id
+        )
     assert hass.config_entries.async_update_entry.call_args_list[0].kwargs == {
         "data": expected_updated_data,
         "unique_id": observed_device_id,
@@ -700,7 +713,7 @@ async def test_cleanup_failure_rolls_back_entry_update_without_reload_or_issue_d
     assert entry.unique_id == old_unique_id
     assert len(hass.config_entries.async_update_entry.call_args_list) == 2
     issue_delete.assert_not_called()
-    hass.config_entries.async_schedule_reload.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
 
 
 @pytest.mark.asyncio
