@@ -782,52 +782,23 @@ async def test_restore_last_state_restores_tz_aware_connected_time(
 
 
 @pytest.mark.asyncio
-async def test_restore_last_state_ignores_naive_iso_connected_time(
+@pytest.mark.parametrize(
+    "connected_time",
+    [
+        pytest.param("2026-06-22T12:30:05", id="naive-iso"),
+        pytest.param("not-a-date", id="unparsable"),
+        pytest.param(1, id="non-datetime"),
+    ],
+)
+async def test_restore_last_state_ignores_invalid_connected_time(
     coordinator: MagicMock,
     make_config_entry: Callable[..., MockConfigEntry],
-) -> None:
-    """Naive ISO timestamps should be ignored during state restore."""
-    ent = _make_scanner_entity(coordinator, make_config_entry)
-    last_state = MagicMock()
-    last_state.attributes = {"last_known_connected_time": "2026-06-22T12:30:05"}
-    object.__setattr__(ent, "async_get_last_state", AsyncMock(return_value=last_state))
-
-    await ent._restore_last_state()
-
-    assert ent._last_known_connected_time is None
-    attrs = ent.extra_state_attributes
-    assert attrs is not None
-    assert "last_known_connected_time" not in attrs
-
-
-@pytest.mark.asyncio
-async def test_restore_last_state_ignores_unparseable_connected_time(
-    coordinator: MagicMock,
-    make_config_entry: Callable[..., MockConfigEntry],
+    connected_time: str | int,
 ) -> None:
     """Restoring state should ignore invalid saved connection timestamps."""
     ent = _make_scanner_entity(coordinator, make_config_entry)
     last_state = MagicMock()
-    last_state.attributes = {"last_known_connected_time": "not-a-date"}
-    object.__setattr__(ent, "async_get_last_state", AsyncMock(return_value=last_state))
-
-    await ent._restore_last_state()
-
-    assert ent._last_known_connected_time is None
-    attrs = ent.extra_state_attributes
-    assert attrs is not None
-    assert "last_known_connected_time" not in attrs
-
-
-@pytest.mark.asyncio
-async def test_restore_last_state_ignores_non_datetime_connected_time(
-    coordinator: MagicMock,
-    make_config_entry: Callable[..., MockConfigEntry],
-) -> None:
-    """Restoring state should ignore non-string and non-datetime timestamps."""
-    ent = _make_scanner_entity(coordinator, make_config_entry)
-    last_state = MagicMock()
-    last_state.attributes = {"last_known_connected_time": 1}
+    last_state.attributes = {"last_known_connected_time": connected_time}
     object.__setattr__(ent, "async_get_last_state", AsyncMock(return_value=last_state))
 
     await ent._restore_last_state()
