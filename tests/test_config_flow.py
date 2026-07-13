@@ -1467,6 +1467,100 @@ async def test_reconfigure_carp_updates_entry_without_unique_id_checks(
 
 
 @pytest.mark.asyncio
+async def test_reconfigure_carp_returns_form_on_validation_error(
+    monkeypatch: pytest.MonkeyPatch, make_config_entry: Callable[..., MockConfigEntry]
+) -> None:
+    """CARP reconfigure validation errors should return form and not update."""
+    config_entry = make_config_entry(
+        data={
+            cf_mod.CONF_URL: "https://x",
+            cf_mod.CONF_USERNAME: "u",
+            cf_mod.CONF_PASSWORD: "p",
+            cf_mod.CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = MagicMock()
+    validate = AsyncMock(return_value={"base": "invalid_host"})
+    abort_match = MagicMock(return_value={"type": "abort", "reason": "already_configured"})
+    update_and_abort = MagicMock()
+
+    monkeypatch.setattr(cf_mod, "validate_input", validate)
+    object.__setattr__(flow, "_get_reconfigure_entry", lambda: config_entry)
+    object.__setattr__(flow, "_async_abort_entries_match", abort_match)
+    object.__setattr__(flow, "async_update_and_abort", update_and_abort)
+
+    result = await flow.async_step_reconfigure(
+        user_input={
+            cf_mod.CONF_URL: "https://router.example",
+            cf_mod.CONF_USERNAME: "admin",
+            cf_mod.CONF_PASSWORD: "secret",
+            cf_mod.CONF_VERIFY_SSL: True,
+        }
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    assert result["errors"] == {"base": "invalid_host"}
+    abort_match.assert_not_called()
+    update_and_abort.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_carp_skips_duplicate_check_when_url_unchanged(
+    monkeypatch: pytest.MonkeyPatch, make_config_entry: Callable[..., MockConfigEntry]
+) -> None:
+    """CARP reconfigure should skip URL duplicate checks when the URL is unchanged."""
+    config_entry = make_config_entry(
+        entry_id="carp-entry",
+        data={
+            cf_mod.CONF_URL: "https://carp-router.example",
+            cf_mod.CONF_USERNAME: "u",
+            cf_mod.CONF_PASSWORD: "p",
+            cf_mod.CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+    flow = cf_mod.OPNsenseConfigFlow()
+    flow.hass = MagicMock()
+    validate = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["user_input"].update(
+            {cf_mod.CONF_URL: "https://carp-router.example"}
+        )
+    )
+    monkeypatch.setattr(cf_mod, "validate_input", validate)
+    object.__setattr__(flow, "_get_reconfigure_entry", lambda: config_entry)
+    abort_match = MagicMock(return_value={"type": "abort", "reason": "already_configured"})
+    object.__setattr__(flow, "_async_abort_entries_match", abort_match)
+    update_and_abort = MagicMock(return_value={"type": "abort", "reason": "reconfigure_successful"})
+    object.__setattr__(flow, "async_update_and_abort", update_and_abort)
+
+    result = await flow.async_step_reconfigure(
+        user_input={
+            cf_mod.CONF_URL: "https://carp-router.example/",
+            cf_mod.CONF_USERNAME: "admin",
+            cf_mod.CONF_PASSWORD: "secret",
+            cf_mod.CONF_VERIFY_SSL: True,
+        }
+    )
+
+    assert result == {"type": "abort", "reason": "reconfigure_successful"}
+    validate.assert_awaited_once()
+    abort_match.assert_not_called()
+    update_and_abort.assert_called_once_with(
+        entry=config_entry,
+        data={
+            cf_mod.CONF_URL: "https://carp-router.example",
+            cf_mod.CONF_USERNAME: "admin",
+            cf_mod.CONF_PASSWORD: "secret",
+            cf_mod.CONF_VERIFY_SSL: True,
+            cf_mod.CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_reconfigure_carp_aborts_on_normalized_duplicate_url(
     monkeypatch: pytest.MonkeyPatch, make_config_entry: Callable[..., MockConfigEntry]
 ) -> None:

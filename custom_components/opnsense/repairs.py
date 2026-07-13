@@ -81,6 +81,7 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
     def __init__(self, entry_id: str, old_device_id: str, new_device_id: str) -> None:
         """Initialize a repair flow from issue data."""
         self._entry_id = entry_id
+        self._expected_device_id = new_device_id
         self._description_placeholders: dict[str, str] = {
             "entry_title": "",
             "old_device_id": old_device_id,
@@ -140,11 +141,14 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             return self.async_abort(reason="entry_changed")
         entry = current_entry
 
-        if observed_device_id == entry.data.get(CONF_DEVICE_UNIQUE_ID):
-            return self.async_abort(reason="entry_changed")
-
         if not isinstance(observed_device_id, str) or not observed_device_id:
             return self.async_abort(reason="cannot_connect")
+
+        if observed_device_id != self._expected_device_id:
+            return self.async_abort(reason="entry_changed")
+
+        if observed_device_id == entry.data.get(CONF_DEVICE_UNIQUE_ID):
+            return self.async_abort(reason="entry_changed")
 
         duplicate = next(
             (

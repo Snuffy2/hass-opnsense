@@ -1066,9 +1066,10 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
                     carp=True,
                 )
                 if not errors:
-                    abort = self._async_abort_entries_match({CONF_URL: self._config[CONF_URL]})
-                    if abort:
-                        return abort
+                    if self._config[CONF_URL] != reconfigure_entry.data[CONF_URL]:
+                        abort = self._async_abort_entries_match({CONF_URL: self._config[CONF_URL]})
+                        if abort:
+                            return abort
                     return self.async_update_and_abort(
                         entry=reconfigure_entry,
                         data=self._config,
