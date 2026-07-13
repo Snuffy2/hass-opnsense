@@ -52,6 +52,14 @@ class _CarpFlowClient:
         carp_interfaces: list[dict[str, str]] | None = None,
         validate_error: BaseException | None = None,
     ) -> None:
+        """Initialize fake client responses for config-flow tests.
+
+        Args:
+            firmware_version: Firmware version returned by the fake client.
+            system_name: System name returned by the fake client.
+            carp_interfaces: CARP interface rows returned by the fake client.
+            validate_error: Optional validation exception raised by the fake client.
+        """
         self.firmware_version = firmware_version
         self.system_name = system_name
         self.carp_interfaces = (
@@ -697,6 +705,7 @@ async def test_validate_input_can_map_carp_not_configured_error(
     """validate_input should map CARP payload errors to base key carp_not_configured."""
 
     async def _raise(*_args: object, **_kwargs: object) -> Never:
+        """Raise the CARP validation error requested by the test."""
         raise cf_mod.OPNsenseCarpNotConfiguredError("No CARP VIPs were returned")
 
     monkeypatch.setattr(cf_mod, "_validate_carp_client_details", _raise)
@@ -829,6 +838,8 @@ async def test_get_dt_entries_closes_client(monkeypatch: pytest.MonkeyPatch) -> 
     """_get_dt_entries should always close the temporary client."""
 
     class _Client:
+        """Fake client that records closure for device-tracker entry tests."""
+
         last_instance = None
 
         def __init__(self, *args, **kwargs) -> None:
@@ -868,6 +879,8 @@ async def test_validate_client_details_closes_client(monkeypatch: pytest.MonkeyP
     """_validate_client_details should always close the temporary client."""
 
     class _Client:
+        """Fake client that records closure for validation cleanup tests."""
+
         last_instance = None
 
         def __init__(self, *args, **kwargs) -> None:
@@ -934,6 +947,8 @@ async def test_validate_client_details_raises_when_device_id_missing(
     """_validate_client_details should reject clients that return no device id."""
 
     class _Client:
+        """Fake client that returns no device ID for validation tests."""
+
         last_instance = None
 
         def __init__(self, *args: object, **kwargs: object) -> None:

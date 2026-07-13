@@ -127,6 +127,8 @@ def test_create_opnsense_client_builds_client_with_expected_options(
         return MagicMock()
 
     class _CookieJar:
+        """Fake aiohttp cookie jar that records its safety setting."""
+
         def __init__(self, *, unsafe: bool) -> None:
             """Capture the unsafe flag without requiring a running event loop."""
             self._unsafe = unsafe

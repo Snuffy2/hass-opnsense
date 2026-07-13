@@ -248,6 +248,8 @@ async def test_async_setup_entry_carp_entry_uses_identity_less_runtime(
     captured = {}
 
     class _CarpCoordinator:
+        """Fake coordinator used to exercise CARP setup without polling."""
+
         def __init__(self, **kwargs: Any) -> None:
             """Capture coordinator construction kwargs for CARP assertions."""
             captured.update(kwargs)
@@ -1284,6 +1286,8 @@ async def test_async_update_listener_reload_and_remove(
 
     # construct an entity that should be removed by unique_id prefix
     class Ent:
+        """Minimal entity registry entry used by listener cleanup tests."""
+
         def __init__(self, entity_id: Any, unique_id: Any) -> None:
             """Store the entity and unique IDs used by the update-listener test."""
             self.entity_id = entity_id
@@ -1689,6 +1693,8 @@ async def test_async_setup_entry_awesomeversion_exception(
     # fake client where device id matches but awesomeversion comparison raises
     # monkeypatch AwesomeVersion to a class that raises on comparison
     class DummyAV:
+        """AwesomeVersion replacement that raises on comparisons."""
+
         def __init__(self, v: Any) -> None:
             """Store the version string used by the comparison stub."""
             self.v = v
@@ -1910,6 +1916,8 @@ async def test_migrate_3_to_4_skips_filesystems_when_telemetry_is_not_mapping(
     """_migrate_3_to_4 should defer filesystem remaps when telemetry is invalid."""
 
     class Client:
+        """Fake client returning invalid telemetry during migration."""
+
         async def get_telemetry(self) -> None:
             """Return an invalid telemetry payload for migration hardening."""
             return
@@ -2540,16 +2548,38 @@ async def test_async_setup_entry_registers_update_listener_before_forwarding(
     remove_listener = MagicMock()
 
     def _add_update_listener(listener: Any) -> MagicMock:
+        """Record listener registration and return the removal callback.
+
+        Args:
+            listener: Update listener registered on the config entry.
+
+        Returns:
+            MagicMock: Callback used to unregister the listener.
+        """
         call_order.append("add_listener")
         return remove_listener
 
     def _async_on_unload(unregister: MagicMock) -> None:
+        """Record when Home Assistant registers the unload callback.
+
+        Args:
+            unregister: Unload callback passed by the config entry.
+        """
         call_order.append("async_on_unload")
 
     entry.add_update_listener = MagicMock(side_effect=_add_update_listener)
     entry.async_on_unload = MagicMock(side_effect=_async_on_unload)
 
     async def _forward_entry_setups(*_args: Any, **_kwargs: Any) -> bool:
+        """Record platform forwarding and report success.
+
+        Args:
+            *_args: Positional setup arguments ignored by the stub.
+            **_kwargs: Keyword setup arguments ignored by the stub.
+
+        Returns:
+            bool: Always ``True`` for the test setup path.
+        """
         call_order.append("forward")
         return True
 
@@ -2581,6 +2611,8 @@ async def test_migrate_2_to_3_handles_identifier_collision(
     dev.identifiers = {("opnsense", "old")}
 
     class DeviceRegistry:
+        """Fake device registry that raises identifier collisions."""
+
         def __init__(self) -> None:
             """Provide a fake device registry object for the collision test."""
 

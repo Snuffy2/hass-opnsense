@@ -26,6 +26,7 @@ class _BadStrValue:
     """Value object that raises when converted to a string."""
 
     def __str__(self) -> str:
+        """Raise when the display-name helper converts this value to text."""
         raise ValueError("string conversion failure")
 
 
@@ -47,20 +48,55 @@ class _FaultyPayload(Mapping[str, object]):
     """Payload whose get() raises for a target field."""
 
     def __init__(self, values: dict[str, object]) -> None:
+        """Store payload values used by mapping protocol tests.
+
+        Args:
+            values: Values returned by the mapping methods.
+        """
         self._values = values
 
     def get(self, key: str, default: object | None = None) -> object | None:
+        """Return a value or raise for the deliberately broken key.
+
+        Args:
+            key: Mapping key to read.
+            default: Value returned when the key is absent.
+
+        Returns:
+            object | None: Stored value or the supplied default.
+
+        Raises:
+            ValueError: If ``key`` is the simulated broken field.
+        """
         if key == "broken_get":
             raise ValueError("payload get failed")
         return self._values.get(key, default)
 
     def __getitem__(self, key: str) -> object:
+        """Return the stored value for a required mapping key.
+
+        Args:
+            key: Mapping key to read.
+
+        Returns:
+            object: Stored mapping value.
+        """
         return self._values[key]
 
     def __iter__(self) -> Iterator[str]:
+        """Iterate over stored mapping keys.
+
+        Returns:
+            Iterator[str]: Iterator over the payload keys.
+        """
         return iter(self._values)
 
     def __len__(self) -> int:
+        """Return the number of stored mapping values.
+
+        Returns:
+            int: Number of payload values.
+        """
         return len(self._values)
 
 

@@ -195,6 +195,8 @@ def _build_mock_hass() -> Any:
 
     # config_entries API surface used inside tests
     class _Cfg:
+        """Minimal config-entry registry used by integration tests."""
+
         def __init__(self) -> None:
             """Initialize _Cfg."""
             self._entries: dict[str, Any] = {}
@@ -410,6 +412,14 @@ async def test_e2e_granular_sync_and_options_device_tracker(
         hass.config_entries._entries = {entry.entry_id: entry}
 
         def _get_known_entry(entry_id: str) -> MockConfigEntry | None:
+            """Return the fake config entry registered under an ID.
+
+            Args:
+                entry_id: Config-entry identifier to look up.
+
+            Returns:
+                MockConfigEntry | None: Matching fake entry, if registered.
+            """
             return hass.config_entries._entries.get(entry_id)
 
         hass.config_entries.async_get_known_entry = _get_known_entry
@@ -566,12 +576,16 @@ async def test_e2e_full_migration_chain(
 
     # Fake device & entity registry implementations
     class FakeDevice:
+        """Minimal device registry item used by migration tests."""
+
         def __init__(self, id_: str, identifiers: set[tuple[str, str]]) -> None:
             """Initialize FakeDevice."""
             self.id = id_
             self.identifiers = identifiers
 
     class FakeDeviceRegistry:
+        """Fake device registry that records identifier updates."""
+
         def __init__(self) -> None:
             """Initialize FakeDeviceRegistry."""
             self._devices: list[FakeDevice] = [
@@ -598,6 +612,8 @@ async def test_e2e_full_migration_chain(
             raise ValueError("device not found")
 
     class FakeEntity:
+        """Minimal entity registry item used by migration tests."""
+
         def __init__(self, entity_id: str, unique_id: str, device_id: str) -> None:
             """Initialize FakeEntity.
 
@@ -611,6 +627,8 @@ async def test_e2e_full_migration_chain(
             self.device_id = device_id
 
     class FakeEntityRegistry:
+        """Fake entity registry that stores migration test entities."""
+
         def __init__(self) -> None:
             """Initialize FakeEntityRegistry."""
             self._entities: dict[str, FakeEntity] = {}
@@ -697,6 +715,8 @@ async def test_e2e_full_migration_chain(
     migration_clients: list[Any] = []
 
     class _MigClient:
+        """Fake client used across the migration chain."""
+
         def __init__(self) -> None:
             """Track migration client instances created during the migration chain."""
             self.close_calls = 0

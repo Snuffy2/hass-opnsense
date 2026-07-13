@@ -1497,6 +1497,8 @@ def test_vpn_sensor_handles_exceptions_from_instance_get(
     """
 
     class BrokenInstance(dict):
+        """Mapping that raises from ``get`` for sensor error-path testing."""
+
         def __init__(self, exc: type[Exception]) -> None:
             """Initialize BrokenInstance.
 
@@ -1718,6 +1720,8 @@ def test_temp_sensor_handles_index_exceptions(
     """Temp sensor should mark itself unavailable when indexing temp raises exceptions."""
 
     class BrokenTemp:
+        """Value object that raises when indexed by the temperature sensor."""
+
         def __init__(self, exc: type[Exception]) -> None:
             """Initialize BrokenTemp.
 
@@ -2497,6 +2501,8 @@ def test_dhcp_leases_handles_exceptions(
     """
 
     class BrokenLease:
+        """Lease mapping that raises from ``get`` for error-path testing."""
+
         def __init__(self, exc: type[Exception]) -> None:
             """Initialize BrokenLease.
 
@@ -2546,6 +2552,8 @@ def test_dhcp_lease_interfaces_items_raises(
     """Ensure exceptions raised by lease_interfaces.items() are caught and sensor becomes unavailable."""
 
     class BrokenLeaseInterfaces(dict):
+        """Lease-interface mapping that raises while iterating items."""
+
         def items(self) -> Never:
             """Raise the parametrized exception when lease interfaces are iterated.
 
@@ -2583,6 +2591,8 @@ def test_dhcp_leases_iterable_raises_on_iter(
     """Ensure exceptions raised while iterating the leases list are caught and sensor becomes unavailable."""
 
     class BrokenLeaseList(list):
+        """Lease list that raises when the sensor begins iteration."""
+
         def __iter__(self) -> Never:
             """Raise the parametrized exception when the lease list is iterated.
 
@@ -2623,6 +2633,8 @@ def test_dhcp_leases_inner_except_writes_unavailable(
     """
 
     class BrokenLease:
+        """Lease mapping that raises during the inner aggregation loop."""
+
         def get(self, *args, **kwargs) -> Never:
             """Raise ``KeyError`` when the sensor reads the lease mapping.
 
@@ -2671,6 +2683,8 @@ def test_dhcp_leases_items_except_writes_unavailable(
     """Verify exceptions from lease_interfaces.items() cause unavailable state and write."""
 
     class BrokenLeaseInterfaces(dict):
+        """Lease-interface mapping that raises during item iteration."""
+
         def items(self) -> Never:
             """Raise ``KeyError`` when interface items are requested.
 
@@ -2720,6 +2734,8 @@ def test_dhcp_leases_per_interface_handles_exceptions(
     """
 
     class BrokenLease(dict):
+        """Lease mapping that raises while reading per-interface data."""
+
         def __init__(self, exc: type[Exception]) -> None:
             """Initialize BrokenLease.
 
@@ -2947,6 +2963,7 @@ class _BadDHCPLeaseInterfaces(dict):
     """Mapping that raises when items() is queried."""
 
     def items(self) -> Never:  # type: ignore[override]
+        """Raise when the compiler queries interface items."""
         raise RuntimeError("items failure for test")
 
 
