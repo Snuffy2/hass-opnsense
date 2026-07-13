@@ -76,6 +76,10 @@ _VPN_TRAFFIC_PROPERTIES: tuple[str, ...] = (
 _VPN_SERVER_PROPERTIES: tuple[str, ...] = ("status", "connected_clients")
 _VPN_WIREGUARD_CLIENT_PROPERTIES: tuple[str, ...] = ("connected_servers",)
 _ICON_MEMORY: Final[str] = "mdi:memory"
+_CARP_STATUS_ICONS: Final[Mapping[str, str]] = {
+    "MASTER": "mdi:check-network",
+    "BACKUP": "mdi:backup-restore",
+}
 
 STATIC_TELEMETRY_SENSORS: Final[tuple[SensorEntityDescription, ...]] = (
     # pfstate
@@ -2090,14 +2094,9 @@ class OPNsenseCarpInterfaceSensor(OPNsenseSensor):
         Returns:
             str | None: Icon identifier, or the inherited icon.
         """
-        if not self.native_value or not isinstance(self.native_value, str):
+        if not isinstance(self.native_value, str):
             return "mdi:close-network-outline"
-        status = self.native_value.upper()
-        if status == "MASTER":
-            return "mdi:check-network"
-        if status == "BACKUP":
-            return "mdi:backup-restore"
-        return "mdi:close-network-outline"
+        return _CARP_STATUS_ICONS.get(self.native_value.upper(), "mdi:close-network-outline")
 
 
 class OPNsenseCarpStatusSensor(OPNsenseSensor):
@@ -2216,14 +2215,9 @@ class OPNsenseCarpVipSensor(OPNsenseSensor):
         Returns:
             str | None: Icon identifier for the current CARP VIP status.
         """
-        if not self.native_value or not isinstance(self.native_value, str):
+        if not isinstance(self.native_value, str):
             return "mdi:close-network-outline"
-        status = self.native_value.upper()
-        if status == "MASTER":
-            return "mdi:check-network"
-        if status == "BACKUP":
-            return "mdi:backup-restore"
-        return "mdi:close-network-outline"
+        return _CARP_STATUS_ICONS.get(self.native_value.upper(), "mdi:close-network-outline")
 
 
 class OPNsenseGatewaySensor(OPNsenseSensor):
