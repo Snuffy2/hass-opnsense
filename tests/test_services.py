@@ -4,7 +4,7 @@ These tests exercise service helpers, validation paths, and error handling
 for operations such as starting/stopping services and generating vouchers.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 import json
 import logging
 from pathlib import Path
@@ -939,39 +939,27 @@ def fake_get_empty(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_restart_service_no_clients_raises(ph_hass: Any, fake_get_empty: None) -> None:
-    """If no clients are found, restarting a service should raise ServiceValidationError."""
+@pytest.mark.parametrize(
+    "service_handler",
+    [
+        pytest.param(services_mod._service_restart_service, id="restart"),
+        pytest.param(services_mod._service_start_service, id="start"),
+        pytest.param(services_mod._service_stop_service, id="stop"),
+    ],
+)
+async def test_service_no_clients_raises(
+    ph_hass: Any,
+    fake_get_empty: None,
+    service_handler: Callable[..., Awaitable[None]],
+) -> None:
+    """Service start/stop/restart should raise when no clients are available."""
     hass = ph_hass
     hass.data = {}
 
     call = _service_call({"service_id": "svc"})
 
     with pytest.raises(ServiceValidationError):
-        await services_mod._service_restart_service(hass, call)
-
-
-@pytest.mark.asyncio
-async def test_start_service_no_clients_raises(ph_hass: Any, fake_get_empty: None) -> None:
-    """If no clients are found, starting a service should raise ServiceValidationError."""
-    hass = ph_hass
-    hass.data = {}
-
-    call = _service_call({"service_id": "svc"})
-
-    with pytest.raises(ServiceValidationError):
-        await services_mod._service_start_service(hass, call)
-
-
-@pytest.mark.asyncio
-async def test_stop_service_no_clients_raises(ph_hass: Any, fake_get_empty: None) -> None:
-    """If no clients are found, stopping a service should raise ServiceValidationError."""
-    hass = ph_hass
-    hass.data = {}
-
-    call = _service_call({"service_id": "svc"})
-
-    with pytest.raises(ServiceValidationError):
-        await services_mod._service_stop_service(hass, call)
+        await service_handler(hass, call)
 
 
 @pytest.mark.asyncio
