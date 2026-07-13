@@ -69,6 +69,7 @@ def _configure_hass(hass: Any, entry: MockConfigEntry) -> None:
     hass.config_entries.async_entries.return_value = [entry]
     hass.config_entries.async_unload = AsyncMock(return_value=True)
     hass.config_entries.async_update_entry = MagicMock(return_value=True)
+    hass.config_entries.async_reload = AsyncMock(return_value=True)
     hass.config_entries.async_schedule_reload = MagicMock()
 
 
@@ -329,7 +330,14 @@ async def test_loaded_entry_unloads_before_registry_cleanup(
         return True
 
     hass.config_entries.async_update_entry.side_effect = _update_entry
-    hass.config_entries.async_schedule_reload.side_effect = lambda entry_id: events.append("reload")
+
+    async def _reload(entry_id: str) -> bool:
+        """Record reload scheduling and signal success."""
+        del entry_id
+        events.append("reload")
+        return True
+
+    hass.config_entries.async_reload.side_effect = _reload
     _patch_probe_client(monkeypatch, events=events)
     monkeypatch.setattr(repairs.ir, "async_delete_issue", lambda *args: events.append("delete"))
     flow = _make_flow(hass, entry)
@@ -679,10 +687,10 @@ async def test_update_preserves_connection_and_options_while_replacing_id(
 
 
 @pytest.mark.asyncio
-async def test_success_deletes_issue_and_schedules_reload(
+async def test_success_deletes_issue_and_reloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful rebuild should schedule reload and let the manager delete the issue."""
+    """Successful rebuild should async-reload and let the manager delete the issue."""
     hass = MagicMock()
     entry = _make_entry()
     _configure_hass(hass, entry)
@@ -696,7 +704,8 @@ async def test_success_deletes_issue_and_schedules_reload(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     issue_delete.assert_not_called()
-    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+    hass.config_entries.async_schedule_reload.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -840,14 +849,15 @@ async def test_cleanup_failure_keeps_entry_update_and_recovers_with_reload(
     assert entry.unique_id == observed_device_id
     assert len(hass.config_entries.async_update_entry.call_args_list) == 1
     issue_delete.assert_not_called()
-    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+    hass.config_entries.async_schedule_reload.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_reload_schedule_failure_keeps_entry_update_and_keeps_issue(
+async def test_reload_failure_keeps_entry_update_and_keeps_issue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reload scheduling failure should keep the new ID and repair issue."""
+    """Reload failure should keep the new ID and repair issue."""
     hass = MagicMock()
     entry = _make_entry()
     _configure_hass(hass, entry)
@@ -876,7 +886,7 @@ async def test_reload_schedule_failure_keeps_entry_update_and_keeps_issue(
         return True
 
     hass.config_entries.async_update_entry.side_effect = _update_entry
-    hass.config_entries.async_schedule_reload.side_effect = HomeAssistantError("entry removed")
+    hass.config_entries.async_reload.side_effect = HomeAssistantError("entry removed")
     flow = _make_flow(hass, entry)
 
     result = await flow.async_step_confirm({})
@@ -894,7 +904,8 @@ async def test_reload_schedule_failure_keeps_entry_update_and_keeps_issue(
     assert entry.unique_id == observed_device_id
     assert len(hass.config_entries.async_update_entry.call_args_list) == 1
     issue_delete.assert_not_called()
-    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+    hass.config_entries.async_schedule_reload.assert_not_called()
 
 
 @pytest.mark.asyncio

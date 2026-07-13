@@ -321,21 +321,20 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 _schedule_recovery_reload()
             return self.async_abort(reason="repair_failed")
 
-        def _schedule_reload() -> bool:
-            """Schedule the reload needed after the entry or registry changed.
+        async def _schedule_reload() -> bool:
+            """Reload the entry after config-entry or registry mutation.
 
             Returns:
-                bool: ``True`` when Home Assistant accepted the reload request.
+                bool: ``True`` when Home Assistant successfully reloaded the entry.
             """
             try:
-                self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                return await self.hass.config_entries.async_reload(entry.entry_id)
             except HomeAssistantError, KeyError:
                 _LOGGER.exception(
-                    "Device-ID repair did not finish for %s; cannot schedule reload",
+                    "Device-ID repair did not finish for %s; cannot reload entry",
                     entry.title,
                 )
                 return False
-            return True
 
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
@@ -357,10 +356,10 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 "config-entry update",
                 entry.title,
             )
-            _schedule_reload()
+            await _schedule_reload()
             return self.async_abort(reason="repair_failed")
 
-        if not _schedule_reload():
+        if not await _schedule_reload():
             return self.async_abort(reason="repair_failed")
 
         return self.async_create_entry(data={})
