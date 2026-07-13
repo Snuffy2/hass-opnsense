@@ -449,16 +449,19 @@ def _get_validation_error_details(
     return None
 
 
-async def _clean_and_parse_url(user_input: MutableMapping[str, Any]) -> None:
-    """Normalize and validate the configured OPNsense base URL.
+def _normalize_url(url: str) -> str:
+    """Normalize and validate an OPNsense base URL.
 
     Args:
-        user_input: Mutable form payload containing `CONF_URL`.
+        url: OPNsense URL to normalize.
+
+    Returns:
+        str: Normalized URL without credentials, paths, or default HTTP ports.
 
     Raises:
         OPNsenseInvalidURL: URL is missing a host after normalization.
     """
-    fix_url: str = user_input.get(CONF_URL, "").strip()
+    fix_url: str = url.strip()
     url_parts: ParseResult = urlparse(fix_url)
 
     if not url_parts.scheme and not url_parts.netloc:
@@ -478,10 +481,23 @@ async def _clean_and_parse_url(user_input: MutableMapping[str, Any]) -> None:
         port = url_parts.port
     except ValueError as err:
         raise OPNsenseInvalidURL from err
-    if port:
+    default_port = {"http": 80, "https": 443}.get(url_parts.scheme)
+    if port and port != default_port:
         host = f"{host}:{port}"
 
-    user_input[CONF_URL] = f"{url_parts.scheme}://{host}"
+    return f"{url_parts.scheme}://{host}"
+
+
+async def _clean_and_parse_url(user_input: MutableMapping[str, Any]) -> None:
+    """Normalize and validate the configured OPNsense base URL.
+
+    Args:
+        user_input: Mutable form payload containing `CONF_URL`.
+
+    Raises:
+        OPNsenseInvalidURL: URL is missing a host after normalization.
+    """
+    user_input[CONF_URL] = _normalize_url(user_input.get(CONF_URL, ""))
     _LOGGER.debug("[config_flow] Cleaned URL: %s", user_input[CONF_URL])
 
 
@@ -956,7 +972,18 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
             ConfigFlowResult | None: Conflict abort result, if applicable.
         """
         for existing_entry in self.hass.config_entries.async_entries(DOMAIN):
-            if is_carp_entry(existing_entry) != carp and existing_entry.data.get(CONF_URL) == url:
+            if is_carp_entry(existing_entry) == carp:
+                continue
+            existing_url = existing_entry.data.get(CONF_URL)
+            if existing_url == url:
+                return self.async_abort(reason="carp_device_url_conflict")
+            if not isinstance(existing_url, str):
+                continue
+            try:
+                existing_url = _normalize_url(existing_url)
+            except OPNsenseInvalidURL, ValueError:
+                continue
+            if existing_url == url:
                 return self.async_abort(reason="carp_device_url_conflict")
         return None
 
@@ -1136,6 +1163,12 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
                 if not errors:
                     if self._config[CONF_URL] != reconfigure_entry.data[CONF_URL]:
+                        abort = self._async_abort_if_url_conflict(
+                            url=self._config[CONF_URL],
+                            carp=True,
+                        )
+                        if abort:
+                            return abort
                         abort = self._async_abort_entries_match({CONF_URL: self._config[CONF_URL]})
                         if abort:
                             return abort
@@ -1152,6 +1185,14 @@ class OPNsenseConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
 
                 if not errors:
+                    if self._config[CONF_URL] != reconfigure_entry.data[CONF_URL]:
+                        abort = self._async_abort_if_url_conflict(
+                            url=self._config[CONF_URL],
+                            carp=False,
+                        )
+                        if abort:
+                            return abort
+
                     # https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
                     await self.async_set_unique_id(self._config.get(CONF_DEVICE_UNIQUE_ID))
                     self._abort_if_unique_id_mismatch()

@@ -47,6 +47,88 @@ def _entry_matches_snapshot(
     )
 
 
+def _get_entry_matching_snapshot(
+    hass: HomeAssistant,
+    entry_id: str,
+    data_snapshot: dict[str, object],
+    options_snapshot: dict[str, object],
+    unique_id_snapshot: str | None,
+) -> ConfigEntry | None:
+    """Return the current entry only when it still matches the repair snapshot.
+
+    Args:
+        hass: Home Assistant instance that owns the config entry.
+        entry_id: Entry ID captured when the repair started.
+        data_snapshot: Original config-entry data mapping.
+        options_snapshot: Original config-entry options mapping.
+        unique_id_snapshot: Original config-entry unique ID.
+
+    Returns:
+        ConfigEntry | None: Matching current entry, if it is still owned.
+    """
+    current_entry = hass.config_entries.async_get_entry(entry_id)
+    if not _entry_matches_snapshot(
+        current_entry,
+        entry_id,
+        data_snapshot,
+        options_snapshot,
+        unique_id_snapshot,
+    ):
+        return None
+    return current_entry
+
+
+async def _async_validate_and_probe_device_id(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+) -> str | None:
+    """Validate an OPNsense client and probe the current device identifier.
+
+    Args:
+        hass: Home Assistant instance that owns the config entry.
+        config_entry: OPNsense config entry used to build the client.
+
+    Returns:
+        str | None: Device identifier returned by OPNsense.
+
+    Raises:
+        OPNsenseError: If validation or the device-ID probe fails.
+        aiohttp.ClientError: If the client encounters a transport failure.
+        TimeoutError: If the client request times out.
+    """
+    client = create_opnsense_client_from_config_entry(
+        hass=hass,
+        config_entry=config_entry,
+        throw_errors=True,
+    )
+    try:
+        await client.validate()
+        return await client.get_device_unique_id()
+    finally:
+        await client.async_close()
+
+
+async def _async_prepare_entry_for_repair(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+) -> tuple[bool, bool]:
+    """Check whether an entry can be safely unloaded before repair mutation.
+
+    Args:
+        hass: Home Assistant instance that owns the config entry.
+        config_entry: OPNsense config entry being repaired.
+
+    Returns:
+        tuple[bool, bool]: Whether the entry is ready and whether it was loaded.
+    """
+    entry_was_loaded = config_entry.state is ConfigEntryState.LOADED
+    if not config_entry.state.recoverable:
+        return False, entry_was_loaded
+    if entry_was_loaded and not await hass.config_entries.async_unload(config_entry.entry_id):
+        return False, entry_was_loaded
+    return True, entry_was_loaded
+
+
 def async_create_device_id_mismatch_issue(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -142,28 +224,18 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         entry_unique_id_snapshot = entry.unique_id
 
         try:
-            client = create_opnsense_client_from_config_entry(
-                hass=self.hass,
-                config_entry=entry,
-                throw_errors=True,
-            )
-            try:
-                observed_device_id = await client.get_device_unique_id()
-            finally:
-                await client.async_close()
+            observed_device_id = await _async_validate_and_probe_device_id(self.hass, entry)
         except OPNsenseError, aiohttp.ClientError, TimeoutError:
             return self.async_abort(reason="cannot_connect")
 
-        current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
-        if current_entry is None:
-            return self.async_abort(reason="entry_changed")
-        if not _entry_matches_snapshot(
-            current_entry,
+        current_entry = _get_entry_matching_snapshot(
+            self.hass,
             self._entry_id,
             entry_data_snapshot,
             entry_options_snapshot,
             entry_unique_id_snapshot,
-        ):
+        )
+        if current_entry is None:
             return self.async_abort(reason="entry_changed")
         entry = current_entry
 
@@ -188,61 +260,45 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         if duplicate is not None:
             return self.async_abort(reason="already_configured")
 
-        if (
-            entry.state is ConfigEntryState.LOADED
-            and not await self.hass.config_entries.async_unload(entry.entry_id)
-        ):
+        entry_ready, entry_was_loaded = await _async_prepare_entry_for_repair(self.hass, entry)
+        if not entry_ready:
             return self.async_abort(reason="cannot_unload")
 
-        current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
-        if current_entry is None:
-            return self.async_abort(reason="entry_changed")
-        if not _entry_matches_snapshot(
-            current_entry,
+        current_entry = _get_entry_matching_snapshot(
+            self.hass,
             self._entry_id,
             entry_data_snapshot,
             entry_options_snapshot,
             entry_unique_id_snapshot,
-        ):
+        )
+        if current_entry is None:
             return self.async_abort(reason="entry_changed")
         entry = current_entry
 
         new_data = {**entry.data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
 
-        def _rollback_entry_update() -> bool:
-            """Restore the entry snapshot when this repair still owns its state.
-
-            Returns:
-                bool: ``True`` when the original entry data was restored.
-            """
+        def _schedule_recovery_reload() -> None:
+            """Reload an unloaded entry when its original snapshot is still owned."""
             current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
             if not _entry_matches_snapshot(
                 current_entry,
                 self._entry_id,
-                new_data,
+                entry_data_snapshot,
                 entry_options_snapshot,
-                observed_device_id,
+                entry_unique_id_snapshot,
             ):
-                return False
-            restored = False
+                return
             try:
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    data=entry_data_snapshot,
-                    unique_id=entry_unique_id_snapshot,
-                )
-                restored = True
+                self.hass.config_entries.async_schedule_reload(entry.entry_id)
             except HomeAssistantError, KeyError:
                 _LOGGER.exception(
-                    "Failed to rollback config entry for %s to recover repair state",
+                    "Device-ID repair did not finish for %s; cannot schedule recovery "
+                    "reload after a non-mutating failure",
                     entry.title,
                 )
-            else:
-                return True
-            return restored
 
         try:
-            self.hass.config_entries.async_update_entry(
+            updated = self.hass.config_entries.async_update_entry(
                 entry,
                 data=new_data,
                 unique_id=observed_device_id,
@@ -252,7 +308,34 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 "Device-ID repair did not finish for %s; cannot update config entry",
                 entry.title,
             )
+            if entry_was_loaded:
+                _schedule_recovery_reload()
             return self.async_abort(reason="repair_failed")
+
+        if not updated:
+            _LOGGER.error(
+                "Device-ID repair did not finish for %s; config-entry update made no changes",
+                entry.title,
+            )
+            if entry_was_loaded:
+                _schedule_recovery_reload()
+            return self.async_abort(reason="repair_failed")
+
+        def _schedule_reload() -> bool:
+            """Schedule the reload needed after the entry or registry changed.
+
+            Returns:
+                bool: ``True`` when Home Assistant accepted the reload request.
+            """
+            try:
+                self.hass.config_entries.async_schedule_reload(entry.entry_id)
+            except HomeAssistantError, KeyError:
+                _LOGGER.exception(
+                    "Device-ID repair did not finish for %s; cannot schedule reload",
+                    entry.title,
+                )
+                return False
+            return True
 
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
@@ -274,25 +357,10 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 "config-entry update",
                 entry.title,
             )
-            if _rollback_entry_update():
-                try:
-                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
-                except HomeAssistantError, KeyError:
-                    _LOGGER.exception(
-                        "Device-ID repair did not finish for %s; cannot schedule recovery "
-                        "reload after rollback",
-                        entry.title,
-                    )
+            _schedule_reload()
             return self.async_abort(reason="repair_failed")
 
-        try:
-            self.hass.config_entries.async_schedule_reload(entry.entry_id)
-        except HomeAssistantError, KeyError:
-            _LOGGER.exception(
-                "Device-ID repair did not finish for %s; cannot schedule reload",
-                entry.title,
-            )
-            _rollback_entry_update()
+        if not _schedule_reload():
             return self.async_abort(reason="repair_failed")
 
         return self.async_create_entry(data={})

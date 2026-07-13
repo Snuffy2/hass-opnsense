@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
+from aiopnsense.exceptions import OPNsenseBelowMinFirmware, OPNsenseUnknownFirmware
 from homeassistant.components.repairs import ConfirmRepairFlow
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
@@ -124,6 +125,11 @@ def _patch_probe_client(
             events.append("probe")
         return observed_device_id
 
+    async def _validate() -> None:
+        """Record strict client validation."""
+        if events is not None:
+            events.append("validate")
+
     async def _close() -> None:
         """Record strict probe client closure."""
         if events is not None:
@@ -132,6 +138,7 @@ def _patch_probe_client(
     client.get_device_unique_id = AsyncMock(
         side_effect=probe_error if probe_error is not None else _probe
     )
+    client.validate = AsyncMock(side_effect=_validate)
     client.async_close = AsyncMock(side_effect=_close)
     factory = MagicMock(return_value=client)
     client.factory = factory
@@ -180,6 +187,7 @@ async def test_confirmation_reprobes_with_strict_client_and_closes_it(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     client.factory.assert_called_once_with(hass=hass, config_entry=entry, throw_errors=True)
+    client.validate.assert_awaited_once_with()
     client.get_device_unique_id.assert_awaited_once_with()
     client.async_close.assert_awaited_once_with()
 
@@ -313,9 +321,14 @@ async def test_loaded_entry_unloads_before_registry_cleanup(
     device_registry.async_update_device.side_effect = lambda device_id, **kwargs: events.append(
         "device"
     )
-    hass.config_entries.async_update_entry.side_effect = lambda *args, **kwargs: events.append(
-        "config_update"
-    )
+
+    def _update_entry(*args: Any, **kwargs: Any) -> bool:
+        """Record the config update and report that it changed the entry."""
+        del args, kwargs
+        events.append("config_update")
+        return True
+
+    hass.config_entries.async_update_entry.side_effect = _update_entry
     hass.config_entries.async_schedule_reload.side_effect = lambda entry_id: events.append("reload")
     _patch_probe_client(monkeypatch, events=events)
     monkeypatch.setattr(repairs.ir, "async_delete_issue", lambda *args: events.append("delete"))
@@ -335,6 +348,7 @@ async def test_loaded_entry_unloads_before_registry_cleanup(
     await flow.async_step_confirm({})
 
     assert events == [
+        "validate",
         "probe",
         "close",
         "duplicate_scan",
@@ -392,6 +406,45 @@ async def test_invalid_probe_result_aborts_without_mutations(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "validation_error",
+    [
+        pytest.param(OPNsenseBelowMinFirmware("unsupported"), id="below-minimum"),
+        pytest.param(OPNsenseUnknownFirmware("unknown"), id="unknown-firmware"),
+    ],
+)
+async def test_firmware_validation_failure_aborts_before_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+    validation_error: BaseException,
+) -> None:
+    """Firmware validation failures must stop the repair before any mutation."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch)
+    client.validate.side_effect = validation_error
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+    client.validate.assert_awaited_once_with()
+    client.get_device_unique_id.assert_not_awaited()
+    client.async_close.assert_awaited_once_with()
+    hass.config_entries.async_unload.assert_not_awaited()
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_unload_failure_aborts_before_registry_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,6 +467,43 @@ async def test_unload_failure_aborts_before_registry_mutation(
     assert result["reason"] == "cannot_unload"
     client.async_close.assert_awaited_once_with()
     hass.config_entries.async_unload.assert_awaited_once_with(entry.entry_id)
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        ConfigEntryState.FAILED_UNLOAD,
+        ConfigEntryState.SETUP_IN_PROGRESS,
+        ConfigEntryState.UNLOAD_IN_PROGRESS,
+    ],
+)
+async def test_nonrecoverable_entry_state_aborts_before_unload_or_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    state: ConfigEntryState,
+) -> None:
+    """Non-recoverable entry states must not reach unload or repair mutation."""
+    hass = MagicMock()
+    entry = _make_entry(state=state)
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    client = _patch_probe_client(monkeypatch)
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_unload"
+    client.async_close.assert_awaited_once_with()
+    hass.config_entries.async_unload.assert_not_awaited()
     entity_registry.async_remove.assert_not_called()
     device_registry.async_update_device.assert_not_called()
     hass.config_entries.async_update_entry.assert_not_called()
@@ -645,12 +735,43 @@ async def test_entry_update_failure_aborts_without_registry_mutation(
 
 
 @pytest.mark.asyncio
+async def test_entry_update_false_aborts_before_registry_mutation_and_recovers_loaded_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-op entry update must leave registries untouched and reload a prior loaded entry."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    _configure_hass(hass, entry)
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+    _patch_probe_client(monkeypatch)
+    hass.config_entries.async_update_entry.return_value = False
+    flow = _make_flow(hass, entry)
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "repair_failed"
+    entity_registry.async_remove.assert_not_called()
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_called_once_with(
+        entry,
+        data={**entry.data, CONF_DEVICE_UNIQUE_ID: "other"},
+        unique_id="other",
+    )
+    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_point", ["entity", "device"])
-async def test_cleanup_failure_rolls_back_entry_update_and_recovers_with_reload(
+async def test_cleanup_failure_keeps_entry_update_and_recovers_with_reload(
     monkeypatch: pytest.MonkeyPatch,
     failure_point: str,
 ) -> None:
-    """Cleanup failure after entry update should rollback and request recovery reload."""
+    """Cleanup failure should keep the new ID and request a recovery reload."""
     hass = MagicMock()
     entry = _make_entry()
     _configure_hass(hass, entry)
@@ -665,18 +786,18 @@ async def test_cleanup_failure_rolls_back_entry_update_and_recovers_with_reload(
     monkeypatch.setattr(repairs.ir, "async_delete_issue", issue_delete)
 
     old_data = dict(entry.data)
-    old_unique_id = entry.unique_id
 
     def _update_entry(
         config_entry: MockConfigEntry,
         *,
         data: dict[str, Any],
         unique_id: str,
-    ) -> None:
+    ) -> bool:
         """Apply the requested entry mutation to the in-memory test object."""
         del config_entry
         object.__setattr__(entry, "data", dict(data))
         object.__setattr__(entry, "unique_id", unique_id)
+        return True
 
     hass.config_entries.async_update_entry.side_effect = _update_entry
 
@@ -715,22 +836,18 @@ async def test_cleanup_failure_rolls_back_entry_update_and_recovers_with_reload(
         "data": expected_updated_data,
         "unique_id": observed_device_id,
     }
-    assert hass.config_entries.async_update_entry.call_args_list[1].kwargs == {
-        "data": old_data,
-        "unique_id": old_unique_id,
-    }
-    assert entry.data == old_data
-    assert entry.unique_id == old_unique_id
-    assert len(hass.config_entries.async_update_entry.call_args_list) == 2
+    assert entry.data == expected_updated_data
+    assert entry.unique_id == observed_device_id
+    assert len(hass.config_entries.async_update_entry.call_args_list) == 1
     issue_delete.assert_not_called()
     hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
 
 
 @pytest.mark.asyncio
-async def test_reload_schedule_failure_rolls_back_entry_update_and_keeps_issue(
+async def test_reload_schedule_failure_keeps_entry_update_and_keeps_issue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reload scheduling failure should rollback the entry and keep the repair issue."""
+    """Reload scheduling failure should keep the new ID and repair issue."""
     hass = MagicMock()
     entry = _make_entry()
     _configure_hass(hass, entry)
@@ -745,18 +862,18 @@ async def test_reload_schedule_failure_rolls_back_entry_update_and_keeps_issue(
     monkeypatch.setattr(repairs.ir, "async_delete_issue", issue_delete)
 
     old_data = dict(entry.data)
-    old_unique_id = entry.unique_id
 
     def _update_entry(
         config_entry: MockConfigEntry,
         *,
         data: dict[str, Any],
         unique_id: str,
-    ) -> None:
+    ) -> bool:
         """Apply the requested entry mutation to the in-memory test object."""
         del config_entry
         object.__setattr__(entry, "data", dict(data))
         object.__setattr__(entry, "unique_id", unique_id)
+        return True
 
     hass.config_entries.async_update_entry.side_effect = _update_entry
     hass.config_entries.async_schedule_reload.side_effect = HomeAssistantError("entry removed")
@@ -773,13 +890,9 @@ async def test_reload_schedule_failure_rolls_back_entry_update_and_keeps_issue(
         "data": expected_updated_data,
         "unique_id": observed_device_id,
     }
-    assert hass.config_entries.async_update_entry.call_args_list[1].kwargs == {
-        "data": old_data,
-        "unique_id": old_unique_id,
-    }
-    assert entry.data == old_data
-    assert entry.unique_id == old_unique_id
-    assert len(hass.config_entries.async_update_entry.call_args_list) == 2
+    assert entry.data == expected_updated_data
+    assert entry.unique_id == observed_device_id
+    assert len(hass.config_entries.async_update_entry.call_args_list) == 1
     issue_delete.assert_not_called()
     hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
 
