@@ -96,20 +96,20 @@ Configuration is managed entirely from the Home Assistant UI. Simply go to `Conf
 
 ### OPNsense Device Entry
 
-Choose **OPNsense device entry** for each physical node's management URL. This is the full integration: telemetry, interfaces, services, gateways, firmware, optional CARP data, actions, and switches follow the selected sync options. Existing entries remain OPNsense device entries automatically and require no migration.
+Choose **OPNsense device entry** for each physical node's own non-VIP IP address or hostname. This is the full integration: telemetry, interfaces, services, gateways, firmware, optional CARP data, actions, and switches follow the selected sync options. Existing entries remain OPNsense device entries automatically and require no migration.
 
 ### CARP VIP Entry
 
-Choose **CARP VIP entry** for the shared virtual URL when you want read-only CARP visibility. A CARP VIP entry follows the active responder and exposes only the CARP entities described in [CARP VIP Entities and Limitations](#carp-vip-entities-and-limitations). Configure each physical node separately with an OPNsense device entry; the VIP entry does not replace node entries.
+Choose **CARP VIP entry** for the shared CARP VIP IP address or hostname when you want read-only CARP visibility. A CARP VIP entry follows the active responder and exposes only the CARP entities described in [CARP VIP Entities and Limitations](#carp-vip-entities-and-limitations). Configure each physical node separately with an OPNsense device entry; the VIP entry does not replace node entries.
 
 ### Recommended CARP Topology
 
 Use one OPNsense device entry per physical node and add the optional CARP VIP entry for the shared endpoint:
 
 ```text
-Node A management URL -> full OPNsense device entry
-Node B management URL -> full OPNsense device entry
-CARP virtual URL      -> optional read-only CARP VIP entry
+Node A non-VIP IP/hostname       -> full OPNsense device entry
+Node B non-VIP IP/hostname       -> full OPNsense device entry
+Shared CARP VIP IP/hostname      -> optional read-only CARP VIP entry
 ```
 
 Node entries are required for complete monitoring because a VIP endpoint cannot prove the health of a standby node.
