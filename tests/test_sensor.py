@@ -221,6 +221,7 @@ async def test_carp_entry_failover_keeps_vip_identity_and_updates_responder(
     assert responder.extra_state_attributes == {}
     assert vip.available is True
     assert vip.native_value == "BACKUP"
+    assert vip.icon == "mdi:backup-restore"
 
     state["system_info"]["name"] = "node-b"
     state["carp"]["interfaces"][0]["interface"] = "ix0"
@@ -231,6 +232,7 @@ async def test_carp_entry_failover_keeps_vip_identity_and_updates_responder(
     assert responder.native_value == "node-b"
     assert vip.available is True
     assert vip.native_value == "MASTER"
+    assert vip.icon == "mdi:check-network"
     assert vip.unique_id == initial_unique_id
     assert vip.extra_state_attributes is not None
     assert vip.extra_state_attributes == {
