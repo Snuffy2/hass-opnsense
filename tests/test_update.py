@@ -884,12 +884,22 @@ async def test_async_install_handles_masked_polling_response(
 
 
 @pytest.mark.asyncio
-async def test_async_install_transport_polling_error_raises(
+@pytest.mark.parametrize(
+    ("status_error", "expected_exception", "error_match"),
+    [
+        pytest.param(TimeoutError("fail"), TimeoutError, "fail", id="transport"),
+        pytest.param(RuntimeError("unexpected"), RuntimeError, "unexpected", id="unexpected"),
+    ],
+)
+async def test_async_install_propagates_polling_errors(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     dummy_coordinator: MagicMock,
+    status_error: BaseException,
+    expected_exception: type[Exception],
+    error_match: str,
 ) -> None:
-    """async_install should not hide transport errors raised by aiopnsense."""
+    """async_install should not hide errors raised while polling firmware status."""
     entry = make_config_entry()
     ent = OPNsenseFirmwareUpdatesAvailableUpdate(
         config_entry=entry,
@@ -899,37 +909,12 @@ async def test_async_install_transport_polling_error_raises(
         ),
     )
 
-    bad: Any = _FirmwareInstallClient(status_error=TimeoutError("fail"))
+    bad: Any = _FirmwareInstallClient(status_error=status_error)
     object.__setattr__(ent, "_client", bad)
     ent.coordinator.data = {"firmware_update_info": {"status": "update"}}
     monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
 
-    with pytest.raises(TimeoutError, match="fail"):
-        await ent.async_install()
-
-
-@pytest.mark.asyncio
-async def test_async_install_unexpected_polling_error_raises(
-    monkeypatch: pytest.MonkeyPatch,
-    make_config_entry: Callable[..., MockConfigEntry],
-    dummy_coordinator: MagicMock,
-) -> None:
-    """async_install should not hide unexpected polling errors."""
-    entry = make_config_entry()
-    ent = OPNsenseFirmwareUpdatesAvailableUpdate(
-        config_entry=entry,
-        coordinator=dummy_coordinator,
-        entity_description=UpdateEntityDescription(
-            key="firmware.update_available", name="Firmware"
-        ),
-    )
-
-    bad: Any = _FirmwareInstallClient(status_error=RuntimeError("unexpected"))
-    object.__setattr__(ent, "_client", bad)
-    ent.coordinator.data = {"firmware_update_info": {"status": "update"}}
-    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
-
-    with pytest.raises(RuntimeError, match="unexpected"):
+    with pytest.raises(expected_exception, match=error_match):
         await ent.async_install()
 
 
