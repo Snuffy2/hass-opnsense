@@ -177,6 +177,44 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             return self.async_abort(reason="entry_changed")
         entry = current_entry
 
+        new_data = {**entry.data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
+
+        def _rollback_entry_update() -> None:
+            """Restore the entry snapshot when this repair still owns its state."""
+            current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
+            if not _entry_matches_snapshot(
+                current_entry,
+                self._entry_id,
+                new_data,
+                entry_options_snapshot,
+                observed_device_id,
+            ):
+                return
+            try:
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data=entry_data_snapshot,
+                    unique_id=entry_unique_id_snapshot,
+                )
+            except HomeAssistantError, KeyError:
+                _LOGGER.exception(
+                    "Failed to rollback config entry for %s to recover repair state",
+                    entry.title,
+                )
+
+        try:
+            self.hass.config_entries.async_update_entry(
+                entry,
+                data=new_data,
+                unique_id=observed_device_id,
+            )
+        except HomeAssistantError, KeyError:
+            _LOGGER.exception(
+                "Device-ID repair did not finish for %s; cannot update config entry",
+                entry.title,
+            )
+            return self.async_abort(reason="repair_failed")
+
         try:
             entity_registry = er.async_get(self.hass)
             for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
@@ -188,20 +226,23 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                     device.id,
                     remove_config_entry_id=entry.entry_id,
                 )
-
-            new_data = {**entry.data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
-            self.hass.config_entries.async_update_entry(
-                entry,
-                data=new_data,
-                unique_id=observed_device_id,
+        except HomeAssistantError, KeyError:
+            _LOGGER.exception(
+                "Device-ID repair did not finish for %s; registry cleanup failed after "
+                "config-entry update",
+                entry.title,
             )
+            _rollback_entry_update()
+            return self.async_abort(reason="repair_failed")
+
+        try:
             self.hass.config_entries.async_schedule_reload(entry.entry_id)
         except HomeAssistantError, KeyError:
             _LOGGER.exception(
-                "Device-ID repair did not finish for %s; some registry cleanup may already "
-                "have occurred",
+                "Device-ID repair did not finish for %s; cannot schedule reload",
                 entry.title,
             )
+            _rollback_entry_update()
             return self.async_abort(reason="repair_failed")
 
         return self.async_create_entry(data={})

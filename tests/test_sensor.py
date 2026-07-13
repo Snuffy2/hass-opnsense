@@ -1065,6 +1065,96 @@ def test_build_carp_interface_sensor_key(
 
 
 @pytest.mark.parametrize(
+    ("subnet", "equivalent_subnet"),
+    [
+        ("192.0.2.1/32", "192.0.2.1"),
+        (
+            "2001:db8::1/128",
+            "2001:0db8:0000:0000:0000:0000:0000:0001",
+        ),
+    ],
+)
+def test_build_carp_vip_sensor_key_normalizes_equivalent_subnet_text(
+    subnet: str,
+    equivalent_subnet: str,
+) -> None:
+    """Equivalent subnet text forms should map to the same CARP VIP key."""
+    assert sensor_module._build_carp_vip_sensor_key(
+        "7", subnet
+    ) == sensor_module._build_carp_vip_sensor_key("7", equivalent_subnet)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("initial_subnet", "updated_subnet"),
+    [
+        ("192.0.2.1/32", "192.0.2.1"),
+        (
+            "2001:DB8::0001",
+            "2001:db8::1",
+        ),
+    ],
+)
+async def test_carp_vip_sensor_matches_canonicalized_subnet_identity_on_updates(
+    make_config_entry: Callable[..., MockConfigEntry],
+    initial_subnet: str,
+    updated_subnet: str,
+) -> None:
+    """CARP VIP updates should match across textual subnet variants."""
+    entry = make_config_entry(
+        data={"entry_type": "carp"},
+        entry_id="carp-entry",
+        title="CARP VIP",
+    )
+    state: dict[str, Any] = {
+        "carp": {
+            "interfaces": [
+                {
+                    "vhid": "1",
+                    "subnet": initial_subnet,
+                    "status": "BACKUP",
+                    "interface": "igc0",
+                }
+            ],
+            "status_summary": {"state": "healthy"},
+        }
+    }
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = state
+    setattr(entry.runtime_data, COORDINATOR, coordinator)
+    created: list[Any] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Collect entities created by async_setup_entry."""
+        created.extend(entities)
+
+    await async_setup_entry(MagicMock(), entry, cast("AddEntitiesCallback", add_entities))
+    vip = next(
+        entity for entity in created if entity.entity_description.key.startswith("carp.vip.")
+    )
+    initial_unique_id = vip.unique_id
+    object.__setattr__(vip, "hass", MagicMock())
+    object.__setattr__(vip, "async_write_ha_state", lambda: None)
+
+    vip._handle_coordinator_update()
+    assert vip.native_value == "BACKUP"
+    assert vip.extra_state_attributes is not None
+    assert vip.extra_state_attributes["subnet"] == initial_subnet
+
+    state["carp"]["interfaces"][0]["subnet"] = updated_subnet
+    state["carp"]["interfaces"][0]["status"] = "MASTER"
+    vip._handle_coordinator_update()
+
+    assert vip.unique_id == initial_unique_id
+    assert vip.native_value == "MASTER"
+    assert vip.extra_state_attributes is not None
+    assert vip.extra_state_attributes["subnet"] == updated_subnet
+    assert vip.entity_description.key == sensor_module._build_carp_vip_sensor_key(
+        "1", updated_subnet
+    )
+
+
+@pytest.mark.parametrize(
     ("key", "expected"),
     [
         ("carp.interface.wan.203_0_113_10", ("wan", "203_0_113_10")),

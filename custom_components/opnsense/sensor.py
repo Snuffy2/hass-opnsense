@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable, Mapping, MutableMapping
 import inspect
+import ipaddress
 import logging
 import re
 from typing import Any, Final
@@ -1032,9 +1033,20 @@ def _normalize_carp_value(value: Any) -> str:
         return ""
 
 
+def _normalize_carp_vip_subnet(subnet: str) -> str:
+    """Return a stable CARP subnet identity for entity matching and key generation."""
+    raw_subnet = subnet.strip()
+    if not raw_subnet:
+        return ""
+    try:
+        return slugify(str(ipaddress.ip_interface(raw_subnet).ip))
+    except ValueError, TypeError:
+        return slugify(raw_subnet)
+
+
 def _build_carp_vip_sensor_key(vhid: str, subnet: str) -> str:
     """Build a node-independent CARP VIP key from synchronized values."""
-    return f"carp.vip.{slugify(vhid.strip())}.{slugify(subnet.strip())}"
+    return f"carp.vip.{slugify(vhid.strip())}.{_normalize_carp_vip_subnet(subnet)}"
 
 
 def _parse_carp_vip_sensor_key(key: str) -> tuple[str, str] | None:
@@ -1960,7 +1972,10 @@ class OPNsenseCarpVipSensor(OPNsenseSensor):
             subnet = _normalize_carp_value(interface.get("subnet"))
             if not vhid or not subnet:
                 continue
-            if slugify(vhid) != expected_vhid_slug or slugify(subnet) != expected_subnet_slug:
+            if (
+                slugify(vhid) != expected_vhid_slug
+                or _normalize_carp_vip_subnet(subnet) != expected_subnet_slug
+            ):
                 continue
             carp_vip = dict(interface)
             break

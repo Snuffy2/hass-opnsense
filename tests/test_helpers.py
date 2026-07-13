@@ -81,7 +81,14 @@ def test_is_usable_carp_vip_accepts_normalized_identity_without_interface(
 
 @pytest.mark.parametrize(
     "value",
-    [None, {}, [], {"vhid": "", "subnet": "192.0.2.1"}, {"vhid": 1, "subnet": ""}],
+    [
+        None,
+        {},
+        [],
+        {"vhid": "", "subnet": "192.0.2.1"},
+        {"vhid": 1, "subnet": ""},
+        {"vhid": True, "subnet": "192.0.2.1"},
+    ],
 )
 def test_is_usable_carp_vip_rejects_missing_or_blank_identity(value: Any) -> None:
     """CARP VIP usability should reject malformed or blank identity rows."""
