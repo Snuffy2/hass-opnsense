@@ -161,7 +161,6 @@
     },
     "device_id_mismatched": {
       "title": "Replacement hardware detected",
-      "description": "Replacement hardware for {entry_title} changed the device ID from {old_device_id} to {new_device_id}. Confirm below to rebuild entities for this OPNsense device entry.",
       "fix_flow": {
         "step": {
           "confirm": {
