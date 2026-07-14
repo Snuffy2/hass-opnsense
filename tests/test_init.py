@@ -1207,11 +1207,11 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
 
 
 @pytest.mark.asyncio
-async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_enabled(
+async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_sync(
     monkeypatch: pytest.MonkeyPatch,
     ph_hass: HomeAssistant,
 ) -> None:
-    """Missing sync_filters_and_nat should be treated as enabled for non-granular entries."""
+    """A non-granular entry without a category key should remove firewall/NAT entities."""
     update_entry = MagicMock(return_value=True)
     monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
     entry = MockConfigEntry(
@@ -1236,9 +1236,8 @@ async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_e
         }
     )
     client.async_close = AsyncMock()
-    monkeypatch.setattr(
-        init_mod, "create_opnsense_client_from_config_entry", MagicMock(return_value=client)
-    )
+    create_client = MagicMock(return_value=client)
+    monkeypatch.setattr(init_mod, "create_opnsense_client_from_config_entry", create_client)
 
     legacy_filter = _RegistryEntity("switch.filter", "deviceid_filter_123")
     stale_native_firewall = _RegistryEntity(
@@ -1265,7 +1264,8 @@ async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_e
     res = await init_mod.async_migrate_entry(ph_hass, entry)
 
     assert res is True
-    client.get_firewall.assert_awaited_once()
+    create_client.assert_not_called()
+    client.get_firewall.assert_not_awaited()
     removed_entity_ids = {
         remove_call.args[0] for remove_call in entity_registry.async_remove.call_args_list
     }
@@ -1274,6 +1274,43 @@ async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_e
     assert stale_nat.entity_id in removed_entity_ids
     assert entity_registry.async_remove.call_count == 3
     update_entry.assert_called_once_with(entry, version=5)
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param({}, True, id="legacy-default"),
+        pytest.param(
+            {CONF_GRANULAR_SYNC_OPTIONS: False},
+            False,
+            id="non-granular-fallback",
+        ),
+        pytest.param(
+            {
+                CONF_GRANULAR_SYNC_OPTIONS: False,
+                init_mod.CONF_SYNC_FIREWALL_AND_NAT: True,
+            },
+            True,
+            id="explicit-category-enabled",
+        ),
+        pytest.param(
+            {
+                CONF_GRANULAR_SYNC_OPTIONS: True,
+                init_mod.CONF_SYNC_FIREWALL_AND_NAT: False,
+            },
+            False,
+            id="explicit-category-disabled",
+        ),
+    ],
+)
+def test_is_firewall_sync_enabled_uses_category_then_mode_then_default(
+    data: dict[str, Any], expected: bool
+) -> None:
+    """Migration sync state should preserve explicit, mode, and legacy defaults."""
+    entry = MagicMock()
+    entry.data = data
+
+    assert init_mod._is_firewall_sync_enabled(entry) is expected
 
 
 @pytest.mark.asyncio

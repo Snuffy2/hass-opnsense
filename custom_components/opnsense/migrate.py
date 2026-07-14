@@ -13,6 +13,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import (
     CONF_DEVICE_UNIQUE_ID,
+    CONF_GRANULAR_SYNC_OPTIONS,
     CONF_SYNC_FIREWALL_AND_NAT,
     CONF_TLS_INSECURE,
     DEFAULT_SYNC_OPTION_VALUE,
@@ -37,6 +38,26 @@ NATIVE_FIREWALL_NAT_SECTIONS: tuple[str, ...] = (
     "source_nat",
     "npt",
 )
+
+
+def _is_firewall_sync_enabled(config_entry: ConfigEntry) -> bool:
+    """Return whether the version 4 firewall/NAT migration should retain entities.
+
+    Entries saved while granular synchronization is disabled omit the individual
+    synchronization keys. In that format, the granular-sync mode is the fallback
+    for the category state. Entries predating the granular-sync setting retain the
+    historical enabled-by-default behavior.
+
+    Args:
+        config_entry: Config entry containing synchronization settings.
+
+    Returns:
+        bool: ``True`` when firewall and NAT synchronization is enabled.
+    """
+    data = config_entry.data
+    if CONF_SYNC_FIREWALL_AND_NAT in data:
+        return bool(data[CONF_SYNC_FIREWALL_AND_NAT])
+    return bool(data.get(CONF_GRANULAR_SYNC_OPTIONS, DEFAULT_SYNC_OPTION_VALUE))
 
 
 def _infer_native_nat_section_from_unique_id(unique_id: str) -> str | None:
@@ -342,10 +363,7 @@ async def _migrate_4_to_5(
     entity_registry = er.async_get(hass)
     current_firewall_unique_ids: set[str] | None = None
     current_native_nat_unique_ids: dict[str, set[str]] = {}
-    sync_firewall_rules = config_entry.data.get(
-        CONF_SYNC_FIREWALL_AND_NAT,
-        DEFAULT_SYNC_OPTION_VALUE,
-    )
+    sync_firewall_rules = _is_firewall_sync_enabled(config_entry)
 
     if sync_firewall_rules:
         if migration_client is None:

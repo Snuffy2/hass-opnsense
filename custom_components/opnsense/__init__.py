@@ -38,7 +38,7 @@ from .const import (
     CONF_DEVICE_TRACKER_ENABLED,
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
     CONF_DEVICE_UNIQUE_ID,
-    CONF_SYNC_FIREWALL_AND_NAT,
+    CONF_SYNC_FIREWALL_AND_NAT as CONF_SYNC_FIREWALL_AND_NAT,
     DEFAULT_DEVICE_TRACKER_ENABLED,
     DEFAULT_DEVICE_TRACKER_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
@@ -60,7 +60,13 @@ from .helpers import (
     is_carp_entry,
     is_usable_carp_vip,
 )
-from .migrate import _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5
+from .migrate import (
+    _is_firewall_sync_enabled,
+    _migrate_1_to_2,
+    _migrate_2_to_3,
+    _migrate_3_to_4,
+    _migrate_4_to_5,
+)
 from .repairs import async_create_device_id_mismatch_issue
 from .services import async_setup_services
 
@@ -492,10 +498,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
     migration_client: OPNsenseClient | None = None
     try:
-        sync_enabled = config_entry.data.get(
-            CONF_SYNC_FIREWALL_AND_NAT,
-            DEFAULT_SYNC_OPTION_VALUE,
-        )
+        sync_enabled = _is_firewall_sync_enabled(config_entry)
         if version in (2, 3) or (version == 4 and sync_enabled):
             migration_client = create_opnsense_client_from_config_entry(
                 hass=hass,
