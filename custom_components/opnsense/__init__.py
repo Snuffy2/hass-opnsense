@@ -60,7 +60,7 @@ from .helpers import (
     is_carp_entry,
     is_usable_carp_vip,
 )
-from .migration import _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5
+from .migrate import _migrate_1_to_2, _migrate_2_to_3, _migrate_3_to_4, _migrate_4_to_5
 from .repairs import async_create_device_id_mismatch_issue
 from .services import async_setup_services
 
