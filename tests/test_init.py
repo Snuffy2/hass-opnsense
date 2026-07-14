@@ -1255,19 +1255,38 @@ async def test_async_setup_calls_services_and_handles_exceptions(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entry_id", "entry_data", "entry_unique_id", "entity_unique_id_prefix"),
+    [
+        (
+            "device-entry",
+            {init_mod.CONF_DEVICE_UNIQUE_ID: "dev1", "sync_telemetry": False},
+            "stale-device-id",
+            "dev1",
+        ),
+        (
+            "carp-entry",
+            {CONF_ENTRY_TYPE: ENTRY_TYPE_CARP, "sync_telemetry": False},
+            None,
+            "carp_entry",
+        ),
+    ],
+)
 async def test_async_update_listener_reload_and_remove(
     monkeypatch: pytest.MonkeyPatch,
     ph_hass: Any,
     make_config_entry: Callable[..., MockConfigEntry],
+    entry_id: str,
+    entry_data: dict[str, Any],
+    entry_unique_id: str | None,
+    entity_unique_id_prefix: str,
 ) -> None:
-    """When SHOULD_RELOAD True and sync disabled, update listener schedules reload and removes entities."""
+    """Remove disabled entities using the same identity prefix as entity creation."""
     # Prepare entry with SHOULD_RELOAD True and granular sync option disabled to force removal_prefixes
     entry = make_config_entry(
-        data={
-            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-            "sync_telemetry": False,
-        },
-        unique_id="u123",
+        entry_id=entry_id,
+        data=entry_data,
+        unique_id=entry_unique_id,
     )
     setattr(entry.runtime_data, init_mod.SHOULD_RELOAD, True)
     # config entries and hass async reload stub
@@ -1288,7 +1307,7 @@ async def test_async_update_listener_reload_and_remove(
     # explicitly use the 'sync_telemetry' prefix so the test targets the intended sync item
     prefix = list(init_mod.GRANULAR_SYNC_PREFIX["sync_telemetry"])
     pre = prefix[0]
-    ent = Ent("sensor.x", f"{entry.unique_id}_{pre}_suffix")
+    ent = Ent("sensor.x", f"{entity_unique_id_prefix}_{pre}_suffix")
 
     # monkeypatch entity registry functions
     er_reg = MagicMock()
@@ -1345,7 +1364,7 @@ async def test_async_update_listener_removes_native_firewall_entities(
             self.entity_id = entity_id
             self.unique_id = unique_id
 
-    ent = Ent("switch.native_firewall", f"{entry.unique_id}_firewall_rule_rule1")
+    ent = Ent("switch.native_firewall", "dev1_firewall_rule_rule1")
 
     entity_registry = MagicMock()
     entity_registry.async_remove = MagicMock()

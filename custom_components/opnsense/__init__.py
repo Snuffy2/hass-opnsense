@@ -25,6 +25,7 @@ from homeassistant.helpers import (
     issue_registry as ir,
 )
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import slugify
 
 from .const import (
     CARP_PLATFORMS,
@@ -50,6 +51,7 @@ from .const import (
 )
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .helpers import (
+    config_entry_identity,
     create_opnsense_client_from_config_entry,
     firewall_rule_switch_unique_ids_from_payload,
     is_carp_entry,
@@ -136,7 +138,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     if getattr(entry.runtime_data, SHOULD_RELOAD, True):
         _LOGGER.info("[async_update_listener] Reloading")
 
-        uid_prefix = entry.unique_id
+        uid_prefix = slugify(config_entry_identity(entry))
         # _LOGGER.debug("[async_update_listener] uid_prefix: %s", uid_prefix)
         removal_prefixes: list[str] = []
         for item, prefix in GRANULAR_SYNC_PREFIX.items():
