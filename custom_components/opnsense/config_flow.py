@@ -1430,9 +1430,13 @@ class OPNsenseOptionsFlow(OptionsFlow):
             dt_entries: DeviceEntries = await _get_dt_entries(
                 hass=self.hass, config=self.config_entry.data, selected_devices=selected_devices
             )
-        except OPNsenseConnectionError as err:
-            _LOGGER.warning("Failed to load device tracker entries: %s", err)
-            errors["base"] = "cannot_connect"
+        except OPNsenseError as err:
+            validation_error = _get_validation_error_details(err, self._config)
+            if validation_error is None:
+                raise
+            error_key, log_message = validation_error
+            _LOGGER.warning("Failed to load device tracker entries: %s", log_message)
+            errors["base"] = error_key
             dt_entries = {
                 mac: _format_selected_device_label(mac)
                 for mac in _merge_selected_devices(selected_devices)

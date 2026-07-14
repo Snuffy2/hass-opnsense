@@ -1024,16 +1024,9 @@ async def test_migrate_4_to_5_uses_rule_key_when_uuid_is_missing(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("sync_enabled", "granular_sync_enabled"),
-    [(False, None), (None, False)],
-    ids=["explicitly-disabled", "granular-sync-disabled"],
-)
 async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_firewall_and_nat_rules(
     monkeypatch: pytest.MonkeyPatch,
     ph_hass: Any,
-    sync_enabled: bool | None,
-    granular_sync_enabled: bool | None,
 ) -> None:
     """_migrate_4_to_5 should remove native firewall and NAT rules when sync is disabled."""
     ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
@@ -1043,10 +1036,7 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
         CONF_USERNAME: "u",
         CONF_PASSWORD: "p",
     }
-    if sync_enabled is not None:
-        data[init_mod.CONF_SYNC_FIREWALL_AND_NAT] = sync_enabled
-    if granular_sync_enabled is not None:
-        data[CONF_GRANULAR_SYNC_OPTIONS] = granular_sync_enabled
+    data[init_mod.CONF_SYNC_FIREWALL_AND_NAT] = False
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
         data=data,
@@ -1103,6 +1093,75 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
     assert stale_native_firewall.entity_id in removed_entity_ids
     assert current_native_firewall.entity_id in removed_entity_ids
     assert native_nat.entity_id in removed_entity_ids
+    ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
+
+
+@pytest.mark.asyncio
+async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+) -> None:
+    """Missing sync_filters_and_nat should be treated as enabled for non-granular entries."""
+    ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
+    entry = MockConfigEntry(
+        domain=init_mod.DOMAIN,
+        data={
+            init_mod.CONF_DEVICE_UNIQUE_ID: "deviceid",
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_GRANULAR_SYNC_OPTIONS: False,
+        },
+        version=4,
+    )
+    entry.add_to_hass(ph_hass)
+    client = MagicMock()
+    client.get_firewall = AsyncMock(
+        return_value={
+            "rules": {"keep": {"uuid": "current"}},
+            "nat": {
+                "source_nat": {"source-keep": {"uuid": "current"}},
+            },
+        }
+    )
+    client.async_close = AsyncMock()
+    monkeypatch.setattr(
+        init_mod, "create_opnsense_client_from_config_entry", MagicMock(return_value=client)
+    )
+
+    legacy_filter = _RegistryEntity("switch.filter", "deviceid_filter_123")
+    stale_native_firewall = _RegistryEntity(
+        "switch.firewall_rule_stale", "deviceid_firewall_rule_stale"
+    )
+    stale_nat = _RegistryEntity(
+        "switch.firewall_nat",
+        slugify("deviceid.firewall.nat.source_nat.removed_source"),
+    )
+
+    entity_registry = MagicMock()
+    entity_registry.async_remove = MagicMock()
+    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: entity_registry)
+    monkeypatch.setattr(
+        init_mod.er,
+        "async_entries_for_config_entry",
+        lambda registry, config_entry_id: [
+            legacy_filter,
+            stale_native_firewall,
+            stale_nat,
+        ],
+    )
+
+    res = await init_mod.async_migrate_entry(ph_hass, entry)
+
+    assert res is True
+    client.get_firewall.assert_awaited_once()
+    removed_entity_ids = {
+        remove_call.args[0] for remove_call in entity_registry.async_remove.call_args_list
+    }
+    assert legacy_filter.entity_id in removed_entity_ids
+    assert stale_native_firewall.entity_id in removed_entity_ids
+    assert stale_nat.entity_id in removed_entity_ids
+    assert entity_registry.async_remove.call_count == 3
     ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
 
 

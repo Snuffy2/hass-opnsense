@@ -1423,13 +1423,32 @@ async def test_device_tracker_shows_form_when_no_user_input(
     assert cf_mod.CONF_DEVICES in validated
 
 
+@pytest.mark.parametrize(
+    ("exception_factory", "expected_base_error"),
+    [
+        (aiopnsense_exceptions.OPNsenseConnectionError, "cannot_connect"),
+        (aiopnsense_exceptions.OPNsenseInvalidAuth, "invalid_auth"),
+        (cf_mod.OPNsenseSSLError, "cannot_connect_ssl"),
+        (aiopnsense_exceptions.OPNsensePrivilegeMissing, "privilege_missing"),
+        (aiopnsense_exceptions.OPNsenseTimeoutError, "connect_timeout"),
+    ],
+    ids=[
+        "cannot_connect",
+        "invalid_auth",
+        "ssl",
+        "privilege_missing",
+        "timeout",
+    ],
+)
 @pytest.mark.asyncio
 async def test_device_tracker_handles_arp_lookup_failure(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
+    exception_factory: type[BaseException],
+    expected_base_error: str,
 ) -> None:
     """ARP lookup failures should not abort device tracker form rendering."""
-    exc = aiopnsense_exceptions.OPNsenseConnectionError("boom")
+    exc = exception_factory("boom")
     cfg = make_config_entry(
         data={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
         options={cf_mod.CONF_DEVICES: ["AA-BB-CC-DD-EE-FF"]},
@@ -1454,7 +1473,7 @@ async def test_device_tracker_handles_arp_lookup_failure(
 
     res = await flow.async_step_device_tracker(user_input=None)
     assert res["type"] == "form"
-    assert res["errors"]["base"] == "cannot_connect"
+    assert res["errors"]["base"] == expected_base_error
     validated = res["data_schema"]({})
     assert validated[cf_mod.CONF_DEVICES] == ["aa:bb:cc:dd:ee:ff"]
 

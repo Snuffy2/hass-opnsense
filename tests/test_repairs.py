@@ -857,6 +857,52 @@ async def test_entry_update_false_aborts_before_registry_mutation_and_recovers_l
 
 
 @pytest.mark.asyncio
+async def test_loaded_entry_retry_cleanup_failure_recovers_with_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loaded retry cleanup failures should schedule a recovery reload."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED, device_id="other", unique_id="other")
+    _configure_hass(hass, entry)
+
+    def _unload(entry_id: str) -> bool:
+        """Record unload and transition to an unloaded state."""
+        del entry_id
+        object.__setattr__(entry, "state", ConfigEntryState.NOT_LOADED)
+        return True
+
+    hass.config_entries.async_unload.side_effect = _unload
+    entity_registry, device_registry = _patch_registries(
+        monkeypatch,
+        entities=[SimpleNamespace(entity_id="sensor.old")],
+        devices=[SimpleNamespace(id="device")],
+    )
+
+    def _remove_entity(entity_id: str) -> None:
+        """Fail entity cleanup to exercise retry recovery behavior."""
+        del entity_id
+        raise HomeAssistantError("entity remove")
+
+    entity_registry.async_remove.side_effect = _remove_entity
+    issue_delete = MagicMock()
+    monkeypatch.setattr(repairs.ir, "async_delete_issue", issue_delete)
+    flow = _make_flow(hass, entry, old_device_id="dev1", new_device_id="other")
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "repair_failed"
+    assert entry.state is ConfigEntryState.NOT_LOADED
+    hass.config_entries.async_unload.assert_awaited_once_with(entry.entry_id)
+    entity_registry.async_remove.assert_called_once_with("sensor.old")
+    device_registry.async_update_device.assert_not_called()
+    hass.config_entries.async_update_entry.assert_not_called()
+    hass.config_entries.async_reload.assert_not_awaited()
+    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
+    issue_delete.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_point", ["entity", "device"])
 async def test_cleanup_failure_keeps_entry_update_and_recovers_with_reload(
     monkeypatch: pytest.MonkeyPatch,

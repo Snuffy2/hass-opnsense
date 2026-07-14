@@ -241,6 +241,34 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             )
         return self.async_abort(reason="repair_failed")
 
+    def _schedule_recovery_reload(
+        self,
+        *,
+        data_snapshot: dict[str, object],
+        options_snapshot: dict[str, object],
+        unique_id_snapshot: str | None,
+        entry_id: str,
+        entry_title: str,
+    ) -> None:
+        """Schedule a non-mutating recovery reload for an untouched repair entry."""
+        current_entry = self.hass.config_entries.async_get_entry(entry_id)
+        if not _entry_matches_snapshot(
+            current_entry,
+            entry_id,
+            data_snapshot,
+            options_snapshot,
+            unique_id_snapshot,
+        ):
+            return
+        try:
+            self.hass.config_entries.async_schedule_reload(entry_id)
+        except HomeAssistantError, KeyError:
+            _LOGGER.exception(
+                "Device-ID repair did not finish for %s; cannot schedule recovery "
+                "reload after a non-mutating failure",
+                entry_title,
+            )
+
     def _cleanup_entry_registries(self, entry: ConfigEntry) -> bool:
         """Remove the entry's entities and device associations from the registries.
 
@@ -298,10 +326,18 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         entry_unique_id_snapshot = entry.unique_id
         stored_device_id = entry.data.get(CONF_DEVICE_UNIQUE_ID)
         if stored_device_id == self._expected_device_id:
-            entry_ready, _ = await _async_prepare_entry_for_repair(self.hass, entry)
+            entry_ready, entry_was_loaded = await _async_prepare_entry_for_repair(self.hass, entry)
             if not entry_ready:
                 return self.async_abort(reason="cannot_unload")
             if not self._cleanup_entry_registries(entry):
+                if entry_was_loaded:
+                    self._schedule_recovery_reload(
+                        data_snapshot=entry_data_snapshot,
+                        options_snapshot=entry_options_snapshot,
+                        unique_id_snapshot=entry_unique_id_snapshot,
+                        entry_id=entry.entry_id,
+                        entry_title=entry.title,
+                    )
                 return self.async_abort(reason="repair_failed")
             return await self._async_resume_repaired_entry(entry)
         if stored_device_id != self._old_device_id:
@@ -359,28 +395,6 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
 
         new_data = {**entry.data, CONF_DEVICE_UNIQUE_ID: observed_device_id}
 
-        def _schedule_recovery_reload(
-            *, data_snapshot: dict[str, object], unique_id_snapshot: str | None
-        ) -> None:
-            """Reload an unloaded entry when its original snapshot is still owned."""
-            current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
-            if not _entry_matches_snapshot(
-                current_entry,
-                self._entry_id,
-                data_snapshot,
-                entry_options_snapshot,
-                unique_id_snapshot,
-            ):
-                return
-            try:
-                self.hass.config_entries.async_schedule_reload(entry.entry_id)
-            except HomeAssistantError, KeyError:
-                _LOGGER.exception(
-                    "Device-ID repair did not finish for %s; cannot schedule recovery "
-                    "reload after a non-mutating failure",
-                    entry.title,
-                )
-
         try:
             updated = self.hass.config_entries.async_update_entry(
                 entry,
@@ -393,9 +407,12 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 entry.title,
             )
             if entry_was_loaded:
-                _schedule_recovery_reload(
+                self._schedule_recovery_reload(
                     data_snapshot=entry_data_snapshot,
+                    options_snapshot=entry_options_snapshot,
                     unique_id_snapshot=entry_unique_id_snapshot,
+                    entry_id=entry.entry_id,
+                    entry_title=entry.title,
                 )
             return self.async_abort(reason="repair_failed")
 
@@ -405,9 +422,12 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 entry.title,
             )
             if entry_was_loaded:
-                _schedule_recovery_reload(
+                self._schedule_recovery_reload(
                     data_snapshot=entry_data_snapshot,
+                    options_snapshot=entry_options_snapshot,
                     unique_id_snapshot=entry_unique_id_snapshot,
+                    entry_id=entry.entry_id,
+                    entry_title=entry.title,
                 )
             return self.async_abort(reason="repair_failed")
 
@@ -434,16 +454,22 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
 
         if not self._cleanup_entry_registries(entry):
             if not await _schedule_reload():
-                _schedule_recovery_reload(
+                self._schedule_recovery_reload(
                     data_snapshot=post_update_entry_data_snapshot,
+                    options_snapshot=entry_options_snapshot,
                     unique_id_snapshot=post_update_entry_unique_id_snapshot,
+                    entry_id=entry.entry_id,
+                    entry_title=entry.title,
                 )
             return self.async_abort(reason="repair_failed")
 
         if not await _schedule_reload():
-            _schedule_recovery_reload(
+            self._schedule_recovery_reload(
                 data_snapshot=post_update_entry_data_snapshot,
+                options_snapshot=entry_options_snapshot,
                 unique_id_snapshot=post_update_entry_unique_id_snapshot,
+                entry_id=entry.entry_id,
+                entry_title=entry.title,
             )
             return self.async_abort(reason="repair_failed")
 
