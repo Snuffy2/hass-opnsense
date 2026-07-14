@@ -28,18 +28,6 @@ from .helpers import coerce_bool, dict_get
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
-def _smart_device_slug(device_name: str) -> str:
-    """Return the entity key slug for a SMART device name.
-
-    Args:
-        device_name: SMART device name to normalize.
-
-    Returns:
-        The slugified device name, or ``unknown`` when slugification fails.
-    """
-    return slugify(device_name) or "unknown"
-
-
 def _build_interface_enabled_binary_sensor_description(
     interface_name: str,
     interface: Mapping[str, Any],
@@ -73,7 +61,7 @@ def _build_smart_status_binary_sensor_description(
         A binary sensor description for SMART health state.
     """
     return BinarySensorEntityDescription(
-        key=f"smart.{_smart_device_slug(device_name)}.status",
+        key=f"smart.{slugify(device_name) or 'unknown'}.status",
         name=f"SMART {device_name} Status",
         icon="mdi:harddisk",
         device_class=BinarySensorDeviceClass.PROBLEM,
@@ -303,7 +291,7 @@ class OPNsenseSmartStatusBinarySensor(OPNsenseBinarySensor):
             device_name = candidate.get("device")
             if not isinstance(device_name, str) or not device_name.strip():
                 continue
-            if _smart_device_slug(device_name.strip()) == expected_device_slug:
+            if (slugify(device_name.strip()) or "unknown") == expected_device_slug:
                 smart_device = candidate
                 break
 

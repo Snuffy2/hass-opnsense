@@ -501,7 +501,7 @@ def _build_smart_sensor_description(device_name: str) -> SensorEntityDescription
         SensorEntityDescription: Sensor metadata for the SMART temperature.
     """
     return SensorEntityDescription(
-        key=f"smart.{_smart_device_slug(device_name)}.temperature",
+        key=f"smart.{slugify(device_name) or 'unknown'}.temperature",
         name=f"SMART {device_name} Temperature",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -959,19 +959,6 @@ async def _compile_speedtest_sensors(
             for key, name, native_unit, icon in metric_definitions
         ],
     )
-
-
-def _smart_device_slug(device_name: str) -> str:
-    """Return the entity key slug for a SMART device name.
-
-    Args:
-        device_name: SMART device name, such as ``nvme0`` or ``ada0``.
-
-    Returns:
-        str: Slug suitable for a SMART sensor entity description key.
-    """
-    device_slug = slugify(device_name)
-    return device_slug or "unknown"
 
 
 async def _compile_smart_sensors(
@@ -1835,7 +1822,7 @@ class OPNsenseSmartSensor(OPNsenseSensor):
             device_name = candidate.get("device")
             if not isinstance(device_name, str) or not device_name.strip():
                 continue
-            if _smart_device_slug(device_name.strip()) == expected_device_slug:
+            if (slugify(device_name.strip()) or "unknown") == expected_device_slug:
                 smart_device = candidate
                 break
 

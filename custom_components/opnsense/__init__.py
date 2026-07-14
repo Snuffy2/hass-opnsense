@@ -161,21 +161,6 @@ def _align_aiopnsense_log_level() -> None:
     aiopnsense_logger.setLevel(_LOGGER.level)
 
 
-def _is_firewall_sync_enabled(config_entry: ConfigEntry) -> bool:
-    """Return whether firewall and NAT synchronization is enabled.
-
-    Args:
-        config_entry: Config entry containing synchronization settings.
-
-    Returns:
-        bool: ``True`` when firewall and NAT data should be synchronized.
-    """
-    return config_entry.data.get(
-        CONF_SYNC_FIREWALL_AND_NAT,
-        DEFAULT_SYNC_OPTION_VALUE,
-    )
-
-
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle config-entry option updates and schedule integration reload.
 
@@ -797,7 +782,10 @@ async def _migrate_4_to_5(
     entity_registry = er.async_get(hass)
     current_firewall_unique_ids: set[str] | None = None
     current_native_nat_unique_ids: dict[str, set[str]] = {}
-    sync_firewall_rules = _is_firewall_sync_enabled(config_entry)
+    sync_firewall_rules = config_entry.data.get(
+        CONF_SYNC_FIREWALL_AND_NAT,
+        DEFAULT_SYNC_OPTION_VALUE,
+    )
 
     if sync_firewall_rules:
         if migration_client is None:
@@ -928,7 +916,10 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
     migration_client: OPNsenseClient | None = None
     try:
-        sync_enabled = _is_firewall_sync_enabled(config_entry)
+        sync_enabled = config_entry.data.get(
+            CONF_SYNC_FIREWALL_AND_NAT,
+            DEFAULT_SYNC_OPTION_VALUE,
+        )
         if version in (2, 3) or (version == 4 and sync_enabled):
             migration_client = create_opnsense_client_from_config_entry(
                 hass=hass,

@@ -239,20 +239,8 @@ def _build_selected_device_entries(selected_devices: Iterable[str]) -> DeviceEnt
         normalized = normalize_mac_address(str(device))
         if not normalized:
             continue
-        entries[normalized] = _format_selected_device_label(normalized)
+        entries[normalized] = f"Not currently detected [{normalized}]"
     return entries
-
-
-def _format_selected_device_label(mac: str) -> str:
-    """Format a fallback label for configured MACs not currently detected.
-
-    Args:
-        mac: MAC address to display.
-
-    Returns:
-        str: Human-readable fallback label.
-    """
-    return f"Not currently detected [{mac}]"
 
 
 def _format_detected_device_label(entry: Mapping[str, Any]) -> str:
@@ -1462,7 +1450,7 @@ class OPNsenseOptionsFlow(OptionsFlow):
             _LOGGER.warning("Failed to load device tracker entries: %s", log_message)
             errors["base"] = error_key
             dt_entries = {
-                mac: _format_selected_device_label(mac)
+                mac: f"Not currently detected [{mac}]"
                 for mac in _merge_selected_devices(selected_devices)
             }
 

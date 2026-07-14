@@ -55,16 +55,11 @@ def _device_data_from_arp_entry(
     if hostname is not None:
         device["hostname"] = hostname
 
-    manufacturer = _non_empty_string(arp_entry.get("manufacturer"))
-    if manufacturer is not None:
+    manufacturer = arp_entry.get("manufacturer")
+    if isinstance(manufacturer, str) and manufacturer:
         device["manufacturer"] = manufacturer
 
     return device
-
-
-def _mac_matches(mac_a: object, mac_b: object) -> bool:
-    """Compare MAC addresses case-insensitively when both values are strings."""
-    return isinstance(mac_a, str) and isinstance(mac_b, str) and mac_a.lower() == mac_b.lower()
 
 
 def _device_from_arp_entry(mac_address: str, arp_entries: list[Any]) -> dict[str, Any]:
@@ -81,7 +76,8 @@ def _device_from_arp_entry(mac_address: str, arp_entries: list[Any]) -> dict[str
     for arp_entry in arp_entries:
         if not isinstance(arp_entry, MutableMapping):
             continue
-        if not _mac_matches(mac_address, arp_entry.get("mac")):
+        arp_mac = arp_entry.get("mac")
+        if not isinstance(arp_mac, str) or mac_address.lower() != arp_mac.lower():
             continue
         device.update(_device_data_from_arp_entry(mac_address, arp_entry))
         break
@@ -110,18 +106,6 @@ def _devices_from_arp_entries(arp_entries: list[Any]) -> tuple[list[dict[str, An
         devices.append(_device_data_from_arp_entry(mac_address, arp_entry))
 
     return devices, mac_addresses
-
-
-def _non_empty_string(value: object) -> str | None:
-    """Return a non-empty string value, if available.
-
-    Args:
-        value: Candidate value to inspect.
-
-    Returns:
-        The input string when it is non-empty, otherwise ``None``.
-    """
-    return value if isinstance(value, str) and value else None
 
 
 def _hostname_from_arp_entry(entry: MutableMapping[str, Any]) -> str | None:
@@ -388,12 +372,18 @@ class OPNsenseScannerEntity(OPNsenseBaseEntity, ScannerEntity, RestoreEntity):
         for arp_entry in arp_table:
             if not isinstance(arp_entry, MutableMapping):
                 continue
-            if _mac_matches(self._attr_mac_address, arp_entry.get("mac")):
+            arp_mac = arp_entry.get("mac")
+            if (
+                isinstance(self._attr_mac_address, str)
+                and isinstance(arp_mac, str)
+                and self._attr_mac_address.lower() == arp_mac.lower()
+            ):
                 entry = arp_entry
                 break
         if not entry:
             entry = {}
-        self._attr_ip_address = _non_empty_string(entry.get("ip"))
+        ip_address = entry.get("ip")
+        self._attr_ip_address = ip_address if isinstance(ip_address, str) and ip_address else None
 
         if self._attr_ip_address:
             self._last_known_ip = self._attr_ip_address
