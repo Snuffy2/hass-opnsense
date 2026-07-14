@@ -12,7 +12,13 @@ import logging
 from typing import Any
 
 from aiopnsense import OPNsenseClient
-from aiopnsense.exceptions import OPNsenseBelowMinFirmware, OPNsenseError, OPNsenseUnknownFirmware
+from aiopnsense.exceptions import (
+    OPNsenseBelowMinFirmware,
+    OPNsenseConnectionError,
+    OPNsenseError,
+    OPNsenseTimeoutError,
+    OPNsenseUnknownFirmware,
+)
 import awesomeversion
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL, CONF_VERIFY_SSL, Platform
@@ -302,6 +308,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         bool: `True` when setup and initial refresh succeed; otherwise `False`.
 
     Raises:
+        ConfigEntryNotReady: If transient connection validation fails and setup should be retried.
         OPNsenseError: Raised when validation cannot complete because of
             authentication, privilege, firmware, or transport failures.
     """
@@ -326,6 +333,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug(
                 "Client validation reported firmware issues; continuing to firmware probes"
             )
+        except OPNsenseTimeoutError as err:
+            raise ConfigEntryNotReady("OPNsense validation timed out") from err
+        except OPNsenseConnectionError as err:
+            if type(err) is not OPNsenseConnectionError:
+                raise
+            raise ConfigEntryNotReady("OPNsense validation could not complete") from err
+    except ConfigEntryNotReady:
+        if client is not None:
+            await client.async_close()
+        raise
     except OPNsenseError:
         if client is not None:
             await client.async_close()

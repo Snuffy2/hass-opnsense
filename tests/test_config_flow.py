@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock
 
+from aiohttp import ClientError, ServerTimeoutError
 from aiopnsense import exceptions as aiopnsense_exceptions
 from homeassistant.core import HomeAssistant
 import pytest
@@ -289,6 +290,7 @@ def test_url_conflict_matches_persisted_default_ports(
         ("privilege_missing", "privilege_missing"),
         ("timeout", "connect_timeout"),
         ("connection", "cannot_connect"),
+        ("aiohttp_client_error", "cannot_connect"),
     ],
 )
 async def test_validate_input_exception_mapping(
@@ -315,6 +317,8 @@ async def test_validate_input_exception_mapping(
         exc = aiopnsense_exceptions.OPNsenseTimeoutError("t")
     elif exc_key == "connection":
         exc = aiopnsense_exceptions.OPNsenseConnectionError("boom")
+    elif exc_key == "aiohttp_client_error":
+        exc = ClientError("boom")
     else:
         exc = OSError("unknown")
 
@@ -334,6 +338,57 @@ async def test_validate_input_exception_mapping(
     errors: dict[str, str] = {}
     res = await cf_mod.validate_input(hass=MagicMock(), user_input={}, errors=errors)
     assert res.get("base") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "failing_attribute",
+        "carp",
+    ),
+    [
+        ("get_system_info", False),
+        ("get_device_unique_id", False),
+        ("get_carp", True),
+    ],
+)
+async def test_validate_input_maps_aiohttp_client_error_from_enrichment_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_attribute: str,
+    carp: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Raw aiohttp errors from enrichment calls should map to cannot_connect."""
+    username = "admin"
+    password = "supersecret"
+    client = _CarpFlowClient()
+    setattr(
+        client,
+        failing_attribute,
+        AsyncMock(side_effect=ClientError(f"timeout user={username} pass={password}")),
+    )
+    patch_opnsense_client(monkeypatch, cf_mod, lambda **_kwargs: client)
+
+    user_input = _make_basic_carp_input() if carp else _make_basic_device_input()
+    user_input.update(
+        {
+            cf_mod.CONF_USERNAME: username,
+            cf_mod.CONF_PASSWORD: password,
+        }
+    )
+
+    with caplog.at_level("ERROR"):
+        result = await cf_mod.validate_input(
+            hass=MagicMock(),
+            user_input=user_input,
+            errors={},
+            carp=carp,
+        )
+
+    assert result["base"] == "cannot_connect"
+    assert "[redacted]" in caplog.text
+    assert username not in caplog.text
+    assert password not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -374,6 +429,32 @@ async def test_validate_input_builtin_timeout_uses_connect_timeout_error(
     async def _raiser(*args: object, **kwargs: object) -> Never:
         """Raise a built-in TimeoutError that includes secrets in the message."""
         raise TimeoutError(f"timed out for user={username} pass={password}")
+
+    monkeypatch.setattr(cf_mod, "_validate_client_details", _raiser)
+    with caplog.at_level("ERROR"):
+        result = await cf_mod.validate_input(
+            hass=MagicMock(),
+            user_input={cf_mod.CONF_USERNAME: username, cf_mod.CONF_PASSWORD: password},
+            errors={},
+        )
+
+    assert result.get("base") == "connect_timeout"
+    assert "[redacted]" in caplog.text
+    assert username not in caplog.text
+    assert password not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_validate_input_timeout_subclass_of_client_error_still_maps_connect_timeout(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Timeout subclasses that also appear as ClientError map to connect_timeout."""
+    username = "admin"
+    password = "supersecret"
+
+    async def _raiser(*args: object, **kwargs: object) -> Never:
+        """Raise an exception that is both TimeoutError and ClientError."""
+        raise ServerTimeoutError(f"timeout user={username} pass={password}")
 
     monkeypatch.setattr(cf_mod, "_validate_client_details", _raiser)
     with caplog.at_level("ERROR"):
@@ -1433,6 +1514,8 @@ async def test_device_tracker_shows_form_when_no_user_input(
         (cf_mod.OPNsenseSSLError, "cannot_connect_ssl"),
         (aiopnsense_exceptions.OPNsensePrivilegeMissing, "privilege_missing"),
         (aiopnsense_exceptions.OPNsenseTimeoutError, "connect_timeout"),
+        (ServerTimeoutError, "connect_timeout"),
+        (ClientError, "cannot_connect"),
     ],
     ids=[
         "cannot_connect",
@@ -1440,6 +1523,8 @@ async def test_device_tracker_shows_form_when_no_user_input(
         "ssl",
         "privilege_missing",
         "timeout",
+        "server_timeout",
+        "aiohttp",
     ],
 )
 @pytest.mark.asyncio

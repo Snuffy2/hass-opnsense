@@ -10,7 +10,16 @@ import logging
 from typing import Any, Never, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, call
 
-from aiopnsense.exceptions import OPNsenseBelowMinFirmware, OPNsenseUnknownFirmware
+from aiopnsense.exceptions import (
+    OPNsenseBelowMinFirmware,
+    OPNsenseConnectionError,
+    OPNsenseInvalidAuth,
+    OPNsenseInvalidURL,
+    OPNsensePrivilegeMissing,
+    OPNsenseSSLError,
+    OPNsenseTimeoutError,
+    OPNsenseUnknownFirmware,
+)
 from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -583,6 +592,102 @@ async def test_async_setup_entry_does_not_catch_raw_validation_timeout(
     client.async_close.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "exc", [OPNsenseTimeoutError, OPNsenseConnectionError], ids=["timeout", "connection"]
+)
+@pytest.mark.asyncio
+async def test_async_setup_entry_retries_on_transient_validation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+    exc: type[BaseException],
+) -> None:
+    """Transient validation connection failures should trigger ConfigEntryNotReady."""
+    client = MagicMock()
+    client.validate = AsyncMock(side_effect=exc("timed out"))
+    client.async_close = AsyncMock(return_value=True)
+
+    def _create_client(**kwargs: Any) -> Any:
+        """Return the timeout-raising client for this setup-entry test."""
+        return client
+
+    monkeypatch.setattr(init_mod, "create_opnsense_client_from_config_entry", _create_client)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
+        },
+        options={},
+    )
+
+    hass = ph_hass
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+    hass.config_entries.async_reload = AsyncMock()
+    hass.data = {}
+
+    with pytest.raises(ConfigEntryNotReady):
+        await init_mod.async_setup_entry(hass, entry)
+
+    client.async_close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OPNsenseInvalidAuth,
+        OPNsensePrivilegeMissing,
+        OPNsenseSSLError,
+        OPNsenseInvalidURL,
+    ],
+    ids=[
+        "invalid_auth",
+        "privilege_missing",
+        "ssl_error",
+        "invalid_url",
+    ],
+)
+@pytest.mark.asyncio
+async def test_async_setup_entry_does_not_retry_non_transient_validation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+    exc: type[BaseException],
+) -> None:
+    """Non-transient validation failures should bubble as hard errors."""
+    client = MagicMock()
+    client.validate = AsyncMock(side_effect=exc("invalid"))
+    client.async_close = AsyncMock(return_value=True)
+
+    def _create_client(**kwargs: Any) -> Any:
+        """Return the auth-failing client for this setup-entry test."""
+        return client
+
+    monkeypatch.setattr(init_mod, "create_opnsense_client_from_config_entry", _create_client)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
+        },
+        options={},
+    )
+
+    hass = ph_hass
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
+    hass.config_entries.async_reload = AsyncMock()
+    hass.data = {}
+
+    with pytest.raises(exc):
+        await init_mod.async_setup_entry(hass, entry)
+
+    client.async_close.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_async_setup_entry_reraises_client_creation_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -1099,7 +1204,7 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
 @pytest.mark.asyncio
 async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_enabled(
     monkeypatch: pytest.MonkeyPatch,
-    ph_hass: Any,
+    ph_hass: HomeAssistant,
 ) -> None:
     """Missing sync_filters_and_nat should be treated as enabled for non-granular entries."""
     ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
@@ -1167,7 +1272,7 @@ async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_e
 
 @pytest.mark.asyncio
 async def test_migrate_4_to_5_defers_when_device_unique_id_is_missing(
-    monkeypatch: pytest.MonkeyPatch, ph_hass: Any
+    monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant
 ) -> None:
     """_migrate_4_to_5 should defer when the sync-enabled migration lacks a device unique ID."""
     ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
@@ -1264,7 +1369,7 @@ async def test_migrate_4_to_5_defers_when_firewall_rules_unavailable(
     ],
 )
 async def test_migrate_4_to_5_skips_native_pruning_when_rules_payload_unavailable(
-    monkeypatch: pytest.MonkeyPatch, ph_hass: Any, firewall_payload: Any
+    monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant, firewall_payload: dict[str, object]
 ) -> None:
     """_migrate_4_to_5 should complete migration with legacy cleanup only when rules are unavailable."""
     ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
@@ -1361,7 +1466,7 @@ async def test_migrate_4_to_5_legacy_entity_remove_failure_continues_migration(
 
 @pytest.mark.asyncio
 async def test_migrate_4_to_5_sync_enabled_prunes_stale_native_nat_rule_entities(
-    monkeypatch: pytest.MonkeyPatch, ph_hass: Any
+    monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant
 ) -> None:
     """_migrate_4_to_5 should prune stale native NAT IDs while preserving active and unavailable NAT categories."""
     ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)

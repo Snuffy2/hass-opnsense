@@ -250,7 +250,15 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         entry_id: str,
         entry_title: str,
     ) -> None:
-        """Schedule a non-mutating recovery reload for an untouched repair entry."""
+        """Schedule a recovery reload without mutating an untouched repair entry.
+
+        Args:
+            data_snapshot: Snapshot of the entry data used to detect changes.
+            options_snapshot: Snapshot of entry options used to detect changes.
+            unique_id_snapshot: Snapshot of the entry unique ID used to detect changes.
+            entry_id: Config entry ID used to resolve the entry for reload.
+            entry_title: Human-readable entry title for log context.
+        """
         current_entry = self.hass.config_entries.async_get_entry(entry_id)
         if not _entry_matches_snapshot(
             current_entry,

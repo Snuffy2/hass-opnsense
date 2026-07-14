@@ -963,7 +963,10 @@ class OPNsenseNATRuleSwitch(OPNsenseSwitch):
         Returns:
             str: The rule ID.
         """
-        return self.entity_description.key.split(".")[-1]
+        parts = self.entity_description.key.split(".", maxsplit=3)
+        if len(parts) == 4:
+            return parts[3]
+        return self.entity_description.key.rsplit(".", maxsplit=1)[-1]
 
     def _opnsense_get_rule(self) -> MutableMapping[str, Any] | None:
         """Get the NAT rule data from the coordinator.

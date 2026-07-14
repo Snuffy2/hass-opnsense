@@ -10,6 +10,7 @@ import re
 from typing import Any
 from urllib.parse import ParseResult, quote_plus, urlparse
 
+from aiohttp import ClientError
 from aiopnsense.exceptions import (
     OPNsenseBelowMinFirmware,
     OPNsenseConnectionError,
@@ -391,17 +392,23 @@ async def validate_input(
                 [user_input.get(CONF_USERNAME), user_input.get(CONF_PASSWORD)],
             ),
         )
+    except ClientError as err:
+        validation_error = _get_validation_error_details(err, user_input)
+        if validation_error is None:
+            raise
+        error_key, log_message = validation_error
+        _record_validation_error(errors=errors, key=error_key, message=log_message)
     return errors
 
 
 def _get_validation_error_details(
-    error: OPNsenseError,
+    error: OPNsenseError | ClientError | TimeoutError,
     user_input: Mapping[str, Any],
 ) -> tuple[str, str] | None:
-    """Return config-flow error details for an aiopnsense validation exception.
+    """Return config-flow error details for a validation exception.
 
     Args:
-        error: aiopnsense exception raised while validating the input.
+        error: Validation exception raised while validating the input.
         user_input: User input containing optional secrets for log redaction.
 
     Returns:
@@ -429,6 +436,22 @@ def _get_validation_error_details(
         return (
             "missing_device_unique_id",
             f"Missing Device Unique ID Error. {type(error).__name__}: {error}",
+        )
+    if isinstance(error, TimeoutError):
+        return (
+            "connect_timeout",
+            cleanse_sensitive_data(
+                f"Connection TimeoutError. {type(error).__name__}: {error}",
+                [user_input.get(CONF_USERNAME), user_input.get(CONF_PASSWORD)],
+            ),
+        )
+    if isinstance(error, ClientError):
+        return (
+            "cannot_connect",
+            cleanse_sensitive_data(
+                f"ClientError. {type(error).__name__}: {error}",
+                [user_input.get(CONF_USERNAME), user_input.get(CONF_PASSWORD)],
+            ),
         )
     if isinstance(error, OPNsenseInvalidURL):
         return (
@@ -1431,7 +1454,7 @@ class OPNsenseOptionsFlow(OptionsFlow):
             dt_entries: DeviceEntries = await _get_dt_entries(
                 hass=self.hass, config=self.config_entry.data, selected_devices=selected_devices
             )
-        except OPNsenseError as err:
+        except (OPNsenseError, ClientError) as err:
             validation_error = _get_validation_error_details(err, self._config)
             if validation_error is None:
                 raise
