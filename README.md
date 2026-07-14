@@ -30,9 +30,8 @@ A Discord server to discuss the integration is available. Click the Discord badg
 ## Table of Contents
 
 * [Installation](#installation)
-  * [Home Assistant Integration](#homeassistant-integration)
+  * [Home Assistant Integration](#home-assistant-integration)
     * [HACS Installation](#hacs-installation)
-    * [Manual Installation](#manual-installation)
 
 * [Configuration](#configuration)
   * [OPNsense Device Entry](#opnsense-device-entry)

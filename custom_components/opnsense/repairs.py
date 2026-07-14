@@ -222,6 +222,25 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             self._description_placeholders = dict(issue.translation_placeholders)
         return await self.async_step_confirm()
 
+    async def _async_resume_repaired_entry(self, entry: ConfigEntry) -> RepairsFlowResult:
+        """Reload an entry whose replacement identity was already persisted.
+
+        Args:
+            entry: Updated OPNsense config entry to reload.
+
+        Returns:
+            RepairsFlowResult: Successful completion or a retryable repair failure.
+        """
+        try:
+            if await self.hass.config_entries.async_reload(entry.entry_id):
+                return self.async_create_entry(data={})
+        except HomeAssistantError, KeyError:
+            _LOGGER.exception(
+                "Device-ID repair did not finish for %s; cannot resume entry reload",
+                entry.title,
+            )
+        return self.async_abort(reason="repair_failed")
+
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
     ) -> RepairsFlowResult:
@@ -246,7 +265,10 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         entry_data_snapshot = deepcopy(dict(entry.data))
         entry_options_snapshot = deepcopy(dict(entry.options))
         entry_unique_id_snapshot = entry.unique_id
-        if entry.data.get(CONF_DEVICE_UNIQUE_ID) != self._old_device_id:
+        stored_device_id = entry.data.get(CONF_DEVICE_UNIQUE_ID)
+        if stored_device_id == self._expected_device_id:
+            return await self._async_resume_repaired_entry(entry)
+        if stored_device_id != self._old_device_id:
             return self.async_abort(reason="entry_changed")
 
         try:
