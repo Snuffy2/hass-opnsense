@@ -28,6 +28,16 @@ from .helpers import coerce_bool, dict_get
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
+def _get_smart_device_name(smart_device: Mapping[str, Any]) -> str:
+    """Return SMART device key from row, preferring `device` then `ident`."""
+    device_name = smart_device.get("device")
+    if not isinstance(device_name, str) or not device_name.strip():
+        device_name = smart_device.get("ident")
+    if not isinstance(device_name, str):
+        return ""
+    return device_name.strip()
+
+
 def _build_interface_enabled_binary_sensor_description(
     interface_name: str,
     interface: Mapping[str, Any],
@@ -148,10 +158,9 @@ async def _compile_smart_status_binary_sensors(
     for smart_device in smart_devices:
         if not isinstance(smart_device, Mapping):
             continue
-        device_name = smart_device.get("device")
-        if not isinstance(device_name, str) or not device_name.strip():
+        device_name = _get_smart_device_name(smart_device)
+        if not device_name:
             continue
-        device_name = device_name.strip()
 
         entities.append(
             OPNsenseSmartStatusBinarySensor(
@@ -288,8 +297,8 @@ class OPNsenseSmartStatusBinarySensor(OPNsenseBinarySensor):
         for candidate in smart_devices:
             if not isinstance(candidate, Mapping):
                 continue
-            device_name = candidate.get("device")
-            if not isinstance(device_name, str) or not device_name.strip():
+            device_name = _get_smart_device_name(candidate)
+            if not device_name:
                 continue
             if (slugify(device_name.strip()) or "unknown") == expected_device_slug:
                 smart_device = candidate
@@ -299,12 +308,9 @@ class OPNsenseSmartStatusBinarySensor(OPNsenseBinarySensor):
             self._mark_unavailable()
             return
 
-        device_name = smart_device.get("device")
+        device_name = _get_smart_device_name(smart_device)
         smart_info = state.get("smart_info")
-        normalized_device_name = device_name.strip() if isinstance(device_name, str) else ""
-        device_info = (
-            smart_info.get(normalized_device_name) if isinstance(smart_info, Mapping) else None
-        )
+        device_info = smart_info.get(device_name) if isinstance(smart_info, Mapping) else None
         if not isinstance(device_info, Mapping):
             device_info = {}
 

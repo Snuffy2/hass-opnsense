@@ -81,6 +81,24 @@ _CARP_STATUS_ICONS: Final[Mapping[str, str]] = {
     "BACKUP": "mdi:backup-restore",
 }
 
+
+def _get_smart_device_name(smart_device: Mapping[str, Any]) -> str:
+    """Return the SMART device key from either `device` or `ident`.
+
+    Args:
+        smart_device: SMART row from coordinator state.
+
+    Returns:
+        str: Preferred device identifier.
+    """
+    device_name = smart_device.get("device")
+    if not isinstance(device_name, str) or not device_name.strip():
+        device_name = smart_device.get("ident")
+    if not isinstance(device_name, str):
+        return ""
+    return device_name.strip()
+
+
 STATIC_TELEMETRY_SENSORS: Final[tuple[SensorEntityDescription, ...]] = (
     # pfstate
     SensorEntityDescription(
@@ -987,11 +1005,9 @@ async def _compile_smart_sensors(
     for smart_device in smart_devices:
         if not isinstance(smart_device, Mapping):
             continue
-        device_name = smart_device.get("device")
-        if not isinstance(device_name, str) or not device_name.strip():
+        device_name = _get_smart_device_name(smart_device)
+        if not device_name:
             continue
-        device_name = device_name.strip()
-
         entities.append(
             _create_sensor(
                 OPNsenseSmartSensor,
@@ -1819,8 +1835,8 @@ class OPNsenseSmartSensor(OPNsenseSensor):
         for candidate in smart_devices:
             if not isinstance(candidate, Mapping):
                 continue
-            device_name = candidate.get("device")
-            if not isinstance(device_name, str) or not device_name.strip():
+            device_name = _get_smart_device_name(candidate)
+            if not device_name:
                 continue
             if (slugify(device_name.strip()) or "unknown") == expected_device_slug:
                 smart_device = candidate
@@ -1830,12 +1846,9 @@ class OPNsenseSmartSensor(OPNsenseSensor):
             self._mark_unavailable()
             return
 
-        device_name = smart_device.get("device")
+        device_name = _get_smart_device_name(smart_device)
         smart_info = state.get("smart_info")
-        normalized_device_name = device_name.strip() if isinstance(device_name, str) else ""
-        device_info = (
-            smart_info.get(normalized_device_name) if isinstance(smart_info, Mapping) else None
-        )
+        device_info = smart_info.get(device_name) if isinstance(smart_info, Mapping) else None
         if not isinstance(device_info, Mapping):
             self._mark_unavailable()
             return

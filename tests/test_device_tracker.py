@@ -92,6 +92,26 @@ def test_devices_from_arp_entries_skips_malformed_invalid_and_duplicate_macs() -
     assert devices == [{"mac": "aa:bb:cc", "hostname": "tracked"}]
 
 
+def test_device_from_arp_entry_uses_raw_arp_keys() -> None:
+    """Raw aiopnsense ARP keys should be discovered alongside normalized keys."""
+    device = dt_mod._device_from_arp_entry(
+        "aa:bb:cc",
+        [{"mac-address": "AA-BB-CC"}, {"mac": "11:22:33"}],
+    )
+
+    assert device == {"mac": "aa:bb:cc"}
+
+
+def test_devices_from_arp_entries_reads_raw_mac_ip_keys() -> None:
+    """Raw ARP key names should be consumed when scanning configured devices."""
+    devices, mac_addresses = dt_mod._devices_from_arp_entries(
+        [{"mac-address": "AA-BB-CC", "ip-address": "10.0.0.2", "hostname": "raw"}],
+    )
+
+    assert mac_addresses == ["aa:bb:cc"]
+    assert devices == [{"mac": "aa:bb:cc", "hostname": "raw"}]
+
+
 @pytest.mark.asyncio
 async def test_async_setup_entry_configured_devices(
     monkeypatch: pytest.MonkeyPatch,
@@ -561,6 +581,28 @@ def test_handle_coordinator_update_matches_mac_case_insensitively(
     assert attrs is not None
     assert attrs.get("interface") == "lan"
     assert ent.available is True
+
+
+def test_handle_coordinator_update_reads_raw_arp_ip_key(
+    coordinator: MagicMock, make_config_entry: Callable[..., MockConfigEntry]
+) -> None:
+    """Tracker update should still read `ip-address` when `ip` is absent."""
+    coordinator.data = {
+        "arp_table": [
+            {"mac-address": "AA:BB:CC", "ip-address": "10.0.0.12", "intf_description": "lan"}
+        ],
+        "update_time": 0,
+    }
+    ent = _make_scanner_entity(
+        coordinator=coordinator,
+        make_config_entry=make_config_entry,
+        coordinator_data=coordinator.data,
+    )
+    object.__setattr__(ent, "async_write_ha_state", MagicMock())
+
+    ent._handle_coordinator_update()
+
+    assert ent.ip_address == "10.0.0.12"
 
 
 def test_update_arp_extra_state_attributes_clears_stale_values() -> None:

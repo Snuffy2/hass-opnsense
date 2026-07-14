@@ -350,6 +350,49 @@ async def test_async_setup_entry_carp_validation_firmware_errors_fail_setup(
     client.async_close.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [OPNsenseTimeoutError, OPNsenseConnectionError],
+    ids=["timeout", "connection"],
+)
+@pytest.mark.asyncio
+async def test_async_setup_entry_carp_entry_retries_on_transient_validation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+    exc: type[BaseException],
+) -> None:
+    """CARP setup should retry on transient validation transport failures."""
+    client = MagicMock()
+    client.validate = AsyncMock(side_effect=exc("transient"))
+    client.async_close = AsyncMock(return_value=True)
+
+    create_client = MagicMock(return_value=client)
+    coordinator_factory = MagicMock()
+    monkeypatch.setattr(init_mod, "create_opnsense_client_from_config_entry", create_client)
+    monkeypatch.setattr(init_mod, "OPNsenseDataUpdateCoordinator", coordinator_factory)
+
+    entry = make_config_entry(
+        data={
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_ENTRY_TYPE: ENTRY_TYPE_CARP,
+        },
+        options={},
+    )
+
+    hass = cast("MagicMock", ph_hass)
+    hass.data = {}
+
+    with pytest.raises(ConfigEntryNotReady):
+        await init_mod.async_setup_entry(hass, entry)
+
+    coordinator_factory.assert_not_called()
+    create_client.assert_called_once()
+    client.async_close.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "initial_data",
@@ -1205,6 +1248,56 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
     assert native_nat.entity_id in removed_entity_ids
     ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
     create_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_migrate_4_to_5_granular_entry_defaults_missing_category_key_to_enabled(
+    monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant
+) -> None:
+    """Granular migration preserves firewall sync for entries missing the category key."""
+    update_entry = MagicMock(return_value=True)
+    monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
+    entry = MockConfigEntry(
+        domain=init_mod.DOMAIN,
+        data={
+            init_mod.CONF_DEVICE_UNIQUE_ID: "deviceid",
+            CONF_URL: "http://1.2.3.4",
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+            CONF_GRANULAR_SYNC_OPTIONS: True,
+        },
+        version=4,
+    )
+    entry.add_to_hass(ph_hass)
+    assert CONF_SYNC_FIREWALL_AND_NAT not in entry.data
+
+    client = MagicMock()
+    client.get_firewall = AsyncMock(return_value={"rules": {"row-key": {"uuid": "current"}}})
+    client.async_close = AsyncMock()
+    create_client = MagicMock(return_value=client)
+    monkeypatch.setattr(init_mod, "create_opnsense_client_from_config_entry", create_client)
+
+    stale_native_firewall = _RegistryEntity(
+        "switch.firewall_rule_stale",
+        "deviceid_firewall_rule_stale",
+    )
+
+    entity_registry = MagicMock()
+    entity_registry.async_remove = MagicMock()
+    monkeypatch.setattr(init_mod.er, "async_get", lambda hass: entity_registry)
+    monkeypatch.setattr(
+        init_mod.er,
+        "async_entries_for_config_entry",
+        lambda registry, config_entry_id: [stale_native_firewall],
+    )
+
+    res = await init_mod.async_migrate_entry(ph_hass, entry)
+
+    assert res is True
+    create_client.assert_called_once()
+    client.get_firewall.assert_awaited_once()
+    entity_registry.async_remove.assert_called_once_with(stale_native_firewall.entity_id)
+    update_entry.assert_called_once_with(entry, version=5)
 
 
 @pytest.mark.asyncio

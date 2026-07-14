@@ -179,7 +179,14 @@ async def _async_setup_carp_entry(hass: HomeAssistant, entry: ConfigEntry) -> bo
 
     try:
         client = create_opnsense_client_from_config_entry(hass=hass, config_entry=entry)
-        await client.validate(require_device_id=False)
+        try:
+            await client.validate(require_device_id=False)
+        except OPNsenseTimeoutError as err:
+            raise ConfigEntryNotReady("OPNsense validation timed out") from err
+        except OPNsenseConnectionError as err:
+            if type(err) is not OPNsenseConnectionError:
+                raise
+            raise ConfigEntryNotReady("OPNsense validation could not complete") from err
 
         scan_interval: int = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         _LOGGER.info("Starting hass-opnsense %s", VERSION)

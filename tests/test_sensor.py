@@ -3976,6 +3976,43 @@ async def test_async_setup_entry_creates_smart_disk_sensors_by_default(
 
 
 @pytest.mark.asyncio
+async def test_async_setup_entry_creates_smart_disk_sensors_from_ident_only_rows(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """SMART temperature sensors should be compiled when rows provide `ident` only."""
+    smart_entities = await _async_setup_smart_entities(
+        make_config_entry,
+        {
+            CONF_SYNC_TELEMETRY: False,
+            CONF_SYNC_VNSTAT: False,
+            CONF_SYNC_CERTIFICATES: False,
+            CONF_SYNC_VPN: False,
+            CONF_SYNC_GATEWAYS: False,
+            CONF_SYNC_INTERFACES: False,
+            CONF_SYNC_CARP: False,
+            CONF_SYNC_DHCP_LEASES: False,
+            CONF_SYNC_SPEEDTEST: False,
+            CONF_SYNC_SMART: True,
+        },
+        {
+            "smart": [{"ident": "SERIAL-ONLY"}],
+            "smart_info": {"SERIAL-ONLY": {"temperature": {"current": 58}}},
+        },
+    )
+
+    assert {entity.entity_description.key for entity in smart_entities} == {
+        "smart.serial_only.temperature",
+    }
+    entity = smart_entities[0]
+    _prepare_smart_sensor(entity)
+    entity._handle_coordinator_update()
+
+    assert entity.available is True
+    assert entity.native_value == 58
+    assert entity.extra_state_attributes == {"ident": "SERIAL-ONLY"}
+
+
+@pytest.mark.asyncio
 async def test_async_setup_entry_creates_smart_temperature_sensors_from_smart_info(
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
@@ -4254,6 +4291,26 @@ def test_smart_sensor_strips_device_name_before_smart_info_lookup(
 
     assert sensor.available is True
     assert sensor.native_value == 37
+
+
+def test_smart_sensor_uses_ident_when_device_missing(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """SMART sensors should identify rows using `ident` when `device` is absent."""
+    sensor = _build_smart_sensor(
+        make_config_entry,
+        {
+            "smart": [{"ident": "SERIAL-ONLY"}],
+            "smart_info": {"SERIAL-ONLY": {"temperature": {"current": 58}}},
+        },
+        "smart.serial_only.temperature",
+    )
+    _prepare_smart_sensor(sensor, "sensor.smart_serial_only_temperature")
+    sensor._handle_coordinator_update()
+
+    assert sensor.available is True
+    assert sensor.native_value == 58
+    assert sensor.extra_state_attributes == {"ident": "SERIAL-ONLY"}
 
 
 @pytest.mark.parametrize(

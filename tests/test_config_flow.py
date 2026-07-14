@@ -967,6 +967,28 @@ async def test_get_dt_entries_preserves_missing_selected_devices(
 
 
 @pytest.mark.asyncio
+async def test_get_dt_entries_supports_raw_arp_keys(
+    monkeypatch: pytest.MonkeyPatch, fake_client: Any
+) -> None:
+    """_get_dt_entries should parse raw aiopnsense 1.1.1 ARP keys."""
+    client_cls = fake_client()
+
+    async def _get_arp_table(self: Any, resolve_hostnames: bool = True) -> Any:
+        return [{"mac-address": "AA-BB-CC-00-00-01", "ip-address": "10.0.0.10"}]
+
+    client_cls.get_arp_table = _get_arp_table
+    patch_opnsense_client(monkeypatch, cf_mod, client_cls)
+
+    res = await cf_mod._get_dt_entries(
+        hass=MagicMock(),
+        config={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
+        selected_devices=[],
+    )
+
+    assert res == {"aa:bb:cc:00:00:01": "10.0.0.10 [aa:bb:cc:00:00:01]"}
+
+
+@pytest.mark.asyncio
 async def test_get_dt_entries_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """_get_dt_entries should close the client and request propagated errors."""
 
@@ -1561,6 +1583,32 @@ async def test_device_tracker_handles_arp_lookup_failure(
     res = await flow.async_step_device_tracker(user_input=None)
     assert res["type"] == "form"
     assert res["errors"]["base"] == expected_base_error
+    validated = res["data_schema"]({})
+    assert validated[cf_mod.CONF_DEVICES] == ["aa:bb:cc:dd:ee:ff"]
+
+
+@pytest.mark.asyncio
+async def test_device_tracker_handles_builtin_timeout_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Builtin TimeoutError from ARP lookup should map to connect_timeout."""
+    cfg = make_config_entry(
+        data={cf_mod.CONF_URL: "https://x", cf_mod.CONF_USERNAME: "u", cf_mod.CONF_PASSWORD: "p"},
+        options={cf_mod.CONF_DEVICES: ["AA-BB-CC-DD-EE-FF"]},
+    )
+    flow = _make_options_flow(cfg)
+    flow._config = dict(cfg.data)
+    flow._options = dict(cfg.options)
+
+    async def _raise(*args, **kwargs) -> Never:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(cf_mod, "_get_dt_entries", _raise)
+
+    res = await flow.async_step_device_tracker(user_input=None)
+    assert res["type"] == "form"
+    assert res["errors"]["base"] == "connect_timeout"
     validated = res["data_schema"]({})
     assert validated[cf_mod.CONF_DEVICES] == ["aa:bb:cc:dd:ee:ff"]
 

@@ -243,6 +243,46 @@ def _build_selected_device_entries(selected_devices: Iterable[str]) -> DeviceEnt
     return entries
 
 
+def _normalize_arp_mac(mac: object) -> str:
+    """Normalize a raw ARP MAC to the integration's canonical format."""
+    if not isinstance(mac, str):
+        return ""
+    return mac.strip().lower().replace("-", ":")
+
+
+def _get_arp_mac(entry: Mapping[str, Any]) -> str:
+    """Return the ARP MAC string from normalized or raw key names.
+
+    Args:
+        entry: ARP entry map from the OPNsense client.
+
+    Returns:
+        str: MAC value if present, otherwise empty string.
+    """
+    raw_mac = entry.get("mac")
+    if not isinstance(raw_mac, str):
+        raw_mac = entry.get("mac-address")
+    return _normalize_arp_mac(raw_mac)
+
+
+def _get_arp_ip(entry: Mapping[str, Any]) -> str:
+    """Return the ARP IP string from normalized or raw key names.
+
+    Args:
+        entry: ARP entry map from the OPNsense client.
+
+    Returns:
+        str: IP value if present, otherwise empty string.
+    """
+    raw_ip = entry.get("ip")
+    if isinstance(raw_ip, str):
+        return raw_ip
+    raw_ip = entry.get("ip-address")
+    if isinstance(raw_ip, str):
+        return raw_ip
+    return ""
+
+
 def _format_detected_device_label(entry: Mapping[str, Any]) -> str:
     """Format a device label from an ARP table entry.
 
@@ -252,9 +292,9 @@ def _format_detected_device_label(entry: Mapping[str, Any]) -> str:
     Returns:
         str: Human-readable device label for the options form.
     """
-    normalized_mac = normalize_mac_address(str(entry.get("mac", "")))
-    mac = normalized_mac or str(entry.get("mac", "")).lower().strip()
-    ip: str = str(entry.get("ip", "")).strip()
+    normalized_mac = normalize_mac_address(_get_arp_mac(entry))
+    mac = normalized_mac or _get_arp_mac(entry).lower().strip()
+    ip: str = _get_arp_ip(entry).strip()
     hostname: str = str(entry.get("hostname", "")).strip("?").strip()
     manufacturer: str = str(entry.get("manufacturer", "")).strip()
 
@@ -942,11 +982,11 @@ async def _get_dt_entries(
             ip_by_mac: dict[str, str] = {}
             # follow with all arp table entries
             for entry in arp_table:
-                normalized_mac = normalize_mac_address(str(entry.get("mac", "")))
-                mac: str = normalized_mac or str(entry.get("mac", "")).lower().strip()
+                normalized_mac = normalize_mac_address(_get_arp_mac(entry))
+                mac: str = normalized_mac or _get_arp_mac(entry).lower().strip()
                 if len(mac) < 1:
                     continue
-                ip_by_mac[mac] = str(entry.get("ip", "")).strip()
+                ip_by_mac[mac] = _get_arp_ip(entry).strip()
                 label: str = _format_detected_device_label(entry)
                 entries[mac] = label
 
@@ -1442,7 +1482,7 @@ class OPNsenseOptionsFlow(OptionsFlow):
             dt_entries: DeviceEntries = await _get_dt_entries(
                 hass=self.hass, config=self.config_entry.data, selected_devices=selected_devices
             )
-        except (OPNsenseError, ClientError) as err:
+        except (OPNsenseError, ClientError, TimeoutError) as err:
             validation_error = _get_validation_error_details(err, self._config)
             if validation_error is None:
                 raise

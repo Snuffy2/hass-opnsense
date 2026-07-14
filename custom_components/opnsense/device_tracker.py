@@ -36,6 +36,43 @@ from .helpers import dict_get
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
 
+def _normalize_arp_mac(mac: object) -> str:
+    """Normalize an ARP MAC-like value without relying on strict format validation."""
+    if not isinstance(mac, str):
+        return ""
+    return mac.strip().lower().replace("-", ":")
+
+
+def _arp_mac_from_entry(arp_entry: Mapping[str, Any]) -> str:
+    """Return an ARP entry MAC from normalized and raw payload keys.
+
+    Args:
+        arp_entry: Raw ARP entry.
+
+    Returns:
+        str: Normalized MAC representation.
+    """
+    mac: object = arp_entry.get("mac")
+    if not isinstance(mac, str):
+        mac = arp_entry.get("mac-address")
+    return _normalize_arp_mac(mac)
+
+
+def _arp_ip_from_entry(arp_entry: Mapping[str, Any]) -> str:
+    """Return the ARP IP value from normalized or raw payload keys.
+
+    Args:
+        arp_entry: Raw ARP entry.
+
+    Returns:
+        str: IP address value when present.
+    """
+    ip: object = arp_entry.get("ip")
+    if not isinstance(ip, str):
+        ip = arp_entry.get("ip-address")
+    return ip.strip() if isinstance(ip, str) else ""
+
+
 def _device_data_from_arp_entry(
     mac_address: str,
     arp_entry: MutableMapping[str, Any],
@@ -72,12 +109,13 @@ def _device_from_arp_entry(mac_address: str, arp_entries: list[Any]) -> dict[str
     Returns:
         A device dictionary for the matching ARP entry, or a MAC-only fallback.
     """
-    device: dict[str, Any] = {"mac": mac_address}
+    device: dict[str, Any] = {"mac": _normalize_arp_mac(mac_address)}
+    normalized_mac = _normalize_arp_mac(mac_address)
     for arp_entry in arp_entries:
         if not isinstance(arp_entry, MutableMapping):
             continue
-        arp_mac = arp_entry.get("mac")
-        if not isinstance(arp_mac, str) or mac_address.lower() != arp_mac.lower():
+        arp_mac = _arp_mac_from_entry(arp_entry)
+        if not arp_mac or normalized_mac != arp_mac:
             continue
         device.update(_device_data_from_arp_entry(mac_address, arp_entry))
         break
@@ -99,8 +137,8 @@ def _devices_from_arp_entries(arp_entries: list[Any]) -> tuple[list[dict[str, An
     for arp_entry in arp_entries:
         if not isinstance(arp_entry, MutableMapping):
             continue
-        mac_address = arp_entry.get("mac")
-        if not isinstance(mac_address, str) or not mac_address or mac_address in mac_addresses:
+        mac_address = _arp_mac_from_entry(arp_entry)
+        if not mac_address or mac_address in mac_addresses:
             continue
         mac_addresses.append(mac_address)
         devices.append(_device_data_from_arp_entry(mac_address, arp_entry))
@@ -372,17 +410,16 @@ class OPNsenseScannerEntity(OPNsenseBaseEntity, ScannerEntity, RestoreEntity):
         for arp_entry in arp_table:
             if not isinstance(arp_entry, MutableMapping):
                 continue
-            arp_mac = arp_entry.get("mac")
+            arp_mac = _arp_mac_from_entry(arp_entry)
             if (
                 isinstance(self._attr_mac_address, str)
-                and isinstance(arp_mac, str)
-                and self._attr_mac_address.lower() == arp_mac.lower()
+                and self._attr_mac_address.lower() == arp_mac
             ):
                 entry = arp_entry
                 break
         if not entry:
             entry = {}
-        ip_address = entry.get("ip")
+        ip_address = _arp_ip_from_entry(entry)
         self._attr_ip_address = ip_address if isinstance(ip_address, str) and ip_address else None
 
         if self._attr_ip_address:

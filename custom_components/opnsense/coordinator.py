@@ -46,6 +46,23 @@ _PREVIOUS_STATE_KEYS: tuple[str, ...] = (
 )
 
 
+def _get_smart_device_key(smart_device: Mapping[str, Any]) -> str:
+    """Return the SMART device identifier, preferring `device` over `ident`.
+
+    Args:
+        smart_device: Raw SMART device row from coordinator payload.
+
+    Returns:
+        str: Device identifier used for SMART detail lookups.
+    """
+    device_name = smart_device.get("device")
+    if not isinstance(device_name, str) or not device_name.strip():
+        device_name = smart_device.get("ident")
+    if not isinstance(device_name, str):
+        return ""
+    return device_name.strip()
+
+
 class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
     """Coordinator class for OPNsense."""
 
@@ -140,12 +157,11 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                         for smart_device in smart_devices:
                             if not isinstance(smart_device, Mapping):
                                 continue
-                            device_name = smart_device.get("device")
-                            if not isinstance(device_name, str) or not device_name.strip():
+                            device_name = _get_smart_device_key(smart_device)
+                            if not device_name:
                                 continue
-                            normalized_device_name = device_name.strip()
-                            smart_info[normalized_device_name] = await method(
-                                device=normalized_device_name,
+                            smart_info[device_name] = await method(
+                                device=device_name,
                                 info_type=cat.get("info_type", "A"),
                             )
                     state[cat.get("state_key")] = smart_info
