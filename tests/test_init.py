@@ -20,7 +20,7 @@ from aiopnsense.exceptions import (
     OPNsenseTimeoutError,
     OPNsenseUnknownFirmware,
 )
-from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME, Platform
+from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME, CONF_VERIFY_SSL, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.util import slugify
@@ -31,6 +31,7 @@ import custom_components.opnsense as opnsense_mod
 from custom_components.opnsense.const import (
     CONF_ENTRY_TYPE,
     CONF_GRANULAR_SYNC_OPTIONS,
+    CONF_TLS_INSECURE,
     ENTRY_TYPE_CARP,
 )
 from tests.utilities import patch_opnsense_client
@@ -944,7 +945,7 @@ async def test_async_unload_entry_and_pop(
 async def test_migrate_1_to_2_updates_entry(ph_hass: Any) -> None:
     """_migrate_1_to_2 migrates tls_insecure to verify_ssl and updates version."""
     cfg = MagicMock()
-    cfg.data = {init_mod.CONF_TLS_INSECURE: True}
+    cfg.data = {CONF_TLS_INSECURE: True}
     # ensure verify_ssl missing
     cfg.version = 1
     # mock async_update_entry
@@ -954,20 +955,20 @@ async def test_migrate_1_to_2_updates_entry(ph_hass: Any) -> None:
     assert res is True
     # verify async_update_entry was called with the migrated data: tls_insecure removed
     # and verify_ssl derived as not tls_insecure, and version set to 2
-    expected_data = {init_mod.CONF_VERIFY_SSL: False}
+    expected_data = {CONF_VERIFY_SSL: False}
     hass.config_entries.async_update_entry.assert_called_once_with(
         cfg, data=expected_data, version=2
     )
 
     # Also test tls_insecure == False -> verify_ssl True
     cfg2 = MagicMock()
-    cfg2.data = {init_mod.CONF_TLS_INSECURE: False}
+    cfg2.data = {CONF_TLS_INSECURE: False}
     cfg2.version = 1
     # reset mock
     hass.config_entries.async_update_entry = MagicMock(return_value=True)
     res2 = await init_mod._migrate_1_to_2(hass, cfg2)
     assert res2 is True
-    expected_data2 = {init_mod.CONF_VERIFY_SSL: True}
+    expected_data2 = {CONF_VERIFY_SSL: True}
     hass.config_entries.async_update_entry.assert_called_once_with(
         cfg2, data=expected_data2, version=2
     )
