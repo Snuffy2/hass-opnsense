@@ -887,7 +887,7 @@ async def test_get_dt_entries_preserves_missing_selected_devices(
 
 @pytest.mark.asyncio
 async def test_get_dt_entries_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_get_dt_entries should always close the temporary client."""
+    """_get_dt_entries should close the client and request propagated errors."""
 
     class _Client:
         """Fake client that records closure for device-tracker entry tests."""
@@ -902,6 +902,7 @@ async def test_get_dt_entries_closes_client(monkeypatch: pytest.MonkeyPatch) -> 
                 **kwargs: Unused keyword constructor args from factory helper.
             """
             type(self).last_instance = self
+            self.throw_errors = kwargs.get("throw_errors")
             self.async_close = AsyncMock()
 
         async def get_arp_table(self, resolve_hostnames: bool = True) -> Any:
@@ -923,6 +924,7 @@ async def test_get_dt_entries_closes_client(monkeypatch: pytest.MonkeyPatch) -> 
         selected_devices=[],
     )
     assert _Client.last_instance is not None
+    assert _Client.last_instance.throw_errors is True
     _Client.last_instance.async_close.assert_awaited_once()
 
 
