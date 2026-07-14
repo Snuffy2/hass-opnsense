@@ -54,6 +54,7 @@ from .coordinator import OPNsenseDataUpdateCoordinator
 from .helpers import (
     config_entry_identity,
     create_opnsense_client_from_config_entry,
+    firewall_nat_switch_unique_ids_from_payload,
     firewall_rule_switch_unique_ids_from_payload,
     is_carp_entry,
     is_usable_carp_vip,
@@ -70,6 +71,36 @@ LEGACY_RULE_ENTITY_TOKENS: tuple[str, ...] = (
 )
 NATIVE_FIREWALL_RULE_ENTITY_MARKER = "_firewall_rule_"
 NATIVE_FIREWALL_NAT_ENTITY_MARKER = "_firewall_nat_"
+NATIVE_FIREWALL_NAT_SECTIONS: tuple[str, ...] = (
+    "d_nat",
+    "one_to_one",
+    "source_nat",
+    "npt",
+)
+
+
+def _infer_native_nat_section_from_unique_id(unique_id: str) -> str | None:
+    """Infer the NAT section name from a native NAT unique ID.
+
+    Args:
+        unique_id: Native NAT unique identifier from the entity registry.
+
+    Returns:
+        str | None: NAT section name when the unique ID is parseable.
+    """
+    suffix: str | None = (
+        unique_id.split(NATIVE_FIREWALL_NAT_ENTITY_MARKER, maxsplit=1)[1]
+        if NATIVE_FIREWALL_NAT_ENTITY_MARKER in unique_id
+        else None
+    )
+    if suffix is None:
+        return None
+
+    for nat_section in NATIVE_FIREWALL_NAT_SECTIONS:
+        prefix: str = f"{nat_section}_"
+        if suffix.startswith(prefix):
+            return nat_section
+    return None
 
 
 @dataclass
@@ -733,7 +764,8 @@ async def _migrate_4_to_5(
     """
     _LOGGER.debug("[migrate_4_to_5] Initial Version: %s", config_entry.version)
     entity_registry = er.async_get(hass)
-    current_firewall_unique_ids: set[str] = set()
+    current_firewall_unique_ids: set[str] | None = None
+    current_native_nat_unique_ids: dict[str, set[str]] = {}
     sync_firewall_rules: bool = config_entry.data.get(
         CONF_SYNC_FIREWALL_AND_NAT,
         config_entry.data.get(CONF_GRANULAR_SYNC_OPTIONS, DEFAULT_SYNC_OPTION_VALUE),
@@ -750,33 +782,70 @@ async def _migrate_4_to_5(
             )
             return False
 
-        rules = firewall.get("rules") if isinstance(firewall, Mapping) else None
         device_unique_id = config_entry.data.get(CONF_DEVICE_UNIQUE_ID)
-        if not isinstance(rules, Mapping) or not isinstance(device_unique_id, str):
+        if not isinstance(device_unique_id, str):
             _LOGGER.warning(
-                "Migration to version 5 deferred because firewall rule data is unavailable"
+                "Migration to version 5 deferred because device unique ID is unavailable"
             )
             return False
 
-        current_firewall_unique_ids = firewall_rule_switch_unique_ids_from_payload(
-            device_unique_id,
-            rules,
-        )
+        if not isinstance(firewall, Mapping):
+            _LOGGER.warning(
+                "Migration to version 5 skipping native rule pruning because firewall payload is "
+                "unavailable"
+            )
+        else:
+            rules = firewall.get("rules")
+            if isinstance(rules, Mapping):
+                current_firewall_unique_ids = firewall_rule_switch_unique_ids_from_payload(
+                    device_unique_id,
+                    rules,
+                )
+            else:
+                _LOGGER.warning(
+                    "Migration to version 5 skipping native firewall rule pruning because "
+                    "firewall rules data is unavailable"
+                )
+
+            nat = firewall.get("nat")
+            if isinstance(nat, Mapping):
+                for nat_section in NATIVE_FIREWALL_NAT_SECTIONS:
+                    nat_rules = nat.get(nat_section)
+                    if isinstance(nat_rules, Mapping):
+                        current_native_nat_unique_ids[nat_section] = (
+                            firewall_nat_switch_unique_ids_from_payload(
+                                device_unique_id,
+                                nat_section,
+                                nat_rules,
+                            )
+                        )
+
+            elif nat is not None:
+                _LOGGER.warning(
+                    "Migration to version 5 skipping native NAT rule pruning because NAT "
+                    "data is unavailable"
+                )
 
     for ent in er.async_entries_for_config_entry(entity_registry, config_entry.entry_id):
         platform = ent.entity_id.split(".")[0]
         if platform != Platform.SWITCH:
             continue
         should_remove = any(token in ent.unique_id for token in LEGACY_RULE_ENTITY_TOKENS)
-        if (
-            not should_remove
-            and (
-                NATIVE_FIREWALL_RULE_ENTITY_MARKER in ent.unique_id
-                or (not sync_firewall_rules and NATIVE_FIREWALL_NAT_ENTITY_MARKER in ent.unique_id)
+        if not should_remove and NATIVE_FIREWALL_RULE_ENTITY_MARKER in ent.unique_id:
+            should_remove = not sync_firewall_rules or (
+                current_firewall_unique_ids is not None
+                and ent.unique_id not in current_firewall_unique_ids
             )
-            and ent.unique_id not in current_firewall_unique_ids
-        ):
-            should_remove = True
+        elif not should_remove and NATIVE_FIREWALL_NAT_ENTITY_MARKER in ent.unique_id:
+            should_remove = not sync_firewall_rules
+            if sync_firewall_rules:
+                nat_entity_section = _infer_native_nat_section_from_unique_id(ent.unique_id)
+                if (
+                    nat_entity_section is not None
+                    and nat_entity_section in current_native_nat_unique_ids
+                    and ent.unique_id not in current_native_nat_unique_ids[nat_entity_section]
+                ):
+                    should_remove = True
         if should_remove:
             try:
                 entity_registry.async_remove(ent.entity_id)

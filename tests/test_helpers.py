@@ -20,6 +20,7 @@ from custom_components.opnsense.helpers import (
     config_entry_identity,
     create_opnsense_client,
     create_opnsense_client_from_config_entry,
+    firewall_nat_switch_unique_ids_from_payload,
     firewall_rule_id_from_payload,
     firewall_rule_switch_unique_ids_from_payload,
     is_carp_entry,
@@ -264,6 +265,24 @@ def test_firewall_rule_switch_unique_ids_from_payload_skips_invalid_rules() -> N
     assert ids == {
         "deviceid_firewall_rule_r1",
         "deviceid_firewall_rule_uuid_4",
+    }
+
+
+def test_firewall_nat_switch_unique_ids_from_payload_builds_nat_ids() -> None:
+    """Build native NAT unique IDs from supported NAT sections."""
+    rules: dict[str | int, Any] = {
+        "r1": {"uuid": "uuid-1"},
+        "r2": {"uuid": "uuid-2"},
+        "r3": "bad-row",
+        7: {},
+        "r4": {},
+    }
+
+    ids = firewall_nat_switch_unique_ids_from_payload("deviceid", "source_nat", rules)
+    assert ids == {
+        "deviceid_firewall_nat_source_nat_uuid_1",
+        "deviceid_firewall_nat_source_nat_uuid_2",
+        "deviceid_firewall_nat_source_nat_r4",
     }
 
 
