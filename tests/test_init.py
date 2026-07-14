@@ -1019,10 +1019,10 @@ async def test_migrate_4_to_5_uses_rule_key_when_uuid_is_missing(
 
 
 @pytest.mark.asyncio
-async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_legacy_only(
+async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_firewall_rules(
     monkeypatch: pytest.MonkeyPatch, ph_hass: Any
 ) -> None:
-    """_migrate_4_to_5 should skip firewall fetch and keep native rules when sync is disabled."""
+    """_migrate_4_to_5 should remove native firewall rules when sync is disabled."""
     ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
@@ -1070,13 +1070,20 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_legacy_
 
     assert res is True
     client.get_firewall.assert_not_called()
-    entity_registry.async_remove.assert_has_calls([call(legacy_filter.entity_id)], any_order=True)
-    assert entity_registry.async_remove.call_count == 1
+    entity_registry.async_remove.assert_has_calls(
+        [
+            call(legacy_filter.entity_id),
+            call(stale_native_firewall.entity_id),
+            call(current_native_firewall.entity_id),
+        ],
+        any_order=True,
+    )
+    assert entity_registry.async_remove.call_count == 3
     removed_entity_ids = {
         remove_call.args[0] for remove_call in entity_registry.async_remove.call_args_list
     }
-    assert stale_native_firewall.entity_id not in removed_entity_ids
-    assert current_native_firewall.entity_id not in removed_entity_ids
+    assert stale_native_firewall.entity_id in removed_entity_ids
+    assert current_native_firewall.entity_id in removed_entity_ids
     assert native_nat.entity_id not in removed_entity_ids
     ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
 
