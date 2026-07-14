@@ -624,9 +624,11 @@ async def test_async_setup_entry_retries_on_transient_validation_failures(
     )
 
     hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = AsyncMock()
-    hass.data = {}
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(hass.config_entries, "async_reload", AsyncMock())
+    hass.data.clear()
 
     with pytest.raises(ConfigEntryNotReady):
         await init_mod.async_setup_entry(hass, entry)
@@ -678,9 +680,11 @@ async def test_async_setup_entry_does_not_retry_non_transient_validation_failure
     )
 
     hass = ph_hass
-    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)
-    hass.config_entries.async_reload = AsyncMock()
-    hass.data = {}
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(hass.config_entries, "async_reload", AsyncMock())
+    hass.data.clear()
 
     with pytest.raises(exc):
         await init_mod.async_setup_entry(hass, entry)
@@ -1207,7 +1211,8 @@ async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_e
     ph_hass: HomeAssistant,
 ) -> None:
     """Missing sync_filters_and_nat should be treated as enabled for non-granular entries."""
-    ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
+    update_entry = MagicMock(return_value=True)
+    monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
         data={
@@ -1267,7 +1272,7 @@ async def test_migrate_4_to_5_non_granular_entry_defaults_sync_filters_and_nat_e
     assert stale_native_firewall.entity_id in removed_entity_ids
     assert stale_nat.entity_id in removed_entity_ids
     assert entity_registry.async_remove.call_count == 3
-    ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
+    update_entry.assert_called_once_with(entry, version=5)
 
 
 @pytest.mark.asyncio
@@ -1275,7 +1280,8 @@ async def test_migrate_4_to_5_defers_when_device_unique_id_is_missing(
     monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant
 ) -> None:
     """_migrate_4_to_5 should defer when the sync-enabled migration lacks a device unique ID."""
-    ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
+    update_entry = MagicMock(return_value=True)
+    monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
         data={
@@ -1306,7 +1312,7 @@ async def test_migrate_4_to_5_defers_when_device_unique_id_is_missing(
     res = await init_mod.async_migrate_entry(ph_hass, entry)
     assert res is False
     entity_registry.async_remove.assert_not_called()
-    ph_hass.config_entries.async_update_entry.assert_not_called()
+    update_entry.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1372,7 +1378,8 @@ async def test_migrate_4_to_5_skips_native_pruning_when_rules_payload_unavailabl
     monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant, firewall_payload: dict[str, object]
 ) -> None:
     """_migrate_4_to_5 should complete migration with legacy cleanup only when rules are unavailable."""
-    ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
+    update_entry = MagicMock(return_value=True)
+    monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
         data={
@@ -1414,7 +1421,7 @@ async def test_migrate_4_to_5_skips_native_pruning_when_rules_payload_unavailabl
         any_order=True,
     )
     assert entity_registry.async_remove.call_count == 1
-    ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
+    update_entry.assert_called_once_with(entry, version=5)
 
 
 @pytest.mark.asyncio
@@ -1469,7 +1476,8 @@ async def test_migrate_4_to_5_sync_enabled_prunes_stale_native_nat_rule_entities
     monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant
 ) -> None:
     """_migrate_4_to_5 should prune stale native NAT IDs while preserving active and unavailable NAT categories."""
-    ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
+    update_entry = MagicMock(return_value=True)
+    monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
         data={
@@ -1571,7 +1579,7 @@ async def test_migrate_4_to_5_sync_enabled_prunes_stale_native_nat_rule_entities
     assert current_nat_dnat.entity_id not in removed_entity_ids
     assert stale_nat_one_to_one.entity_id not in removed_entity_ids
     assert entity_registry.async_remove.call_count == 4
-    ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
+    update_entry.assert_called_once_with(entry, version=5)
 
 
 @pytest.mark.asyncio
