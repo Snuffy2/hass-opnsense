@@ -31,6 +31,7 @@ import custom_components.opnsense as opnsense_mod
 from custom_components.opnsense.const import (
     CONF_ENTRY_TYPE,
     CONF_GRANULAR_SYNC_OPTIONS,
+    CONF_SYNC_FIREWALL_AND_NAT,
     CONF_TLS_INSECURE,
     ENTRY_TYPE_CARP,
 )
@@ -1146,7 +1147,7 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
         CONF_USERNAME: "u",
         CONF_PASSWORD: "p",
     }
-    data[init_mod.CONF_SYNC_FIREWALL_AND_NAT] = False
+    data[CONF_SYNC_FIREWALL_AND_NAT] = False
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
         data=data,
@@ -1288,7 +1289,7 @@ async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_s
         pytest.param(
             {
                 CONF_GRANULAR_SYNC_OPTIONS: False,
-                init_mod.CONF_SYNC_FIREWALL_AND_NAT: True,
+                CONF_SYNC_FIREWALL_AND_NAT: True,
             },
             True,
             id="explicit-category-enabled",
@@ -1296,7 +1297,7 @@ async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_s
         pytest.param(
             {
                 CONF_GRANULAR_SYNC_OPTIONS: True,
-                init_mod.CONF_SYNC_FIREWALL_AND_NAT: False,
+                CONF_SYNC_FIREWALL_AND_NAT: False,
             },
             False,
             id="explicit-category-disabled",
@@ -1788,7 +1789,7 @@ async def test_async_update_listener_handles_native_firewall_entities_by_sync_st
     entry = make_config_entry(
         data={
             init_mod.CONF_DEVICE_UNIQUE_ID: "dev1",
-            init_mod.CONF_SYNC_FIREWALL_AND_NAT: sync_enabled,
+            CONF_SYNC_FIREWALL_AND_NAT: sync_enabled,
         },
         unique_id="u123",
     )
