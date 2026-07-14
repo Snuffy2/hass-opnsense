@@ -1309,3 +1309,75 @@ async def test_fix_flow_factory_validates_issue_suffix_and_payload() -> None:
     assert isinstance(flow, repairs.DeviceIDMismatchRepairFlow)
     unknown_flow = await repairs.async_create_fix_flow(hass, "unrelated", None)
     assert isinstance(unknown_flow, ConfirmRepairFlow)
+
+
+@pytest.mark.asyncio
+async def test_stored_expected_id_reload_false_retries_recovery_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loaded entry with matching expected ID should recover when resume reload fails."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    _configure_hass(hass, entry)
+    hass.config_entries.async_reload.return_value = False
+    _patch_registries(monkeypatch)
+    flow = _make_flow(hass, entry, new_device_id="dev1")
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "repair_failed"
+    hass.config_entries.async_unload.assert_awaited_once_with(entry.entry_id)
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reload_error",
+    [HomeAssistantError("reload failed"), KeyError("entry-key")],
+)
+async def test_stored_expected_id_resume_exception_recovers_reloaded_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    reload_error: BaseException,
+) -> None:
+    """Handled exceptions during resume should leave a recovery-reload trace."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    _configure_hass(hass, entry)
+    hass.config_entries.async_reload.side_effect = reload_error
+    _patch_registries(monkeypatch)
+    flow = _make_flow(hass, entry, new_device_id="dev1")
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "repair_failed"
+    hass.config_entries.async_unload.assert_awaited_once_with(entry.entry_id)
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+    hass.config_entries.async_schedule_reload.assert_called_once_with(entry.entry_id)
+
+
+@pytest.mark.asyncio
+async def test_stored_expected_id_mismatch_snapshot_blocks_recovery_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery reload is skipped when the entry no longer matches the repair snapshot."""
+    hass = MagicMock()
+    entry = _make_entry(state=ConfigEntryState.LOADED)
+    updated_entry = _make_entry(
+        entry_id=entry.entry_id,
+        device_id="mutated",
+        unique_id="mutated",
+    )
+    _configure_hass(hass, entry)
+    _patch_registries(monkeypatch)
+    hass.config_entries.async_reload.return_value = False
+    hass.config_entries.async_get_entry.side_effect = [entry, updated_entry]
+    flow = _make_flow(hass, entry, new_device_id="dev1")
+
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "repair_failed"
+    assert hass.config_entries.async_schedule_reload.call_count == 0

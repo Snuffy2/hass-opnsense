@@ -339,7 +339,16 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                         entry_title=entry.title,
                     )
                 return self.async_abort(reason="repair_failed")
-            return await self._async_resume_repaired_entry(entry)
+            resume_result = await self._async_resume_repaired_entry(entry)
+            if entry_was_loaded and resume_result.get("reason") == "repair_failed":
+                self._schedule_recovery_reload(
+                    data_snapshot=entry_data_snapshot,
+                    options_snapshot=entry_options_snapshot,
+                    unique_id_snapshot=entry_unique_id_snapshot,
+                    entry_id=entry.entry_id,
+                    entry_title=entry.title,
+                )
+            return resume_result
         if stored_device_id != self._old_device_id:
             return self.async_abort(reason="entry_changed")
 

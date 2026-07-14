@@ -3531,6 +3531,31 @@ async def test_compile_nat_rule_switches(
 
 
 @pytest.mark.asyncio
+async def test_compile_nat_rule_switches_uses_rule_key_for_missing_uuid(
+    coordinator: MagicMock, make_config_entry: Callable[..., MockConfigEntry]
+) -> None:
+    """Use the NAT payload mapping key when uuid is missing."""
+    config_entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "dev1"})
+    state = {
+        "firewall": {
+            "nat": {
+                "source_nat": {
+                    "fallback-key": {
+                        "description": "Source NAT Rule",
+                        "%interface": "wan",
+                        "enabled": "1",
+                    }
+                }
+            }
+        }
+    }
+    ents = await _compile_nat_source_rules_switches(config_entry, coordinator, state)
+    assert len(ents) == 1
+    assert isinstance(ents[0], OPNsenseNATRuleSwitch)
+    assert ents[0].entity_description.key == "firewall.nat.source_nat.fallback-key"
+
+
+@pytest.mark.asyncio
 async def test_compile_new_api_empty_state(
     coordinator: MagicMock, make_config_entry: Callable[..., MockConfigEntry]
 ) -> None:
