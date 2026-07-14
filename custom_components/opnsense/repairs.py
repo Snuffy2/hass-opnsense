@@ -364,8 +364,14 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             entry_ready, _ = await _async_prepare_entry_for_repair(self.hass, entry)
             if not entry_ready:
                 return self.async_abort(reason="cannot_unload")
-            current_entry = self.hass.config_entries.async_get_entry(self._entry_id)
-            if current_entry is None or is_carp_entry(current_entry):
+            current_entry = _get_entry_matching_snapshot(
+                self.hass,
+                self._entry_id,
+                entry_data_snapshot,
+                entry_options_snapshot,
+                entry_unique_id_snapshot,
+            )
+            if current_entry is None:
                 return self.async_abort(reason="entry_changed")
             if not self._cleanup_entry_registries(current_entry):
                 return self.async_abort(reason="repair_failed")
@@ -413,7 +419,7 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         if duplicate is not None:
             return self.async_abort(reason="already_configured")
 
-        entry_ready, _entry_was_loaded = await _async_prepare_entry_for_repair(self.hass, entry)
+        entry_ready, entry_was_loaded = await _async_prepare_entry_for_repair(self.hass, entry)
         if not entry_ready:
             return self.async_abort(reason="cannot_unload")
 
@@ -441,13 +447,14 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 "Device-ID repair did not finish for %s; cannot update config entry",
                 entry.title,
             )
-            self._schedule_recovery_reload(
-                data_snapshot=entry_data_snapshot,
-                options_snapshot=entry_options_snapshot,
-                unique_id_snapshot=entry_unique_id_snapshot,
-                entry_id=entry.entry_id,
-                entry_title=entry.title,
-            )
+            if entry_was_loaded:
+                self._schedule_recovery_reload(
+                    data_snapshot=entry_data_snapshot,
+                    options_snapshot=entry_options_snapshot,
+                    unique_id_snapshot=entry_unique_id_snapshot,
+                    entry_id=entry.entry_id,
+                    entry_title=entry.title,
+                )
             return self.async_abort(reason="repair_failed")
 
         if not updated:
@@ -455,13 +462,14 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 "Device-ID repair did not finish for %s; config-entry update made no changes",
                 entry.title,
             )
-            self._schedule_recovery_reload(
-                data_snapshot=entry_data_snapshot,
-                options_snapshot=entry_options_snapshot,
-                unique_id_snapshot=entry_unique_id_snapshot,
-                entry_id=entry.entry_id,
-                entry_title=entry.title,
-            )
+            if entry_was_loaded:
+                self._schedule_recovery_reload(
+                    data_snapshot=entry_data_snapshot,
+                    options_snapshot=entry_options_snapshot,
+                    unique_id_snapshot=entry_unique_id_snapshot,
+                    entry_id=entry.entry_id,
+                    entry_title=entry.title,
+                )
             return self.async_abort(reason="repair_failed")
 
         post_update_entry_data_snapshot: dict[str, object] = {
