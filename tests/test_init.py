@@ -1151,9 +1151,8 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
     client = MagicMock()
     client.get_firewall = AsyncMock(return_value={"rules": {}})
     client.async_close = AsyncMock()
-    monkeypatch.setattr(
-        init_mod, "create_opnsense_client_from_config_entry", MagicMock(return_value=client)
-    )
+    create_client = MagicMock(return_value=client)
+    monkeypatch.setattr(init_mod, "create_opnsense_client_from_config_entry", create_client)
 
     legacy_filter = _RegistryEntity("switch.filter", "deviceid_filter_123")
     stale_native_firewall = _RegistryEntity(
@@ -1199,6 +1198,7 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
     assert current_native_firewall.entity_id in removed_entity_ids
     assert native_nat.entity_id in removed_entity_ids
     ph_hass.config_entries.async_update_entry.assert_called_once_with(entry, version=5)
+    create_client.assert_not_called()
 
 
 @pytest.mark.asyncio

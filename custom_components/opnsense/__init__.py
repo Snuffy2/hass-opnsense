@@ -161,6 +161,21 @@ def _align_aiopnsense_log_level() -> None:
     aiopnsense_logger.setLevel(_LOGGER.level)
 
 
+def _is_firewall_sync_enabled(config_entry: ConfigEntry) -> bool:
+    """Return whether firewall and NAT synchronization is enabled.
+
+    Args:
+        config_entry: Config entry containing synchronization settings.
+
+    Returns:
+        bool: ``True`` when firewall and NAT data should be synchronized.
+    """
+    return config_entry.data.get(
+        CONF_SYNC_FIREWALL_AND_NAT,
+        DEFAULT_SYNC_OPTION_VALUE,
+    )
+
+
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle config-entry option updates and schedule integration reload.
 
@@ -766,7 +781,7 @@ async def _migrate_3_to_4(
 async def _migrate_4_to_5(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    migration_client: OPNsenseClient,
+    migration_client: OPNsenseClient | None,
 ) -> bool:
     """Prune stale rule switch entities during migration from 4 to 5.
 
@@ -782,12 +797,12 @@ async def _migrate_4_to_5(
     entity_registry = er.async_get(hass)
     current_firewall_unique_ids: set[str] | None = None
     current_native_nat_unique_ids: dict[str, set[str]] = {}
-    sync_firewall_rules: bool = config_entry.data.get(
-        CONF_SYNC_FIREWALL_AND_NAT,
-        DEFAULT_SYNC_OPTION_VALUE,
-    )
+    sync_firewall_rules = _is_firewall_sync_enabled(config_entry)
 
     if sync_firewall_rules:
+        if migration_client is None:
+            _LOGGER.error("Missing migration client for Migration to Version 5")
+            return False
         try:
             firewall = await migration_client.get_firewall()
         except OPNsenseError as e:
@@ -913,7 +928,8 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
     migration_client: OPNsenseClient | None = None
     try:
-        if version in (2, 3, 4):
+        sync_enabled = _is_firewall_sync_enabled(config_entry)
+        if version in (2, 3) or (version == 4 and sync_enabled):
             migration_client = create_opnsense_client_from_config_entry(
                 hass=hass,
                 config_entry=config_entry,
@@ -940,9 +956,6 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             version = 4
 
         if version == 4:
-            if migration_client is None:
-                _LOGGER.error("Missing migration client for Migration to Version 5")
-                return False
             v4to5: bool = await _migrate_4_to_5(hass, config_entry, migration_client)
             if not v4to5:
                 return False
