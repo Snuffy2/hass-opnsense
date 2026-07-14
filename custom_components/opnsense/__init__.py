@@ -68,6 +68,7 @@ LEGACY_RULE_ENTITY_TOKENS: tuple[str, ...] = (
     "_nat_outbound_",
 )
 NATIVE_FIREWALL_RULE_ENTITY_MARKER = "_firewall_rule_"
+NATIVE_FIREWALL_NAT_ENTITY_MARKER = "_firewall_nat_"
 
 
 @dataclass
@@ -767,7 +768,10 @@ async def _migrate_4_to_5(
         should_remove = any(token in ent.unique_id for token in LEGACY_RULE_ENTITY_TOKENS)
         if (
             not should_remove
-            and NATIVE_FIREWALL_RULE_ENTITY_MARKER in ent.unique_id
+            and (
+                NATIVE_FIREWALL_RULE_ENTITY_MARKER in ent.unique_id
+                or (not sync_firewall_rules and NATIVE_FIREWALL_NAT_ENTITY_MARKER in ent.unique_id)
+            )
             and ent.unique_id not in current_firewall_unique_ids
         ):
             should_remove = True
