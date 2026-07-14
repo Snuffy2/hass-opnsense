@@ -1208,11 +1208,11 @@ async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_
 
 
 @pytest.mark.asyncio
-async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_sync(
+async def test_migrate_4_to_5_non_granular_entry_missing_category_key_preserves_sync(
     monkeypatch: pytest.MonkeyPatch,
     ph_hass: HomeAssistant,
 ) -> None:
-    """A non-granular entry without a category key should remove firewall/NAT entities."""
+    """A non-granular entry without a category key should preserve current rule entities."""
     update_entry = MagicMock(return_value=True)
     monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
     entry = MockConfigEntry(
@@ -1248,6 +1248,13 @@ async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_s
         "switch.firewall_nat",
         slugify("deviceid.firewall.nat.source_nat.removed_source"),
     )
+    current_native_firewall = _RegistryEntity(
+        "switch.firewall_rule_current", "deviceid_firewall_rule_current"
+    )
+    current_nat = _RegistryEntity(
+        "switch.firewall_nat_current",
+        slugify("deviceid.firewall.nat.source_nat.current"),
+    )
 
     entity_registry = MagicMock()
     entity_registry.async_remove = MagicMock()
@@ -1259,20 +1266,24 @@ async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_s
             legacy_filter,
             stale_native_firewall,
             stale_nat,
+            current_native_firewall,
+            current_nat,
         ],
     )
 
     res = await init_mod.async_migrate_entry(ph_hass, entry)
 
     assert res is True
-    create_client.assert_not_called()
-    client.get_firewall.assert_not_awaited()
+    create_client.assert_called_once()
+    client.get_firewall.assert_awaited_once()
     removed_entity_ids = {
         remove_call.args[0] for remove_call in entity_registry.async_remove.call_args_list
     }
     assert legacy_filter.entity_id in removed_entity_ids
     assert stale_native_firewall.entity_id in removed_entity_ids
     assert stale_nat.entity_id in removed_entity_ids
+    assert current_native_firewall.entity_id not in removed_entity_ids
+    assert current_nat.entity_id not in removed_entity_ids
     assert entity_registry.async_remove.call_count == 3
     update_entry.assert_called_once_with(entry, version=5)
 
@@ -1281,11 +1292,7 @@ async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_s
     ("data", "expected"),
     [
         pytest.param({}, True, id="legacy-default"),
-        pytest.param(
-            {CONF_GRANULAR_SYNC_OPTIONS: False},
-            False,
-            id="non-granular-fallback",
-        ),
+        pytest.param({CONF_GRANULAR_SYNC_OPTIONS: False}, True, id="non-granular-default"),
         pytest.param(
             {
                 CONF_GRANULAR_SYNC_OPTIONS: False,
@@ -1304,10 +1311,10 @@ async def test_migrate_4_to_5_non_granular_entry_missing_category_key_disables_s
         ),
     ],
 )
-def test_is_firewall_sync_enabled_uses_category_then_mode_then_default(
+def test_is_firewall_sync_enabled_uses_category_then_default(
     data: dict[str, Any], expected: bool
 ) -> None:
-    """Migration sync state should preserve explicit, mode, and legacy defaults."""
+    """Migration sync state should preserve explicit and runtime defaults."""
     entry = MagicMock()
     entry.data = data
 
