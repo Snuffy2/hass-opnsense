@@ -18,7 +18,11 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 import custom_components.opnsense as opnsense_mod
-from custom_components.opnsense.const import CONF_ENTRY_TYPE, ENTRY_TYPE_CARP
+from custom_components.opnsense.const import (
+    CONF_ENTRY_TYPE,
+    CONF_GRANULAR_SYNC_OPTIONS,
+    ENTRY_TYPE_CARP,
+)
 from tests.utilities import patch_opnsense_client
 
 init_mod: Any = opnsense_mod
@@ -1019,20 +1023,32 @@ async def test_migrate_4_to_5_uses_rule_key_when_uuid_is_missing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sync_enabled", "granular_sync_enabled"),
+    [(False, None), (None, False)],
+    ids=["explicitly-disabled", "granular-sync-disabled"],
+)
 async def test_migrate_4_to_5_sync_disabled_skips_firewall_fetch_removes_native_firewall_and_nat_rules(
-    monkeypatch: pytest.MonkeyPatch, ph_hass: Any
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    sync_enabled: bool | None,
+    granular_sync_enabled: bool | None,
 ) -> None:
     """_migrate_4_to_5 should remove native firewall and NAT rules when sync is disabled."""
     ph_hass.config_entries.async_update_entry = MagicMock(return_value=True)
+    data: dict[str, Any] = {
+        init_mod.CONF_DEVICE_UNIQUE_ID: "deviceid",
+        CONF_URL: "http://1.2.3.4",
+        CONF_USERNAME: "u",
+        CONF_PASSWORD: "p",
+    }
+    if sync_enabled is not None:
+        data[init_mod.CONF_SYNC_FIREWALL_AND_NAT] = sync_enabled
+    if granular_sync_enabled is not None:
+        data[CONF_GRANULAR_SYNC_OPTIONS] = granular_sync_enabled
     entry = MockConfigEntry(
         domain=init_mod.DOMAIN,
-        data={
-            init_mod.CONF_DEVICE_UNIQUE_ID: "deviceid",
-            init_mod.CONF_SYNC_FIREWALL_AND_NAT: False,
-            CONF_URL: "http://1.2.3.4",
-            CONF_USERNAME: "u",
-            CONF_PASSWORD: "p",
-        },
+        data=data,
         version=4,
     )
     entry.add_to_hass(ph_hass)

@@ -32,6 +32,7 @@ from .const import (
     CONF_DEVICE_TRACKER_ENABLED,
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
     CONF_DEVICE_UNIQUE_ID,
+    CONF_GRANULAR_SYNC_OPTIONS,
     CONF_SYNC_FIREWALL_AND_NAT,
     CONF_TLS_INSECURE,
     DEFAULT_DEVICE_TRACKER_ENABLED,
@@ -734,7 +735,8 @@ async def _migrate_4_to_5(
     entity_registry = er.async_get(hass)
     current_firewall_unique_ids: set[str] = set()
     sync_firewall_rules: bool = config_entry.data.get(
-        CONF_SYNC_FIREWALL_AND_NAT, DEFAULT_SYNC_OPTION_VALUE
+        CONF_SYNC_FIREWALL_AND_NAT,
+        config_entry.data.get(CONF_GRANULAR_SYNC_OPTIONS, DEFAULT_SYNC_OPTION_VALUE),
     )
 
     if sync_firewall_rules:
