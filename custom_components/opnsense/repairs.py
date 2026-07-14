@@ -241,6 +241,37 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
             )
         return self.async_abort(reason="repair_failed")
 
+    def _cleanup_entry_registries(self, entry: ConfigEntry) -> bool:
+        """Remove the entry's entities and device associations from the registries.
+
+        Args:
+            entry: Config entry whose old registry data should be removed.
+
+        Returns:
+            bool: ``True`` when all registry cleanup operations succeeded.
+        """
+        entity_registry = er.async_get(self.hass)
+        device_registry = dr.async_get(self.hass)
+        entities_to_cleanup = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+        devices_to_cleanup = dr.async_entries_for_config_entry(device_registry, entry.entry_id)
+
+        try:
+            for entity in entities_to_cleanup:
+                entity_registry.async_remove(entity.entity_id)
+
+            for device in devices_to_cleanup:
+                device_registry.async_update_device(
+                    device.id,
+                    remove_config_entry_id=entry.entry_id,
+                )
+        except HomeAssistantError, KeyError:
+            _LOGGER.exception(
+                "Device-ID repair did not finish for %s; registry cleanup failed",
+                entry.title,
+            )
+            return False
+        return True
+
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
     ) -> RepairsFlowResult:
@@ -267,6 +298,11 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
         entry_unique_id_snapshot = entry.unique_id
         stored_device_id = entry.data.get(CONF_DEVICE_UNIQUE_ID)
         if stored_device_id == self._expected_device_id:
+            entry_ready, _ = await _async_prepare_entry_for_repair(self.hass, entry)
+            if not entry_ready:
+                return self.async_abort(reason="cannot_unload")
+            if not self._cleanup_entry_registries(entry):
+                return self.async_abort(reason="repair_failed")
             return await self._async_resume_repaired_entry(entry)
         if stored_device_id != self._old_device_id:
             return self.async_abort(reason="entry_changed")
@@ -396,26 +432,7 @@ class DeviceIDMismatchRepairFlow(RepairsFlow):
                 )
                 return False
 
-        entity_registry = er.async_get(self.hass)
-        device_registry = dr.async_get(self.hass)
-        entities_to_cleanup = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
-        devices_to_cleanup = dr.async_entries_for_config_entry(device_registry, entry.entry_id)
-
-        try:
-            for entity in entities_to_cleanup:
-                entity_registry.async_remove(entity.entity_id)
-
-            for device in devices_to_cleanup:
-                device_registry.async_update_device(
-                    device.id,
-                    remove_config_entry_id=entry.entry_id,
-                )
-        except HomeAssistantError, KeyError:
-            _LOGGER.exception(
-                "Device-ID repair did not finish for %s; registry cleanup failed after "
-                "config-entry update",
-                entry.title,
-            )
+        if not self._cleanup_entry_registries(entry):
             if not await _schedule_reload():
                 _schedule_recovery_reload(
                     data_snapshot=post_update_entry_data_snapshot,
