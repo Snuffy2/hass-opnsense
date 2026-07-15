@@ -49,6 +49,67 @@ def dict_get(data: MutableMapping[str, Any], path: str, default: Any | None = No
     return result
 
 
+def normalize_arp_mac(mac: object) -> str:
+    """Normalize a MAC address from an ARP payload.
+
+    Args:
+        mac: Raw MAC address value.
+
+    Returns:
+        str: Lowercase, colon-separated MAC address, or an empty string.
+    """
+    if not isinstance(mac, str):
+        return ""
+    return mac.strip().lower().replace("-", ":")
+
+
+def get_arp_mac(entry: Mapping[str, Any]) -> str:
+    """Return a normalized MAC address from an ARP payload.
+
+    Args:
+        entry: ARP payload mapping.
+
+    Returns:
+        str: Normalized MAC address, or an empty string when absent.
+    """
+    mac: object = entry.get("mac")
+    if not isinstance(mac, str):
+        mac = entry.get("mac-address")
+    return normalize_arp_mac(mac)
+
+
+def get_arp_ip(entry: Mapping[str, Any]) -> str:
+    """Return an IP address from an ARP payload.
+
+    Args:
+        entry: ARP payload mapping.
+
+    Returns:
+        str: Stripped IP address, or an empty string when absent.
+    """
+    ip: object = entry.get("ip")
+    if not isinstance(ip, str):
+        ip = entry.get("ip-address")
+    return ip.strip() if isinstance(ip, str) else ""
+
+
+def get_smart_device_name(smart_device: Mapping[str, Any]) -> str:
+    """Return a SMART device identifier, preferring ``device`` over ``ident``.
+
+    Args:
+        smart_device: SMART device payload mapping.
+
+    Returns:
+        str: Stripped device identifier, or an empty string when absent.
+    """
+    device_name = smart_device.get("device")
+    if not isinstance(device_name, str) or not device_name.strip():
+        device_name = smart_device.get("ident")
+    if not isinstance(device_name, str):
+        return ""
+    return device_name.strip()
+
+
 def firewall_rule_id_from_payload(rule_key: Any, rule: Any) -> str | None:
     """Get a firewall rule ID from an aiopnsense rule payload.
 

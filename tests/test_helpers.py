@@ -23,8 +23,12 @@ from custom_components.opnsense.helpers import (
     firewall_nat_switch_unique_ids_from_payload,
     firewall_rule_id_from_payload,
     firewall_rule_switch_unique_ids_from_payload,
+    get_arp_ip,
+    get_arp_mac,
+    get_smart_device_name,
     is_carp_entry,
     is_usable_carp_vip,
+    normalize_arp_mac,
 )
 
 
@@ -64,6 +68,67 @@ def test_coerce_bool_parses_bool_like_values(value: Any, expected: bool) -> None
 def test_coerce_bool_returns_none_for_unknown_values(value: Any) -> None:
     """Verify unknown values are not coerced into a boolean."""
     assert coerce_bool(value) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("AA:BB:CC", "aa:bb:cc", id="colon-separated"),
+        pytest.param(" AA-BB-CC ", "aa:bb:cc", id="hyphen-separated"),
+        pytest.param(None, "", id="non-string"),
+    ],
+)
+def test_normalize_arp_mac(value: object, expected: str) -> None:
+    """Normalize ARP MAC values into the shared representation."""
+    assert normalize_arp_mac(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        pytest.param({"mac": "AA:BB:CC"}, "aa:bb:cc", id="normalized-key"),
+        pytest.param({"mac-address": "AA-BB-CC"}, "aa:bb:cc", id="raw-key"),
+        pytest.param(
+            {"mac": 1, "mac-address": "AA-BB-CC"},
+            "aa:bb:cc",
+            id="fallback-key",
+        ),
+    ],
+)
+def test_get_arp_mac(entry: dict[str, Any], expected: str) -> None:
+    """Read normalized and raw ARP MAC keys through one helper."""
+    assert get_arp_mac(entry) == expected
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        pytest.param({"ip": " 192.0.2.1 "}, "192.0.2.1", id="normalized-key"),
+        pytest.param({"ip-address": " 192.0.2.2 "}, "192.0.2.2", id="raw-key"),
+        pytest.param({"ip": 1}, "", id="invalid-value"),
+    ],
+)
+def test_get_arp_ip(entry: dict[str, Any], expected: str) -> None:
+    """Read and strip normalized and raw ARP IP keys through one helper."""
+    assert get_arp_ip(entry) == expected
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        pytest.param({"device": " nvme0 "}, "nvme0", id="device"),
+        pytest.param({"ident": " SERIAL-ONLY "}, "SERIAL-ONLY", id="ident-fallback"),
+        pytest.param(
+            {"device": "", "ident": "serial-only"},
+            "serial-only",
+            id="blank-device",
+        ),
+        pytest.param({"device": 1}, "", id="invalid-values"),
+    ],
+)
+def test_get_smart_device_name(entry: dict[str, Any], expected: str) -> None:
+    """Read SMART device identifiers from the shared helper."""
+    assert get_smart_device_name(entry) == expected
 
 
 @pytest.mark.parametrize(

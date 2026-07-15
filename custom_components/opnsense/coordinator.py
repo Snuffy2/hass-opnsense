@@ -30,7 +30,7 @@ from .const import (
     CONF_SYNC_VPN,
     DEFAULT_SYNC_OPTION_VALUE,
 )
-from .helpers import dict_get, is_carp_entry
+from .helpers import dict_get, get_smart_device_name, is_carp_entry
 from .repairs import async_create_device_id_mismatch_issue
 
 if TYPE_CHECKING:
@@ -44,23 +44,6 @@ _PREVIOUS_STATE_KEYS: tuple[str, ...] = (
     "openvpn",
     "wireguard",
 )
-
-
-def _get_smart_device_key(smart_device: Mapping[str, Any]) -> str:
-    """Return the SMART device identifier, preferring `device` over `ident`.
-
-    Args:
-        smart_device: Raw SMART device row from coordinator payload.
-
-    Returns:
-        str: Device identifier used for SMART detail lookups.
-    """
-    device_name = smart_device.get("device")
-    if not isinstance(device_name, str) or not device_name.strip():
-        device_name = smart_device.get("ident")
-    if not isinstance(device_name, str):
-        return ""
-    return device_name.strip()
 
 
 class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
@@ -157,7 +140,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                         for smart_device in smart_devices:
                             if not isinstance(smart_device, Mapping):
                                 continue
-                            device_name = _get_smart_device_key(smart_device)
+                            device_name = get_smart_device_name(smart_device)
                             if not device_name:
                                 continue
                             smart_info[device_name] = await method(
