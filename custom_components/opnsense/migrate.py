@@ -412,6 +412,8 @@ async def _migrate_4_to_5(
                                 nat_rules,
                             )
                         )
+                    else:
+                        current_native_nat_unique_ids[nat_section] = set()
 
             elif nat is not None:
                 _LOGGER.warning(

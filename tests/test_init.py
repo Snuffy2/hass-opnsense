@@ -1614,7 +1614,7 @@ async def test_migrate_4_to_5_legacy_entity_remove_failure_continues_migration(
 async def test_migrate_4_to_5_sync_enabled_prunes_stale_native_nat_rule_entities(
     monkeypatch: pytest.MonkeyPatch, ph_hass: HomeAssistant
 ) -> None:
-    """_migrate_4_to_5 should prune stale native NAT IDs while preserving active and unavailable NAT categories."""
+    """_migrate_4_to_5 should prune stale native NAT IDs for explicit empty NAT sections."""
     update_entry = MagicMock(return_value=True)
     monkeypatch.setattr(ph_hass.config_entries, "async_update_entry", update_entry)
     entry = MockConfigEntry(
@@ -1707,6 +1707,7 @@ async def test_migrate_4_to_5_sync_enabled_prunes_stale_native_nat_rule_entities
             call(stale_nat_source.entity_id),
             call(stale_nat_dnat.entity_id),
             call(stale_nat_npt.entity_id),
+            call(stale_nat_one_to_one.entity_id),
         ],
         any_order=True,
     )
@@ -1716,8 +1717,8 @@ async def test_migrate_4_to_5_sync_enabled_prunes_stale_native_nat_rule_entities
     assert current_native_firewall.entity_id not in removed_entity_ids
     assert current_nat_source.entity_id not in removed_entity_ids
     assert current_nat_dnat.entity_id not in removed_entity_ids
-    assert stale_nat_one_to_one.entity_id not in removed_entity_ids
-    assert entity_registry.async_remove.call_count == 4
+    assert stale_nat_one_to_one.entity_id in removed_entity_ids
+    assert entity_registry.async_remove.call_count == 5
     update_entry.assert_called_once_with(entry, version=5)
 
 
