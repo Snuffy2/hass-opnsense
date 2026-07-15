@@ -8,7 +8,7 @@ import ipaddress
 import logging
 import re
 from typing import Any
-from urllib.parse import ParseResult, quote_plus, urlparse
+from urllib.parse import quote_plus, urlparse
 
 import aiohttp
 from aiohttp import ClientError
@@ -458,7 +458,6 @@ def _get_connection_error_details(
     user_input: Mapping[str, Any],
 ) -> tuple[str, str] | None:
     """Map connection-level validation exceptions to config-flow error keys."""
-
     if isinstance(error, TimeoutError):
         return (
             "connect_timeout",

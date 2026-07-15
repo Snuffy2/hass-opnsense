@@ -32,12 +32,7 @@ from .const import (
 )
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseBaseEntity
-from .helpers import (
-    dict_get,
-    get_arp_ip,
-    get_arp_mac,
-    normalize_arp_mac,
-)
+from .helpers import dict_get, get_arp_ip, get_arp_mac, normalize_arp_mac
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
