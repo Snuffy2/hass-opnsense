@@ -51,7 +51,7 @@ from .const import (
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity, OPNsenseEntityCoordinator
 from .helpers import coerce_bool, dict_get, get_smart_device_name, is_carp_entry
-from .repair_reconciliation import record_desired_entities, record_scoped_reconciliation
+from .repair_reconciliation import record_desired_entities
 from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 from .traffic_coordinator import OPNsenseLiveTrafficCoordinator
 
@@ -1885,12 +1885,7 @@ async def async_setup_entry(
             and isinstance(carp.get("interfaces"), list)
             and all(_is_valid_carp_vip_interface_row(row) for row in carp["interfaces"])
         }
-        record_desired_entities(
-            config_entry,
-            "sensor",
-            entities if all(carp_authority.values()) else None,
-        )
-        record_scoped_reconciliation(config_entry, "sensor", entities, carp_authority)
+        record_desired_entities(config_entry, "sensor", entities, carp_authority)
         async_add_entities(entities)
 
         async def async_compile_carp_runtime_entities() -> list:
@@ -2019,10 +2014,7 @@ async def async_setup_entry(
         )
 
     _LOGGER.debug("[sensor async_setup_entry] entities: %s", len(entities))
-    record_desired_entities(
-        config_entry, "sensor", entities if all(scope_authority.values()) else None
-    )
-    record_scoped_reconciliation(config_entry, "sensor", entities, scope_authority)
+    record_desired_entities(config_entry, "sensor", entities, scope_authority)
     async_add_entities(entities)
 
     async def async_compile_runtime_entities() -> list:

@@ -23,7 +23,7 @@ from .const import (
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity
 from .helpers import coerce_bool, dict_get, firewall_rule_id_from_payload
-from .repair_reconciliation import record_desired_entities, record_scoped_reconciliation
+from .repair_reconciliation import record_desired_entities
 from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -778,12 +778,7 @@ async def async_setup_entry(
             scope_authority["unbound"] = False
 
     _LOGGER.debug("[switch async_setup_entry] entities: %s", len(entities))
-    record_desired_entities(
-        config_entry,
-        "switch",
-        entities if all(scope_authority.values()) else None,
-    )
-    record_scoped_reconciliation(config_entry, "switch", entities, scope_authority)
+    record_desired_entities(config_entry, "switch", entities, scope_authority)
     async_add_entities(entities)
 
     async def async_compile_runtime_entities() -> list:

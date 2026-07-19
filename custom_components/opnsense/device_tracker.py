@@ -43,11 +43,7 @@ from .helpers import (
     get_arp_mac,
     normalize_arp_mac,
 )
-from .repair_reconciliation import (
-    is_reconciliation_active,
-    record_desired_entities,
-    record_scoped_reconciliation,
-)
+from .repair_reconciliation import is_reconciliation_active, record_desired_entities
 from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -387,7 +383,6 @@ async def async_setup_entry(
     if not isinstance(state, MutableMapping):
         _LOGGER.error("Missing state data in device tracker async_setup_entry")
         return
-    reconciliation_complete = True
 
     arp_inventory = dict_get(state, "arp_table")
     arp_entries = arp_inventory
@@ -400,11 +395,7 @@ async def async_setup_entry(
     )
     track_all_inventory = isinstance(arp_entries, list)
     if not isinstance(arp_entries, list):
-        if not has_configured_macs:
-            reconciliation_complete = False
         arp_entries = []
-    elif not has_configured_macs:
-        reconciliation_complete = _track_all_arp_entries_are_complete(arp_entries)
     track_all_inventory_is_authoritative = (
         coordinator.category_is_authoritative("arp_table")
         and track_all_inventory
@@ -471,11 +462,6 @@ async def async_setup_entry(
 
     _LOGGER.debug("[device_tracker async_setup_entry] entities: %s", len(entities))
     record_desired_entities(
-        config_entry,
-        "device_tracker",
-        entities if has_configured_macs or reconciliation_complete else None,
-    )
-    record_scoped_reconciliation(
         config_entry,
         "device_tracker",
         entities,

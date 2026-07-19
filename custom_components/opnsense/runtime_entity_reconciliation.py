@@ -146,11 +146,6 @@ class _RuntimeEntityReconciler:
         self._remove_coordinator_listener: Callable[[], None] | None = None
         self._cleanup_registered = False
 
-    @property
-    def remove_coordinator_listener(self) -> Callable[[], None] | None:
-        """Return the coordinator listener unregister callback if available."""
-        return self._remove_coordinator_listener
-
     @staticmethod
     def _identity_or_none(entity: Entity) -> tuple[tuple[str, str], str | None] | None:
         """Resolve stable identity tokens or return ``None`` when unavailable."""

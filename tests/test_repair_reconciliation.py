@@ -24,8 +24,6 @@ from custom_components.opnsense.repair_reconciliation import (
     is_reconciliation_active,
     parse_repair_marker,
     record_desired_entities,
-    record_scope_authority,
-    record_scoped_reconciliation,
 )
 
 
@@ -794,48 +792,3 @@ def test_record_desired_entities_uses_active_reconciliation_state() -> None:
     assert "new_sensor" in {
         identity[2] for identity in entry.runtime_data.repair_reconciliation.desired_identities
     }
-
-
-@pytest.mark.parametrize("runtime_value", [None, object()])
-def test_record_scope_authority_ignores_wrong_runtime_object(runtime_value: object) -> None:
-    """Scope authority ignores absent and unrelated runtime reconciliation objects."""
-    entry = _config_entry_with_runtime_data(SimpleNamespace(repair_reconciliation=runtime_value))
-
-    record_scope_authority(entry, "sensor", {"interfaces": True})
-
-
-def test_record_scope_authority_respects_active_state() -> None:
-    """Scope authority is recorded only while reconciliation remains active."""
-    entry = _config_entry_with_runtime_data(SimpleNamespace())
-    reconciliation = RepairReconciliation(MagicMock(), entry, RepairMarker(1, "old", "new"))
-    entry.runtime_data.repair_reconciliation = reconciliation
-
-    record_scope_authority(
-        entry,
-        "sensor",
-        {"interfaces": True, "telemetry": False},
-    )
-    reconciliation.mark_complete()
-    record_scope_authority(entry, "switch", {"services": True})
-
-    assert reconciliation.authoritative_scopes == {("sensor", "interfaces")}
-
-
-def test_record_scoped_reconciliation_uses_active_reconciliation() -> None:
-    """Scoped discovery records completion, desired identity, and authority together."""
-    entry = _config_entry_with_runtime_data(SimpleNamespace())
-    reconciliation = RepairReconciliation(MagicMock(), entry, RepairMarker(1, "old", "new"))
-    entry.runtime_data.repair_reconciliation = reconciliation
-    entity = Entity()
-    entity._attr_unique_id = "new_sensor"
-
-    record_scoped_reconciliation(
-        entry,
-        "sensor",
-        [entity],
-        {"interfaces": True, "telemetry": False},
-    )
-
-    assert reconciliation.completed_platform_domains == {"sensor"}
-    assert reconciliation.desired_identities == {("sensor", DOMAIN, "new_sensor")}
-    assert reconciliation.authoritative_scopes == {("sensor", "interfaces")}

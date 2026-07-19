@@ -332,33 +332,6 @@ def record_desired_entities(
         reconciliation.record_desired_entities(platform_domain, entities, scope_authority)
 
 
-def record_scope_authority(
-    config_entry: ConfigEntry,
-    platform_domain: PlatformDomain,
-    scope_authority: Mapping[str, bool],
-) -> None:
-    """Record authoritative category scopes independently of platform completion."""
-    reconciliation = config_entry.runtime_data.repair_reconciliation
-    if not isinstance(reconciliation, RepairReconciliation) or not reconciliation.active:
-        return
-    domain = _platform_domain_value(platform_domain)
-    reconciliation.authoritative_scopes.update(
-        (domain, scope) for scope, authoritative in scope_authority.items() if authoritative
-    )
-
-
-def record_scoped_reconciliation(
-    config_entry: ConfigEntry,
-    platform_domain: PlatformDomain,
-    entities: Iterable[Entity],
-    scope_authority: Mapping[str, bool],
-) -> None:
-    """Record desired entities, platform completion, and per-category authority."""
-    reconciliation = config_entry.runtime_data.repair_reconciliation
-    if isinstance(reconciliation, RepairReconciliation) and reconciliation.active:
-        reconciliation.record_desired_entities(platform_domain, entities, scope_authority)
-
-
 def is_reconciliation_active(config_entry: ConfigEntry) -> bool:
     """Return whether this setup is performing Device ID reconciliation."""
     reconciliation = config_entry.runtime_data.repair_reconciliation

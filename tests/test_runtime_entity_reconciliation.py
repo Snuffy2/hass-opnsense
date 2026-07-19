@@ -570,10 +570,10 @@ async def test_reconciler_cleanup_stops_reconciliation_and_listener(
     assert coordinator.remove_calls == 1
 
 
-def test_reconciler_ignores_invalid_initial_identity_and_exposes_listener(
+def test_reconciler_ignores_invalid_initial_identity_and_registers_listener(
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
-    """Invalid initial identities are ignored and the listener remover is exposed."""
+    """Invalid initial identities are ignored and the listener is registered."""
     entry = make_config_entry(entry_id="entry-runtime-invalid-initial")
     entry.async_on_unload = MagicMock()
     coordinator = _RuntimeCoordinator()
@@ -591,12 +591,12 @@ def test_reconciler_ignores_invalid_initial_identity_and_exposes_listener(
         initial_entities=[_SimpleEntity(None), _SimpleEntity("valid", "   ")],
     )
 
-    assert reconciler.remove_coordinator_listener is None
     assert reconciler._seen_entity_identities == {"unique:valid"}
+    assert coordinator._listeners == []
 
     reconciler.attach_coordinator_listener(coordinator)
 
-    assert reconciler.remove_coordinator_listener is not None
+    assert coordinator._listeners == [reconciler.schedule_reconcile]
 
 
 @pytest.mark.asyncio

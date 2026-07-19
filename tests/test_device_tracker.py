@@ -1252,7 +1252,7 @@ async def test_async_setup_entry_state_not_mapping(
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_for_missing_arp_inventory(
+async def test_async_setup_entry_records_empty_entities_for_missing_arp_inventory(
     monkeypatch: pytest.MonkeyPatch,
     coordinator: MagicMock,
     make_config_entry: Callable[..., MockConfigEntry],
@@ -1264,9 +1264,15 @@ async def test_async_setup_entry_records_none_for_missing_arp_inventory(
 
     recorded: dict[str, Any] = {}
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
@@ -1277,7 +1283,8 @@ async def test_async_setup_entry_records_none_for_missing_arp_inventory(
     )
 
     assert "entities" in recorded
-    assert recorded["entities"] is None
+    assert recorded["entities"] == []
+    assert recorded["scope_authority"] == {"arp": False}
 
 
 @pytest.mark.asyncio
@@ -1293,9 +1300,15 @@ async def test_async_setup_entry_records_empty_authoritative_arp_inventory(
 
     recorded: dict[str, Any] = {}
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
@@ -1307,6 +1320,7 @@ async def test_async_setup_entry_records_empty_authoritative_arp_inventory(
 
     assert "entities" in recorded
     assert recorded["entities"] == []
+    assert recorded["scope_authority"] == {"arp": True}
 
 
 @pytest.mark.asyncio
@@ -1334,7 +1348,7 @@ async def test_repair_arp_authority_requires_result_and_complete_rows(
     setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
     captured: dict[str, bool] = {}
 
-    def capture_scoped(
+    def capture_desired(
         _entry: MockConfigEntry,
         _platform: str,
         _entities: list[Any],
@@ -1343,7 +1357,7 @@ async def test_repair_arp_authority_requires_result_and_complete_rows(
         """Capture category authority passed to repair reconciliation."""
         captured.update(scope_authority)
 
-    monkeypatch.setattr(dt_mod, "record_scoped_reconciliation", capture_scoped)
+    monkeypatch.setattr(dt_mod, "record_desired_entities", capture_desired)
 
     await dt_mod.async_setup_entry(
         MagicMock(), entry, cast("AddEntitiesCallback", lambda _entities: None)
@@ -1353,7 +1367,7 @@ async def test_repair_arp_authority_requires_result_and_complete_rows(
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_for_malformed_arp_rows_in_track_all(
+async def test_async_setup_entry_records_entities_for_malformed_arp_rows_in_track_all(
     monkeypatch: pytest.MonkeyPatch,
     coordinator: MagicMock,
     make_config_entry: Callable[..., MockConfigEntry],
@@ -1375,9 +1389,15 @@ async def test_async_setup_entry_records_none_for_malformed_arp_rows_in_track_al
     recorded: dict[str, Any] = {}
     added: list[Any] = []
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
@@ -1388,7 +1408,8 @@ async def test_async_setup_entry_records_none_for_malformed_arp_rows_in_track_al
     )
 
     assert "entities" in recorded
-    assert recorded["entities"] is None
+    assert recorded["entities"] == added
+    assert recorded["scope_authority"] == {"arp": False}
     assert len(added) == 1
     assert added[0].mac_address == "aa:bb:cc:dd:ee:ff"
 
@@ -1417,9 +1438,15 @@ async def test_async_setup_entry_records_entities_for_invalid_mapping_rows_in_tr
     recorded: dict[str, Any] = {}
     added: list[Any] = []
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
@@ -1458,9 +1485,15 @@ async def test_async_setup_entry_records_entities_for_duplicate_macs_in_track_al
     recorded: dict[str, Any] = {}
     added: list[Any] = []
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
@@ -1506,9 +1539,15 @@ async def test_async_setup_entry_track_all_completeness_ignored_in_explicit_mac_
     recorded: dict[str, Any] = {}
     added: list[Any] = []
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
@@ -1735,7 +1774,7 @@ async def test_async_setup_entry_preserves_previous_device_during_reconciliation
     )
 
     cleanup.assert_not_called()
-    record.assert_called_once_with(entry, "device_tracker", [])
+    record.assert_called_once_with(entry, "device_tracker", [], {"arp": True})
 
 
 def test_handle_coordinator_update_expires_positive(

@@ -1,7 +1,7 @@
 """These tests import the integration code via relative imports and assert behavior across sensor variants using a synthesized coordinator state."""
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Never, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -3242,9 +3242,11 @@ def capture_reconciled_desired_entities(
         _entry: MockConfigEntry,
         _platform: str,
         entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
     ) -> None:
         """Capture entities passed to ``record_desired_entities``."""
         captured["entities"] = entities
+        captured["scope_authority"] = scope_authority
 
     monkeypatch.setattr(sensor_module, "record_desired_entities", capture)
     return captured
@@ -3590,7 +3592,7 @@ async def test_carp_repair_authority_requires_vip_identity_only_for_carp_entries
     """Partial VIP rows must not authorize CARP-entry cleanup or block device CARP scope."""
     captured_authority: list[dict[str, bool]] = []
 
-    def capture_scoped(
+    def capture_desired(
         _entry: MockConfigEntry,
         _platform: str,
         _entities: Iterable[Any],
@@ -3599,7 +3601,7 @@ async def test_carp_repair_authority_requires_vip_identity_only_for_carp_entries
         """Capture scoped repair authority from sensor setup."""
         captured_authority.append(authority)
 
-    monkeypatch.setattr(sensor_module, "record_scoped_reconciliation", capture_scoped)
+    monkeypatch.setattr(sensor_module, "record_desired_entities", capture_desired)
     partial_row = {"interface": "igc0", "subnet": "192.0.2.1"}
 
     device_entry = setup_sensor_reconciliation_entry(
@@ -3715,7 +3717,7 @@ async def test_async_setup_entry_handles_partial_or_malformed_dynamic_sensor_pay
     ],
 )
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_for_partial_vpn_inventory(
+async def test_async_setup_entry_records_entities_for_partial_vpn_inventory(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     state: dict[str, Any],
@@ -3743,9 +3745,15 @@ async def test_async_setup_entry_records_none_for_partial_vpn_inventory(
 
     recorded: dict[str, Any] = {}
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     monkeypatch.setattr(sensor_module, "record_desired_entities", capture)
 
@@ -3753,7 +3761,8 @@ async def test_async_setup_entry_records_none_for_partial_vpn_inventory(
         MagicMock(), config_entry, cast("AddEntitiesCallback", lambda ents, _=False: None)
     )
     assert "entities" in recorded, description
-    assert recorded["entities"] is None, description
+    assert recorded["entities"] == [], description
+    assert recorded["scope_authority"] == {"vpn": False}, description
 
 
 def test_vnstat_rows_are_complete_defaults_and_rejects_falsy_rows() -> None:
@@ -3872,7 +3881,8 @@ async def test_async_setup_entry_marks_malformed_sensor_rows_incomplete(
         cast("AddEntitiesCallback", lambda entities, _=False: created.extend(entities)),
     )
 
-    assert captured["entities"] is None
+    assert captured["entities"] == created
+    assert False in captured["scope_authority"].values()
     assert expected_key in {entity.entity_description.key for entity in created}
 
 
@@ -4106,7 +4116,7 @@ async def test_async_setup_entry_ignores_unconsumed_openvpn_client_rows(
     ],
 )
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_or_authoritative_empty_for_inventory(
+async def test_async_setup_entry_records_entities_and_inventory_authority(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     state: dict[str, Any],
@@ -4136,14 +4146,22 @@ async def test_async_setup_entry_records_none_or_authoritative_empty_for_invento
         sync_vpn=sync_vpn,
     )
     captured = capture_reconciled_desired_entities(monkeypatch)
+    created: list[Any] = []
 
     await async_setup_entry(
-        MagicMock(), config_entry, cast("AddEntitiesCallback", lambda ents, _=False: None)
+        MagicMock(),
+        config_entry,
+        cast("AddEntitiesCallback", lambda entities, _=False: created.extend(entities)),
     )
     assert "entities" in captured
     entities = captured["entities"]
-    if expected is None or expected == []:
-        assert entities == expected
+    assert entities == created
+    if expected is None:
+        assert False in captured["scope_authority"].values()
+        return
+    if expected == []:
+        assert entities == []
+        assert all(captured["scope_authority"].values())
         return
 
     assert isinstance(entities, list)
@@ -4210,7 +4228,7 @@ async def test_async_setup_entry_reconciles_smart_inventory_by_client_capability
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_when_smart_info_is_required(
+async def test_async_setup_entry_records_authority_false_when_smart_info_is_required(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
@@ -4229,7 +4247,8 @@ async def test_async_setup_entry_records_none_when_smart_info_is_required(
     await async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", lambda ents, _=False: None)
     )
-    assert captured["entities"] is None
+    assert captured["entities"] == []
+    assert captured["scope_authority"] == {"smart": False}
 
 
 @pytest.mark.parametrize(

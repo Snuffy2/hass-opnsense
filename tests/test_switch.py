@@ -138,9 +138,11 @@ def capture_reconciled_desired_entities(
         _entry: MockConfigEntry,
         _platform: str,
         entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
     ) -> None:
         """Capture entities passed to ``record_desired_entities``."""
         captured["entities"] = entities
+        captured["scope_authority"] = scope_authority
 
     monkeypatch.setattr(switch_mod, "record_desired_entities", capture)
     return captured
@@ -208,7 +210,7 @@ def setup_switch_reconciliation_entry(
     ],
 )
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_or_authoritative_empty_for_inventory(
+async def test_async_setup_entry_records_entities_and_inventory_authority(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     state: dict[str, Any],
@@ -228,12 +230,16 @@ async def test_async_setup_entry_records_none_or_authoritative_empty_for_invento
         sync_unbound=sync_unbound,
     )
     captured = capture_reconciled_desired_entities(monkeypatch)
+    created: list[Any] = []
 
     await switch_mod.async_setup_entry(
-        MagicMock(), config_entry, cast("AddEntitiesCallback", lambda ents, _=False: None)
+        MagicMock(),
+        config_entry,
+        cast("AddEntitiesCallback", lambda entities, _=False: created.extend(entities)),
     )
     assert "entities" in captured
-    assert captured["entities"] == expected
+    assert captured["entities"] == created
+    assert all(captured["scope_authority"].values()) is (expected == [])
 
 
 @pytest.mark.parametrize(
@@ -253,7 +259,7 @@ async def test_async_setup_entry_records_none_or_authoritative_empty_for_invento
     ],
 )
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_for_partial_vpn_inventory(
+async def test_async_setup_entry_records_entities_for_partial_vpn_inventory(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     state: dict[str, Any],
@@ -276,9 +282,15 @@ async def test_async_setup_entry_records_none_for_partial_vpn_inventory(
     created: list[Any] = []
     recorded: dict[str, Any] = {}
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture switch entities emitted by setup."""
@@ -290,7 +302,8 @@ async def test_async_setup_entry_records_none_for_partial_vpn_inventory(
         MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities)
     )
     assert "entities" in recorded, description
-    assert recorded["entities"] is None, description
+    assert recorded["entities"] == created, description
+    assert recorded["scope_authority"] == {"vpn": False}, description
     assert created
     keys = {entity.entity_description.key for entity in created}
     assert keys == {"openvpn.clients.client-uuid"}, description
@@ -377,7 +390,7 @@ def test_inventory_fingerprint_matches_switch_compiler_eligibility() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_for_malformed_firewall_nat_inventory(
+async def test_async_setup_entry_records_entities_for_malformed_firewall_nat_inventory(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
@@ -396,9 +409,15 @@ async def test_async_setup_entry_records_none_for_malformed_firewall_nat_invento
     recorded: dict[str, Any] = {}
     created: list[Any] = []
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture switch entities emitted by setup."""
@@ -410,7 +429,8 @@ async def test_async_setup_entry_records_none_for_malformed_firewall_nat_invento
         MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities)
     )
 
-    assert recorded.get("entities") is None
+    assert recorded["entities"] == created
+    assert recorded["scope_authority"] == {"firewall_nat": False}
     assert created
 
 
@@ -511,7 +531,8 @@ async def test_async_setup_entry_marks_malformed_switch_rows_incomplete(
         cast("AddEntitiesCallback", lambda entities, _=False: created.extend(entities)),
     )
 
-    assert captured["entities"] is None
+    assert captured["entities"] == created
+    assert False in captured["scope_authority"].values()
     assert expected_key in {entity.entity_description.key for entity in created}
 
 
@@ -525,7 +546,7 @@ async def test_async_setup_entry_marks_malformed_switch_rows_incomplete(
     ],
 )
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_for_invalid_carp_summary(
+async def test_async_setup_entry_records_entities_and_carp_authority(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     state: dict[str, Any],
@@ -540,9 +561,15 @@ async def test_async_setup_entry_records_none_for_invalid_carp_summary(
     captured: dict[str, Any] = {}
     created: list[Any] = []
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture the desired-entity payload sent to reconciliation."""
         captured["entities"] = entities
+        captured["scope_authority"] = scope_authority
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture switch entities emitted by setup."""
@@ -555,13 +582,11 @@ async def test_async_setup_entry_records_none_for_invalid_carp_summary(
     )
 
     assert "entities" in captured
-    if expected_entities is None:
-        assert captured["entities"] is None
-        assert len(created) == 1
-    else:
-        assert isinstance(captured["entities"], list)
-        assert len(captured["entities"]) == expected_entities
-        assert len(created) == 1
+    assert captured["entities"] == created
+    assert isinstance(captured["entities"], list)
+    assert len(captured["entities"]) == (1 if expected_entities is None else expected_entities)
+    assert captured["scope_authority"] == {"carp": expected_entities is not None}
+    assert len(created) == 1
 
 
 @pytest.mark.asyncio
@@ -2078,7 +2103,8 @@ async def test_async_setup_entry_marks_empty_unbound_rows_incomplete(
         cast("AddEntitiesCallback", lambda entities, _=False: created.extend(entities)),
     )
 
-    assert captured["entities"] is None
+    assert captured["entities"] == created
+    assert captured["scope_authority"] == {"unbound": False}
     assert {entity.entity_description.key for entity in created} == {
         "unbound_blocklist.switch.good"
     }
@@ -4229,7 +4255,7 @@ async def test_compile_new_api_empty_state(
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_records_none_for_malformed_service_identity_row(
+async def test_async_setup_entry_records_entities_for_malformed_service_identity_row(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
@@ -4258,9 +4284,15 @@ async def test_async_setup_entry_records_none_for_malformed_service_identity_row
     recorded: dict[str, Any] = {}
     created: list[Any] = []
 
-    def capture(_entry: MockConfigEntry, _platform: str, entities: Any | None = None) -> None:
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
         """Capture desired entities input for reconciliation."""
         recorded["entities"] = entities
+        recorded["scope_authority"] = scope_authority
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture compiled switch entities."""
@@ -4271,7 +4303,8 @@ async def test_async_setup_entry_records_none_for_malformed_service_identity_row
     await switch_mod.async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities)
     )
-    assert recorded["entities"] is None
+    assert recorded["entities"] == created
+    assert recorded["scope_authority"] == {"services": False}
     assert [entity.entity_description.key for entity in created] == ["service.svc.status"]
 
 

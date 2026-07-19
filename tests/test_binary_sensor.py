@@ -5,7 +5,7 @@ binary sensor entities.
 """
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -51,9 +51,11 @@ def capture_reconciled_desired_entities(
         _entry: MockConfigEntry,
         _platform: str,
         entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
     ) -> None:
         """Capture entities passed to ``record_desired_entities``."""
         captured["entities"] = entities
+        captured["scope_authority"] = scope_authority
 
     monkeypatch.setattr(binary_sensor_module, "record_desired_entities", capture)
     return captured
@@ -247,7 +249,7 @@ async def test_async_setup_entry_creates_entities_when_enabled(
         "empty-smart",
     ],
 )
-async def test_async_setup_entry_records_none_or_authoritative_empty_for_inventory(
+async def test_async_setup_entry_records_entities_and_inventory_authority(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     coordinator_data: dict[str, Any],
@@ -272,7 +274,8 @@ async def test_async_setup_entry_records_none_or_authoritative_empty_for_invento
         cast("AddEntitiesCallback", lambda ents, _=False: None),
     )
     assert "entities" in captured
-    assert captured["entities"] == expected
+    assert captured["entities"] == []
+    assert all(captured["scope_authority"].values()) is (expected == [])
 
 
 @pytest.mark.parametrize(
@@ -318,7 +321,8 @@ async def test_async_setup_entry_marks_malformed_binary_sensor_rows_incomplete(
         cast("AddEntitiesCallback", lambda entities, _=False: created.extend(entities)),
     )
 
-    assert captured["entities"] is None
+    assert captured["entities"] == created
+    assert False in captured["scope_authority"].values()
     assert {entity.entity_description.key for entity in created} == {expected_key}
 
 
