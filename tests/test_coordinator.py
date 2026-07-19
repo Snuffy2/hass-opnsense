@@ -847,6 +847,102 @@ async def test_calculate_interface_speeds_skips_malformed_payloads(
 
 
 @pytest.mark.asyncio
+async def test_async_update_data_speedtest_absence_and_recovery_preserves_unrelated_category(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+    fake_client: Any,
+) -> None:
+    """Speedtest absence and transient unavailability should not disrupt interfaces."""
+    entry = make_config_entry(
+        {
+            CONF_DEVICE_UNIQUE_ID: "id",
+            CONF_SYNC_SPEEDTEST: True,
+            CONF_SYNC_INTERFACES: True,
+        }
+    )
+    client = fake_client()()
+    object.__setattr__(
+        client,
+        "get_speedtest",
+        AsyncMock(
+            side_effect=[
+                {"available": False},
+                {"available": True, "last": {}, "average": {}},
+                {
+                    "available": True,
+                    "last": {
+                        "download": {"value": 11.2},
+                        "upload": {"value": 2.4},
+                        "latency": {"value": 9.7},
+                    },
+                    "average": {
+                        "download": {"value": 10.5},
+                        "upload": {"value": 2.1},
+                        "latency": {"value": 10.1},
+                    },
+                },
+            ]
+        ),
+    )
+    object.__setattr__(
+        client,
+        "get_interfaces",
+        AsyncMock(
+            side_effect=[
+                {"eth0": {"inbytes": 100, "outbytes": 20, "inpackets": 3}},
+                {"eth0": {"inbytes": 200, "outbytes": 40, "inpackets": 6}},
+                {"eth0": {"inbytes": 300, "outbytes": 60, "inpackets": 9}},
+            ]
+        ),
+    )
+
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=entry,
+    )
+
+    async def true_check() -> bool:
+        """Force the device id check to succeed for update flow assertions."""
+        return True
+
+    async def skip_speed_calculation() -> None:
+        """Skip derived rate computations to keep this test on category fetch behavior."""
+        return
+
+    monkeypatch.setattr(coordinator, "_check_device_unique_id", true_check)
+    monkeypatch.setattr(coordinator, "_calculate_entity_speeds", skip_speed_calculation)
+
+    first = await coordinator._async_update_data()
+    second = await coordinator._async_update_data()
+    third = await coordinator._async_update_data()
+
+    assert first["speedtest"] == {"available": False}
+    assert first["interfaces"] == {"eth0": {"inbytes": 100, "outbytes": 20, "inpackets": 3}}
+    assert second["speedtest"] == {"available": True, "last": {}, "average": {}}
+    assert second["interfaces"] == {"eth0": {"inbytes": 200, "outbytes": 40, "inpackets": 6}}
+    assert third["speedtest"]["available"] is True
+    assert third["speedtest"]["last"] == {
+        "download": {"value": 11.2},
+        "upload": {"value": 2.4},
+        "latency": {"value": 9.7},
+    }
+    assert third["speedtest"]["average"] == {
+        "download": {"value": 10.5},
+        "upload": {"value": 2.1},
+        "latency": {"value": 10.1},
+    }
+    assert third["interfaces"] == {"eth0": {"inbytes": 300, "outbytes": 60, "inpackets": 9}}
+    assert second["interfaces"] != first["interfaces"]
+    assert third["interfaces"] != second["interfaces"]
+    assert client.get_speedtest.await_count == 3
+    assert client.get_interfaces.await_count == 3
+
+
+@pytest.mark.asyncio
 async def test_async_update_data_reentrancy_and_full_flow(
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
