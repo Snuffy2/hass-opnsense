@@ -374,7 +374,8 @@ async def async_setup_entry(
         return
     reconciliation_complete = True
 
-    arp_entries = dict_get(state, "arp_table")
+    arp_inventory = dict_get(state, "arp_table")
+    arp_entries = arp_inventory
     configured_macs = config_entry.options.get(CONF_DEVICES, [])
     has_configured_macs = bool(
         isinstance(configured_macs, list)
@@ -425,7 +426,11 @@ async def async_setup_entry(
         config_entry,
         "device_tracker",
         entities,
-        {"arp": has_configured_macs or reconciliation_complete},
+        {
+            "arp": coordinator.category_is_authoritative("arp_table")
+            and isinstance(arp_inventory, list)
+            and _track_all_arp_entries_are_complete(arp_inventory)
+        },
     )
     async_add_entities(entities)
 

@@ -153,6 +153,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 "get_vnstat": "get_vnstat_result",
                 "get_unbound_blocklist": "get_unbound_blocklist_result",
                 "get_dhcp_leases": "get_dhcp_leases_result",
+                "get_arp_table": "get_arp_table_result",
             }.get(method_name)
             result_method: Callable | None = (
                 getattr(self._client, result_method_name, None) if result_method_name else None

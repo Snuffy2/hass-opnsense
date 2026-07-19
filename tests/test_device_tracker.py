@@ -5,7 +5,7 @@ and device info formatting for the integration's device tracker entities.
 """
 
 import asyncio
-from collections.abc import Callable, Iterable, MutableMapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, cast
@@ -1274,6 +1274,49 @@ async def test_async_setup_entry_records_empty_authoritative_arp_inventory(
 
     assert "entities" in recorded
     assert recorded["entities"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result_authoritative", "arp_table", "expected_authority"),
+    [
+        (True, [], True),
+        (False, [], False),
+        (True, ["malformed"], False),
+    ],
+    ids=["available-empty", "pending-or-legacy-empty", "malformed-row"],
+)
+async def test_repair_arp_authority_requires_result_and_complete_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    coordinator: MagicMock,
+    make_config_entry: Callable[..., MockConfigEntry],
+    result_authoritative: bool,
+    arp_table: list[Any],
+    expected_authority: bool,
+) -> None:
+    """Only an authoritative, structurally complete ARP result can delete stale trackers."""
+    coordinator.data = {"arp_table": arp_table}
+    coordinator.category_is_authoritative.return_value = result_authoritative
+    entry = make_config_entry(data={CONF_DEVICE_UNIQUE_ID: "dev1"})
+    setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
+    captured: dict[str, bool] = {}
+
+    def capture_scoped(
+        _entry: MockConfigEntry,
+        _platform: str,
+        _entities: list[Any],
+        scope_authority: Mapping[str, bool],
+    ) -> None:
+        """Capture category authority passed to repair reconciliation."""
+        captured.update(scope_authority)
+
+    monkeypatch.setattr(dt_mod, "record_scoped_reconciliation", capture_scoped)
+
+    await dt_mod.async_setup_entry(
+        MagicMock(), entry, cast("AddEntitiesCallback", lambda _entities: None)
+    )
+
+    assert captured == {"arp": expected_authority}
 
 
 @pytest.mark.asyncio

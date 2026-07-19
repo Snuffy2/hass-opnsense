@@ -142,6 +142,13 @@ def _inventory_fingerprint(state: object) -> tuple[tuple[str, tuple[str, ...]], 
         identities["filesystems"] = {
             row["mountpoint"] for row in filesystems if _is_valid_filesystem_row(row)
         }
+    temperatures = dict_get(state, "telemetry.temps", {})
+    if isinstance(temperatures, Mapping):
+        identities["temperatures"] = {
+            str(key)
+            for key, row in temperatures.items()
+            if isinstance(key, str) and key and isinstance(row, MutableMapping)
+        }
     carp = dict_get(state, "carp.interfaces", [])
     if isinstance(carp, list):
         identities["carp"] = {

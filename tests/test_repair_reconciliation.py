@@ -421,6 +421,39 @@ def test_finalize_preserves_desired_disabled_tracker_device_by_mac(
     )
 
 
+@pytest.mark.parametrize("authoritative", [False, True])
+def test_empty_arp_scope_controls_stale_tracker_and_device_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    authoritative: bool,
+) -> None:
+    """Only authoritative empty ARP inventory removes stale tracker relationships."""
+    tracker = _entry(
+        "old_id_mac_aa_bb_cc_dd_ee_ff",
+        entity_id="device_tracker.stale",
+        device_id="tracked-device",
+    )
+    main = _device("main", "old_id")
+    tracked_device = _device(
+        "tracked-device",
+        "tracked-client",
+        via_device_id=main.id,
+        connections={("mac", "aa:bb:cc:dd:ee:ff")},
+    )
+    reconciliation, registry, devices = _subject(monkeypatch, [tracker], [main, tracked_device])
+    reconciliation.prepare()
+    if authoritative:
+        reconciliation.authoritative_scopes.add(("device_tracker", "arp"))
+
+    reconciliation.finalize()
+
+    assert ("device_tracker.stale" in registry.removed) is authoritative
+    detached = any(
+        device_id == tracked_device.id and changes.get("remove_config_entry_id") == "entry-1"
+        for device_id, changes in devices.updates
+    )
+    assert detached is authoritative
+
+
 def test_prepare_and_finalize_are_idempotent_after_partial_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

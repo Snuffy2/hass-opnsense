@@ -636,6 +636,56 @@ async def test_gateway_runtime_reconciler_does_not_duplicate_when_display_name_c
     assert len(added_batches) == 1
 
 
+@pytest.mark.asyncio
+async def test_temperature_inventory_fingerprint_triggers_only_for_valid_identities(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """A new valid temperature identity triggers compilation; malformed rows do not."""
+    entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        {"telemetry": {"filesystems": [], "temps": {}}},
+        sync_telemetry=True,
+    )
+    coordinator = getattr(entry.runtime_data, COORDINATOR)
+    listeners: list[Callable[..., None]] = []
+
+    def register_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture the runtime reconciliation listener."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = register_listener
+    entry.async_on_unload = MagicMock()
+    entry.add_to_hass(ph_hass)
+    added_batches: list[list[Any]] = []
+
+    await async_setup_entry(
+        ph_hass,
+        entry,
+        cast("AddEntitiesCallback", lambda entities, _=False: added_batches.append(list(entities))),
+    )
+
+    coordinator.data = {
+        "telemetry": {
+            "filesystems": [],
+            "temps": {"cpu": {"name": "CPU", "temperature": 55}},
+        }
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert any(
+        entity.entity_description.key == "telemetry.temps.cpu" for entity in added_batches[-1]
+    )
+    batch_count = len(added_batches)
+
+    coordinator.data["telemetry"]["temps"]["malformed"] = None
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == batch_count
+
+
 @pytest.mark.parametrize(
     ("coord_data", "desc_subnet"),
     [

@@ -225,6 +225,60 @@ async def test_get_states_legacy_optional_method_is_non_authoritative(
 
 
 @pytest.mark.asyncio
+async def test_get_states_prefers_status_aware_arp_result(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Device-tracker polling retains ARP result authority beside unwrapped data."""
+    client = MagicMock()
+    result = SimpleNamespace(data=[], state="available", authoritative=True)
+    client.get_arp_table_result = AsyncMock(return_value=result)
+    client.get_arp_table = AsyncMock(return_value=[{"mac": "legacy"}])
+    entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=entry,
+        device_tracker_coordinator=True,
+    )
+
+    state = await coordinator._get_states([{"function": "get_arp_table", "state_key": "arp_table"}])
+
+    assert state["arp_table"] == []
+    assert coordinator.category_result("arp_table") is result
+    assert coordinator.category_is_authoritative("arp_table") is True
+    client.get_arp_table.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_states_legacy_arp_is_pending_and_non_authoritative(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Old aiopnsense ARP data cannot authorize tracker deletion."""
+    client = MagicMock(spec=["get_arp_table"])
+    client.get_arp_table = AsyncMock(return_value=[])
+    entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=entry,
+        device_tracker_coordinator=True,
+    )
+
+    await coordinator._get_states([{"function": "get_arp_table", "state_key": "arp_table"}])
+
+    result = coordinator.category_result("arp_table")
+    assert isinstance(result, coordinator_module._LegacyCategoryResult)
+    assert result.state == "pending"
+    assert result.authoritative is False
+
+
+@pytest.mark.asyncio
 async def test_get_states_uses_smart_ident_when_device_missing(
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
