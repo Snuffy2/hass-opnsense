@@ -278,12 +278,12 @@ dynamic entity schema.
    reconciliation consumes that authority rather than inferring deletion safety
    from normalized empty payloads.
 3. Category scopes follow existing unique-ID families: binary sensors use
-   interfaces, SMART, and notices; sensors use telemetry, vnStat, Speedtest,
-   certificates, VPN, gateways, interfaces, CARP, and DHCP; switches use
+   interfaces, SMART, and notices; sensors use telemetry, vnStat, SMART,
+   Speedtest, certificates, VPN, gateways, interfaces, CARP, and DHCP; switches use
    firewall/NAT, services, VPN, CARP, and Unbound; trackers use ARP.
-3. Confirm which optional categories have fixed schemas and should always create
+4. Confirm which optional categories have fixed schemas and should always create
    configured entities.
-4. Decide whether NUT integration is part of the first hass-opnsense delivery or
+5. Decide whether NUT integration is part of the first hass-opnsense delivery or
    remains a separate follow-up built on the cache contract.
-5. Decide whether the first optional-endpoint disappearance is debug-only or a
+6. Decide whether the first optional-endpoint disappearance is debug-only or a
    rate-limited warning.

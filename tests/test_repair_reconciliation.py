@@ -385,6 +385,31 @@ def test_finalize_preserves_stale_entities_outside_authoritative_scopes(
     assert registry.async_get("sensor.future") is unknown
 
 
+@pytest.mark.parametrize("authoritative", [False, True])
+def test_smart_scope_authority_controls_stale_temperature_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    authoritative: bool,
+) -> None:
+    """SMART temperature rows are removed only from authoritative inventory."""
+    stale_smart = _entry(
+        "old_id_smart.nvme0.temperature",
+        entity_id="sensor.smart_nvme0_temperature",
+    )
+    reconciliation, registry, _devices = _subject(
+        monkeypatch,
+        [stale_smart],
+        [_device("main", "old_id")],
+    )
+    reconciliation.prepare()
+    if authoritative:
+        reconciliation.authoritative_scopes.add(("sensor", "smart"))
+
+    reconciliation.finalize()
+
+    assert ("sensor.smart_nvme0_temperature" in registry.removed) is authoritative
+    assert (registry.async_get("sensor.smart_nvme0_temperature") is None) is authoritative
+
+
 def test_finalize_preserves_desired_disabled_tracker_device_by_mac(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

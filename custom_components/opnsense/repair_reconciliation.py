@@ -30,6 +30,7 @@ _SCOPE_PREFIXES: dict[str, tuple[tuple[str, str], ...]] = {
         ("interface.", "interfaces"),
         ("telemetry.", "telemetry"),
         ("vnstat.", "vnstat"),
+        ("smart.", "smart"),
         ("speedtest.", "speedtest"),
         ("nut.", "nut"),
         ("certificates", "certificates"),
