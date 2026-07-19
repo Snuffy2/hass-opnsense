@@ -23,10 +23,55 @@ from .const import (
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity
 from .helpers import coerce_bool, dict_get, firewall_rule_id_from_payload
-from .repair_reconciliation import record_desired_entities
+from .repair_reconciliation import record_desired_entities, record_scoped_reconciliation
 from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
+
+
+def _inventory_fingerprint(state: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return stable identities for validated switch inventory rows."""
+    if not isinstance(state, MutableMapping):
+        return ()
+    identities: dict[str, set[str]] = {}
+    services = state.get("services")
+    if isinstance(services, list):
+        identities["services"] = {
+            identity
+            for row in services
+            if isinstance(row, Mapping) and (identity := _service_identity(row)) is not None
+        }
+    for vpn_type in ("openvpn", "wireguard"):
+        for group in ("clients", "servers"):
+            rows = dict_get(state, f"{vpn_type}.{group}", {})
+            if isinstance(rows, Mapping):
+                identities[f"{vpn_type}.{group}"] = {
+                    str(key) for key, row in rows.items() if _is_valid_vpn_switch_row(row)
+                }
+    firewall = state.get("firewall")
+    if isinstance(firewall, MutableMapping):
+        inventories = {
+            "firewall.rules": firewall.get("rules"),
+            "firewall.source_nat": dict_get(firewall, "nat.source_nat"),
+            "firewall.d_nat": dict_get(firewall, "nat.d_nat"),
+            "firewall.one_to_one": dict_get(firewall, "nat.one_to_one"),
+            "firewall.npt": dict_get(firewall, "nat.npt"),
+        }
+        for name, rows in inventories.items():
+            if isinstance(rows, Mapping):
+                identities[name] = {
+                    str(rule_id)
+                    for key, row in rows.items()
+                    if (rule_id := firewall_rule_id_from_payload(key, row))
+                }
+    unbound = state.get(ATTR_UNBOUND_BLOCKLIST)
+    if isinstance(unbound, Mapping):
+        identities["unbound"] = {
+            str(key)
+            for key, row in unbound.items()
+            if key != "legacy" and _is_valid_unbound_row(row)
+        }
+    return tuple((name, tuple(sorted(values))) for name, values in sorted(identities.items()))
 
 
 def _is_valid_service_row(service: Any) -> bool:
@@ -638,7 +683,7 @@ async def async_setup_entry(
         _LOGGER.error("Missing state data in switch async_setup_entry")
         return
     config: Mapping[str, Any] = config_entry.data
-    reconciliation_complete = True
+    scope_authority: dict[str, bool] = {}
 
     entities: list = []
 
@@ -667,7 +712,7 @@ async def async_setup_entry(
                 and isinstance(firewall_nat.get("one_to_one"), MutableMapping)
                 and isinstance(firewall_nat.get("npt"), MutableMapping)
             ):
-                reconciliation_complete = False
+                scope_authority["firewall_nat"] = False
             else:
                 rule_inventories = (
                     (firewall["rules"], _is_valid_firewall_rule_row),
@@ -676,21 +721,21 @@ async def async_setup_entry(
                     (firewall_nat["one_to_one"], _is_valid_nat_rule_row),
                     (firewall_nat["npt"], _is_valid_nat_rule_row),
                 )
-                if not all(
+                scope_authority["firewall_nat"] = all(
                     all(predicate(rule_key, rule) for rule_key, rule in rules.items())
                     for rules, predicate in rule_inventories
-                ):
-                    reconciliation_complete = False
+                )
         else:
-            reconciliation_complete = False
+            scope_authority["firewall_nat"] = False
     if config.get(CONF_SYNC_SERVICES, DEFAULT_SYNC_OPTION_VALUE):
         services = state.get("services")
         if "services" in state and isinstance(services, list):
             entities.extend(await _compile_service_switches(config_entry, coordinator, state))
-            if not all(_is_valid_service_row(service) for service in services):
-                reconciliation_complete = False
+            scope_authority["services"] = all(
+                _is_valid_service_row(service) for service in services
+            )
         else:
-            reconciliation_complete = False
+            scope_authority["services"] = False
     if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION_VALUE):
         has_openvpn_inventory = "openvpn" in state and isinstance(
             state.get("openvpn"), MutableMapping
@@ -699,36 +744,36 @@ async def async_setup_entry(
             state.get("wireguard"), MutableMapping
         )
         entities.extend(await _compile_vpn_switches(config_entry, coordinator, state))
-        if not (
+        scope_authority["vpn"] = (
             has_openvpn_inventory
             and has_wireguard_inventory
             and _vpn_switch_rows_are_complete(state)
-        ):
-            reconciliation_complete = False
+        )
     if config.get(CONF_SYNC_CARP, DEFAULT_SYNC_OPTION_VALUE):
-        if not isinstance(dict_get(state, "carp.status_summary"), MutableMapping):
-            reconciliation_complete = False
+        scope_authority["carp"] = isinstance(dict_get(state, "carp.status_summary"), MutableMapping)
         entities.extend(await _compile_carp_maintenance_switch(config_entry, coordinator, state))
     if config.get(CONF_SYNC_UNBOUND, DEFAULT_SYNC_OPTION_VALUE):
         if ATTR_UNBOUND_BLOCKLIST in state and isinstance(
             state.get(ATTR_UNBOUND_BLOCKLIST), MutableMapping
         ):
             entities.extend(await _compile_unbound_switches(config_entry, coordinator, state))
-            if not all(
+            scope_authority["unbound"] = coordinator.category_is_authoritative(
+                ATTR_UNBOUND_BLOCKLIST
+            ) and all(
                 _is_valid_unbound_row(dnsbl)
                 for key, dnsbl in state[ATTR_UNBOUND_BLOCKLIST].items()
                 if key != "legacy"
-            ):
-                reconciliation_complete = False
+            )
         else:
-            reconciliation_complete = False
+            scope_authority["unbound"] = False
 
     _LOGGER.debug("[switch async_setup_entry] entities: %s", len(entities))
     record_desired_entities(
         config_entry,
         "switch",
-        entities if reconciliation_complete else None,
+        entities if all(scope_authority.values()) else None,
     )
+    record_scoped_reconciliation(config_entry, "switch", entities, scope_authority)
     async_add_entities(entities)
 
     async def async_compile_runtime_entities() -> list:
@@ -742,6 +787,7 @@ async def async_setup_entry(
         async_add_entities,
         entities,
         async_compile_runtime_entities,
+        inventory_fingerprint=lambda: _inventory_fingerprint(coordinator.data),
     )
 
 

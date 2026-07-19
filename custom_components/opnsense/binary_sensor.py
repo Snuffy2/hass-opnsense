@@ -24,10 +24,31 @@ from .const import (
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity
 from .helpers import coerce_bool, dict_get, get_smart_device_name
-from .repair_reconciliation import record_desired_entities
+from .repair_reconciliation import record_desired_entities, record_scoped_reconciliation
 from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
+
+
+def _inventory_fingerprint(state: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return stable validated interface and SMART inventory identities."""
+    if not isinstance(state, Mapping):
+        return (), ()
+    interfaces = state.get("interfaces")
+    interface_ids = (
+        tuple(sorted(key for key, row in interfaces.items() if _is_valid_interface_row(key, row)))
+        if isinstance(interfaces, Mapping)
+        else ()
+    )
+    smart = state.get("smart")
+    smart_ids = (
+        tuple(
+            sorted(get_smart_device_name(row) for row in smart if _is_valid_smart_device_row(row))
+        )
+        if isinstance(smart, list)
+        else ()
+    )
+    return interface_ids, smart_ids
 
 
 def _is_valid_interface_row(interface_name: Any, interface: Any) -> bool:
@@ -228,7 +249,7 @@ async def async_setup_entry(
         _LOGGER.error("Missing state data in binary sensor async_setup_entry")
         return
     config: Mapping[str, Any] = config_entry.data
-    reconciliation_complete = True
+    scope_authority: dict[str, bool] = {}
 
     entities: list = []
     if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION_VALUE):
@@ -237,21 +258,21 @@ async def async_setup_entry(
             entities.extend(
                 await _compile_interface_enabled_binary_sensors(config_entry, coordinator)
             )
-            if not all(
+            scope_authority["interfaces"] = all(
                 _is_valid_interface_row(interface_name, interface)
                 for interface_name, interface in interfaces.items()
-            ):
-                reconciliation_complete = False
+            )
         else:
-            reconciliation_complete = False
+            scope_authority["interfaces"] = False
     if config.get(CONF_SYNC_SMART, DEFAULT_SYNC_OPTION_VALUE):
         smart_data = state.get("smart")
         if "smart" in state and isinstance(smart_data, list):
             entities.extend(await _compile_smart_status_binary_sensors(config_entry, coordinator))
-            if not all(_is_valid_smart_device_row(device) for device in smart_data):
-                reconciliation_complete = False
+            scope_authority["smart"] = coordinator.category_is_authoritative("smart") and all(
+                _is_valid_smart_device_row(device) for device in smart_data
+            )
         else:
-            reconciliation_complete = False
+            scope_authority["smart"] = False
     if config.get(CONF_SYNC_NOTICES, DEFAULT_SYNC_OPTION_VALUE):
         entities.append(
             OPNsensePendingNoticesPresentBinarySensor(
@@ -260,9 +281,11 @@ async def async_setup_entry(
                 entity_description=_build_pending_notices_present_binary_sensor_description(),
             ),
         )
+        scope_authority["notices"] = True
     record_desired_entities(
-        config_entry, "binary_sensor", entities if reconciliation_complete else None
+        config_entry, "binary_sensor", entities if all(scope_authority.values()) else None
     )
+    record_scoped_reconciliation(config_entry, "binary_sensor", entities, scope_authority)
     async_add_entities(entities)
 
     async def async_compile_runtime_entities() -> list:
@@ -276,6 +299,7 @@ async def async_setup_entry(
         async_add_entities,
         entities,
         async_compile_runtime_entities,
+        inventory_fingerprint=lambda: _inventory_fingerprint(coordinator.data),
     )
 
 

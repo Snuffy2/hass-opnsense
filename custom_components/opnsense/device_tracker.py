@@ -43,10 +43,32 @@ from .helpers import (
     get_arp_mac,
     normalize_arp_mac,
 )
-from .repair_reconciliation import is_reconciliation_active, record_desired_entities
+from .repair_reconciliation import (
+    is_reconciliation_active,
+    record_desired_entities,
+    record_scoped_reconciliation,
+)
 from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
+
+
+def _arp_inventory_fingerprint(state: object) -> tuple[str, ...]:
+    """Return stable normalized MAC identities from valid ARP rows."""
+    if not isinstance(state, Mapping):
+        return ()
+    arp_entries = state.get("arp_table")
+    if not isinstance(arp_entries, list):
+        return ()
+    return tuple(
+        sorted(
+            {
+                _normalize_mac_for_device_tracker(mac)
+                for row in arp_entries
+                if isinstance(row, MutableMapping) and (mac := get_arp_mac(row))
+            }
+        )
+    )
 
 
 def _normalize_mac_for_device_tracker(mac_address: str) -> str:
@@ -395,7 +417,15 @@ async def async_setup_entry(
 
     _LOGGER.debug("[device_tracker async_setup_entry] entities: %s", len(entities))
     record_desired_entities(
-        config_entry, "device_tracker", entities if reconciliation_complete else None
+        config_entry,
+        "device_tracker",
+        entities if has_configured_macs or reconciliation_complete else None,
+    )
+    record_scoped_reconciliation(
+        config_entry,
+        "device_tracker",
+        entities,
+        {"arp": has_configured_macs or reconciliation_complete},
     )
     async_add_entities(entities)
 
@@ -415,6 +445,7 @@ async def async_setup_entry(
             async_add_entities,
             entities,
             async_compile_runtime_entities,
+            inventory_fingerprint=lambda: _arp_inventory_fingerprint(coordinator.data),
         )
 
 

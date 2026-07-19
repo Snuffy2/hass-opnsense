@@ -51,7 +51,7 @@ from .const import (
 from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity, OPNsenseEntityCoordinator
 from .helpers import coerce_bool, dict_get, get_smart_device_name, is_carp_entry
-from .repair_reconciliation import record_desired_entities
+from .repair_reconciliation import record_desired_entities, record_scoped_reconciliation
 from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 from .traffic_coordinator import OPNsenseLiveTrafficCoordinator
 
@@ -116,6 +116,48 @@ _CARP_STATUS_ICONS: Final[Mapping[str, str]] = {
     "MASTER": "mdi:check-network",
     "BACKUP": "mdi:backup-restore",
 }
+
+
+def _inventory_fingerprint(state: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return stable normalized identities for runtime sensor inventories."""
+    if not isinstance(state, MutableMapping):
+        return ()
+    identities: dict[str, set[str]] = {}
+    for category in ("interfaces", "gateways"):
+        rows = state.get(category)
+        if isinstance(rows, Mapping):
+            identities[category] = {
+                str(key) for key, row in rows.items() if isinstance(row, MutableMapping)
+            }
+    smart = state.get("smart")
+    if isinstance(smart, list):
+        identities["smart"] = {
+            get_smart_device_name(row) for row in smart if _is_valid_smart_device_row(row)
+        }
+    vnstat = dict_get(state, "vnstat.interfaces", {})
+    if isinstance(vnstat, Mapping):
+        identities["vnstat"] = {key for key in vnstat if _is_valid_vnstat_interface_row(key)}
+    filesystems = dict_get(state, "telemetry.system.disk.filesystems", [])
+    if isinstance(filesystems, list):
+        identities["filesystems"] = {
+            row["mountpoint"] for row in filesystems if _is_valid_filesystem_row(row)
+        }
+    carp = dict_get(state, "carp.interfaces", [])
+    if isinstance(carp, list):
+        identities["carp"] = {
+            str(row["subnet"]) for row in carp if _is_valid_carp_interface_row(row)
+        }
+    dhcp = dict_get(state, "dhcp_leases.lease_interfaces", {})
+    if isinstance(dhcp, Mapping):
+        identities["dhcp"] = {str(key) for key in dhcp}
+    for vpn_type in ("openvpn", "wireguard"):
+        for group in ("clients", "servers"):
+            rows = dict_get(state, f"{vpn_type}.{group}", {})
+            if isinstance(rows, Mapping):
+                identities[f"{vpn_type}.{group}"] = {
+                    str(key) for key, row in rows.items() if _is_valid_vpn_sensor_row(row)
+                }
+    return tuple((name, tuple(sorted(values))) for name, values in sorted(identities.items()))
 
 
 def _is_valid_vnstat_interface_row(interface_name: Any) -> TypeIs[str]:
@@ -1814,6 +1856,18 @@ async def async_setup_entry(
         ]
         entities.extend(await _compile_carp_status_sensor(config_entry, coordinator, state))
         entities.extend(await _compile_carp_vip_sensors(config_entry, coordinator, state))
+        carp = state.get("carp")
+        carp_authority = {
+            "carp": isinstance(carp, MutableMapping)
+            and isinstance(carp.get("interfaces"), list)
+            and all(_is_valid_carp_interface_row(row) for row in carp["interfaces"])
+        }
+        record_desired_entities(
+            config_entry,
+            "sensor",
+            entities if all(carp_authority.values()) else None,
+        )
+        record_scoped_reconciliation(config_entry, "sensor", entities, carp_authority)
         async_add_entities(entities)
 
         async def async_compile_carp_runtime_entities() -> list:
@@ -1832,32 +1886,37 @@ async def async_setup_entry(
             async_add_entities,
             entities,
             async_compile_carp_runtime_entities,
+            inventory_fingerprint=lambda: _inventory_fingerprint(coordinator.data),
         )
         return
 
-    reconciliation_complete = True
+    scope_authority: dict[str, bool] = {}
 
     if config.get(CONF_SYNC_TELEMETRY, DEFAULT_SYNC_OPTION_VALUE):
         telemetry = state.get("telemetry")
         entities.extend(await _compile_static_telemetry_sensors(config_entry, coordinator))
         entities.extend(await _compile_filesystem_sensors(config_entry, coordinator, state))
         entities.extend(await _compile_temperature_sensors(config_entry, coordinator, state))
-        if "telemetry" not in state or not _telemetry_rows_are_complete(telemetry):
-            reconciliation_complete = False
+        scope_authority["telemetry"] = "telemetry" in state and _telemetry_rows_are_complete(
+            telemetry
+        )
     if config.get(CONF_SYNC_VNSTAT, DEFAULT_SYNC_OPTION_VALUE):
         if "vnstat" in state and isinstance(state.get("vnstat"), MutableMapping):
             entities.extend(await _compile_vnstat_sensors(config_entry, coordinator, state))
-            reconciliation_complete &= _vnstat_rows_are_complete(state)
+            scope_authority["vnstat"] = coordinator.category_is_authoritative(
+                "vnstat"
+            ) and _vnstat_rows_are_complete(state)
         else:
-            reconciliation_complete = False
+            scope_authority["vnstat"] = False
     if config.get(CONF_SYNC_SPEEDTEST, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_speedtest_sensors(config_entry, coordinator, state))
+        scope_authority["speedtest"] = True
     if config.get(CONF_SYNC_NUT, DEFAULT_SYNC_OPTION_VALUE):
         nut_entities, nut_inventory_complete = await _compile_nut_sensors_for_setup(
             config_entry, coordinator, state
         )
         entities.extend(nut_entities)
-        reconciliation_complete &= nut_inventory_complete
+        scope_authority["nut"] = nut_inventory_complete
     if config.get(CONF_SYNC_SMART, DEFAULT_SYNC_OPTION_VALUE):
         client = getattr(config_entry.runtime_data, OPNSENSE_CLIENT, None)
         client_supports_smart = callable(getattr(client, "get_smart", None))
@@ -1874,10 +1933,12 @@ async def async_setup_entry(
             _is_valid_smart_device_row(device) for device in state["smart"]
         )
         entities.extend(await _compile_smart_sensors(config_entry, coordinator, state))
-        if not has_smart_inventory:
-            reconciliation_complete = False
+        scope_authority["smart"] = has_smart_inventory and coordinator.category_is_authoritative(
+            "smart"
+        )
     if config.get(CONF_SYNC_CERTIFICATES, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_static_certificate_sensors(config_entry, coordinator))
+        scope_authority["certificates"] = True
     if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION_VALUE):
         has_openvpn_inventory = "openvpn" in state and isinstance(
             state.get("openvpn"), MutableMapping
@@ -1886,30 +1947,29 @@ async def async_setup_entry(
             state.get("wireguard"), MutableMapping
         )
         entities.extend(await _compile_vpn_sensors(config_entry, coordinator, state))
-        if not (
+        scope_authority["vpn"] = (
             has_openvpn_inventory
             and has_wireguard_inventory
             and _vpn_sensor_rows_are_complete(state)
-        ):
-            reconciliation_complete = False
+        )
     if config.get(CONF_SYNC_GATEWAYS, DEFAULT_SYNC_OPTION_VALUE):
         gateways = state.get("gateways")
         if "gateways" in state and isinstance(gateways, MutableMapping):
             entities.extend(await _compile_gateway_sensors(config_entry, coordinator, state))
-            reconciliation_complete &= all(
+            scope_authority["gateways"] = all(
                 _is_valid_mutable_mapping_row(row) for row in gateways.values()
             )
         else:
-            reconciliation_complete = False
+            scope_authority["gateways"] = False
     if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION_VALUE):
         interfaces = state.get("interfaces")
         if "interfaces" in state and isinstance(interfaces, MutableMapping):
             entities.extend(await _compile_interface_sensors(config_entry, coordinator, state))
-            reconciliation_complete &= all(
+            scope_authority["interfaces"] = all(
                 _is_valid_mutable_mapping_row(row) for row in interfaces.values()
             )
         else:
-            reconciliation_complete = False
+            scope_authority["interfaces"] = False
     if config.get(CONF_SYNC_CARP, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_carp_status_sensor(config_entry, coordinator, state))
         carp = state.get("carp")
@@ -1920,24 +1980,26 @@ async def async_setup_entry(
             and isinstance(carp.get("interfaces"), list)
         ):
             entities.extend(await _compile_carp_interface_sensors(config_entry, coordinator, state))
-            reconciliation_complete &= all(
+            scope_authority["carp"] = all(
                 _is_valid_carp_interface_row(interface) for interface in carp["interfaces"]
             )
         else:
-            reconciliation_complete = False
+            scope_authority["carp"] = False
     if config.get(CONF_SYNC_DHCP_LEASES, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_dhcp_leases_sensors(config_entry, coordinator, state))
         dhcp_leases = state.get("dhcp_leases")
-        if not (
+        scope_authority["dhcp"] = coordinator.category_is_authoritative("dhcp_leases") and (
             "dhcp_leases" in state
             and isinstance(dhcp_leases, MutableMapping)
             and "lease_interfaces" in dhcp_leases
             and isinstance(dhcp_leases.get("lease_interfaces"), MutableMapping)
-        ):
-            reconciliation_complete = False
+        )
 
     _LOGGER.debug("[sensor async_setup_entry] entities: %s", len(entities))
-    record_desired_entities(config_entry, "sensor", entities if reconciliation_complete else None)
+    record_desired_entities(
+        config_entry, "sensor", entities if all(scope_authority.values()) else None
+    )
+    record_scoped_reconciliation(config_entry, "sensor", entities, scope_authority)
     async_add_entities(entities)
 
     async def async_compile_runtime_entities() -> list:
@@ -1951,6 +2013,7 @@ async def async_setup_entry(
         async_add_entities,
         entities,
         async_compile_runtime_entities,
+        inventory_fingerprint=lambda: _inventory_fingerprint(coordinator.data),
     )
 
 

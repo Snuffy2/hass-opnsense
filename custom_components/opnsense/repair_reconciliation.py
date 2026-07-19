@@ -22,6 +22,33 @@ _LOGGER = logging.getLogger(__name__)
 
 type EntityIdentity = tuple[str, str, str]
 type PlatformDomain = Platform | str
+type CategoryScope = tuple[str, str]
+
+_SCOPE_PREFIXES: dict[str, tuple[tuple[str, str], ...]] = {
+    "binary_sensor": (("interface.", "interfaces"), ("smart.", "smart"), ("notices.", "notices")),
+    "sensor": (
+        ("interface.", "interfaces"),
+        ("telemetry.", "telemetry"),
+        ("vnstat.", "vnstat"),
+        ("speedtest.", "speedtest"),
+        ("nut.", "nut"),
+        ("certificates", "certificates"),
+        ("openvpn.", "vpn"),
+        ("wireguard.", "vpn"),
+        ("gateway.", "gateways"),
+        ("carp.", "carp"),
+        ("dhcp_leases.", "dhcp"),
+    ),
+    "switch": (
+        ("firewall.", "firewall_nat"),
+        ("service.", "services"),
+        ("openvpn.", "vpn"),
+        ("wireguard.", "vpn"),
+        ("carp.", "carp"),
+        ("unbound_blocklist.", "unbound"),
+    ),
+    "device_tracker": (("mac_", "arp"),),
+}
 
 
 class RepairReconciliationError(HomeAssistantError):
@@ -87,8 +114,18 @@ class RepairReconciliation:
     desired_identities: set[EntityIdentity] = field(default_factory=set)
     desired_device_connections: set[tuple[str, str]] = field(default_factory=set)
     completed_platform_domains: set[str] = field(default_factory=set)
+    authoritative_scopes: set[CategoryScope] = field(default_factory=set)
     active: bool = True
     _candidate_entity_ids: set[str] = field(default_factory=set)
+
+    def _scope_for_unique_id(self, domain: str, unique_id: str) -> str | None:
+        """Return the category scope encoded in an integration unique ID."""
+        prefix = f"{slugify(self.marker.new_device_id)}_"
+        suffix = unique_id.removeprefix(prefix)
+        for identity_prefix, scope in _SCOPE_PREFIXES.get(domain, ()):
+            if suffix.startswith(identity_prefix):
+                return scope
+        return None
 
     def prepare(self) -> None:
         """Preflight every target collision, then migrate identifiers in place."""
@@ -161,18 +198,23 @@ class RepairReconciliation:
         )
 
     def record_desired_entities(
-        self, platform_domain: PlatformDomain, entities: Iterable[Entity] | None
+        self,
+        platform_domain: PlatformDomain,
+        entities: Iterable[Entity] | None,
+        scope_authority: Mapping[str, bool] | None = None,
     ) -> None:
         """Record a platform's complete intended entity list, including disabled rows.
 
-        If ``entities`` is ``None``, the platform discovery payload was missing
-        or malformed and should not be treated as complete.
+        Platform completion and category authority are tracked independently.
         """
         if entities is None:
             return
         domain = _platform_domain_value(platform_domain)
         desired_entities = list(entities)
         self.completed_platform_domains.add(domain)
+        for scope, authoritative in (scope_authority or {}).items():
+            if authoritative:
+                self.authoritative_scopes.add((domain, scope))
         for entity in desired_entities:
             if entity.unique_id is not None:
                 self.desired_identities.add((domain, DOMAIN, entity.unique_id))
@@ -204,6 +246,7 @@ class RepairReconciliation:
         device_registry = dr.async_get(self.hass)
         try:
             removed_entities = 0
+            removed_device_ids: set[str] = set()
             for entity_id in self._candidate_entity_ids:
                 candidate = entity_registry.async_get(entity_id)
                 if (
@@ -212,6 +255,11 @@ class RepairReconciliation:
                     in self.desired_identities
                 ):
                     continue
+                scope = self._scope_for_unique_id(candidate.domain, candidate.unique_id)
+                if scope is None or (candidate.domain, scope) not in self.authoritative_scopes:
+                    continue
+                if candidate.device_id is not None:
+                    removed_device_ids.add(candidate.device_id)
                 entity_registry.async_remove(entity_id)
                 removed_entities += 1
 
@@ -235,6 +283,15 @@ class RepairReconciliation:
                     continue
                 if set(device.connections) & self.desired_device_connections:
                     preserved_tracker_devices += 1
+                    continue
+                is_tracker_device = any(
+                    connection_type == CONNECTION_NETWORK_MAC
+                    for connection_type, _value in device.connections
+                )
+                if device.id not in removed_device_ids and not (
+                    is_tracker_device
+                    and (Platform.DEVICE_TRACKER.value, "arp") in self.authoritative_scopes
+                ):
                     continue
                 router_device_id = main_device.id if main_device is not None else None
                 detach_shared_router_parent(
@@ -266,11 +323,39 @@ def record_desired_entities(
     config_entry: ConfigEntry,
     platform_domain: PlatformDomain,
     entities: Iterable[Entity] | None,
+    scope_authority: Mapping[str, bool] | None = None,
 ) -> None:
     """Record a final platform entity list when reconciliation is active."""
     reconciliation = config_entry.runtime_data.repair_reconciliation
     if isinstance(reconciliation, RepairReconciliation) and reconciliation.active:
-        reconciliation.record_desired_entities(platform_domain, entities)
+        reconciliation.record_desired_entities(platform_domain, entities, scope_authority)
+
+
+def record_scope_authority(
+    config_entry: ConfigEntry,
+    platform_domain: PlatformDomain,
+    scope_authority: Mapping[str, bool],
+) -> None:
+    """Record authoritative category scopes independently of platform completion."""
+    reconciliation = config_entry.runtime_data.repair_reconciliation
+    if not isinstance(reconciliation, RepairReconciliation) or not reconciliation.active:
+        return
+    domain = _platform_domain_value(platform_domain)
+    reconciliation.authoritative_scopes.update(
+        (domain, scope) for scope, authoritative in scope_authority.items() if authoritative
+    )
+
+
+def record_scoped_reconciliation(
+    config_entry: ConfigEntry,
+    platform_domain: PlatformDomain,
+    entities: Iterable[Entity],
+    scope_authority: Mapping[str, bool],
+) -> None:
+    """Record desired entities, platform completion, and per-category authority."""
+    reconciliation = config_entry.runtime_data.repair_reconciliation
+    if isinstance(reconciliation, RepairReconciliation) and reconciliation.active:
+        reconciliation.record_desired_entities(platform_domain, entities, scope_authority)
 
 
 def is_reconciliation_active(config_entry: ConfigEntry) -> bool:

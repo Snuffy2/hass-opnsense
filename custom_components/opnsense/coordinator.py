@@ -2,7 +2,9 @@
 
 from collections.abc import Callable, Mapping, MutableMapping
 import copy
+from dataclasses import dataclass
 from datetime import timedelta
+import inspect
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -54,6 +56,15 @@ _PREVIOUS_STATE_KEYS: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class _LegacyCategoryResult:
+    """Non-authoritative status wrapper for an older aiopnsense client."""
+
+    data: object
+    state: str = "pending"
+    authoritative: bool = False
+
+
 class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
     """Coordinator class for OPNsense."""
 
@@ -93,6 +104,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
         self._mismatched_count = 0
         self._device_unique_id: str | None = device_unique_id
         self._updating: bool = False
+        self._category_results: dict[str, object] = {}
         super().__init__(
             hass=hass,
             logger=_LOGGER,
@@ -136,7 +148,18 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
         total_time: float = 0
         for cat in categories:
             method_name: str = cat.get("function", "")
-            method: Callable | None = getattr(self._client, method_name, None)
+            result_method_name = {
+                "get_smart": "get_smart_result",
+                "get_vnstat": "get_vnstat_result",
+                "get_unbound_blocklist": "get_unbound_blocklist_result",
+                "get_dhcp_leases": "get_dhcp_leases_result",
+            }.get(method_name)
+            result_method: Callable | None = (
+                getattr(self._client, result_method_name, None) if result_method_name else None
+            )
+            if result_method is not None and not inspect.iscoroutinefunction(result_method):
+                result_method = None
+            method: Callable | None = result_method or getattr(self._client, method_name, None)
             if method is not None:
                 start_time: float = time.perf_counter()
                 if method_name == "get_device_unique_id":
@@ -157,7 +180,15 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                             )
                     state[cat.get("state_key")] = smart_info
                 else:
-                    state[cat.get("state_key")] = await method()
+                    value = await method()
+                    state_key = cat.get("state_key")
+                    if result_method is not None:
+                        self._category_results[state_key] = value
+                        state[state_key] = value.data
+                    else:
+                        state[state_key] = value
+                        if result_method_name is not None:
+                            self._category_results[state_key] = _LegacyCategoryResult(value)
                 end_time: float = time.perf_counter()
                 elapsed_time: float = end_time - start_time
                 total_time += elapsed_time
@@ -171,6 +202,15 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.error("Method %s not found", cat.get("function", ""))
 
         return state
+
+    def category_result(self, state_key: str) -> object | None:
+        """Return the status-aware result captured for a coordinator category."""
+        return self._category_results.get(state_key)
+
+    def category_is_authoritative(self, state_key: str) -> bool:
+        """Return whether the latest category inventory can drive stale deletion."""
+        result = self.category_result(state_key)
+        return bool(result is not None and getattr(result, "authoritative", False))
 
     def _build_categories(self) -> list[dict[str, str]]:
         """Build API call categories based on integration sync options.
@@ -476,6 +516,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
 
             # ensure clean state each interval
             self._state = {}
+            self._category_results = {}
             self._categories = self._build_categories()
             self._state["update_time"] = time.time()
             self._state["previous_state"] = previous_state
