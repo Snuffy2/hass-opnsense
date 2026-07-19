@@ -54,19 +54,22 @@ This requires coordinated changes in both repositories:
 ### Cache observations
 
 1. Use method-aware, exact-path cache keys for every observation.
-2. A successful real request refreshes an existing positive availability entry.
-3. A real 404 from an explicitly optional endpoint invalidates its positive
-   entry immediately.
-4. The next access performs an actual probe. A confirmed 404 creates a negative
-   entry with a shorter TTL than a positive entry.
-5. Timeouts, connection errors, 401/403 responses, 429 responses, and 5xx
+2. Classify core health and correlated 404s before mutating any per-endpoint
+   cache entry. Router-wide or correlated failures preserve existing positive,
+   negative, and pending state and their timestamps.
+3. A successful real request refreshes an existing positive availability entry.
+4. Only an isolated 404 from an explicitly optional endpoint invalidates its
+   positive entry immediately.
+5. The next access performs an actual probe. A confirmed isolated optional 404
+   creates a negative entry with a shorter TTL than a positive entry.
+6. Timeouts, connection errors, 401/403 responses, 429 responses, and 5xx
    responses do not change endpoint availability. They describe transport,
    authentication, authorization, throttling, or service health—not route
    existence.
-6. Never infer a base endpoint from a resource-specific or parameterized path.
+7. Never infer a base endpoint from a resource-specific or parameterized path.
    Derived paths may affect a registered probe key only through an explicit
    mapping.
-7. Do not populate the availability cache for every successful HTTP request.
+8. Do not populate the availability cache for every successful HTTP request.
    Refresh only keys already registered by endpoint probing or by an explicit
    optional-endpoint declaration.
 
@@ -118,8 +121,8 @@ Create a companion aiopnsense branch from its latest `origin/main`.
 4. Keep `force_refresh` behavior for validation, diagnostics, and targeted
    recovery.
 5. Ensure concurrent requests cannot leave a newer observation overwritten by
-   an older result. Add a small per-key lock or equivalent single-flight
-   mechanism only if tests demonstrate an actual race.
+   an older result. The cache contract must use per-key synchronization or an
+   atomic version/order check so stale writes are rejected unconditionally.
 
 ### Phase 2: aiopnsense status-aware optional transport
 
@@ -131,7 +134,10 @@ Create a companion aiopnsense branch from its latest `origin/main`.
    - non-404 HTTP failure;
    - transport failure;
    - malformed successful payload.
-3. Feed success and confirmed optional 404 observations into the cache helpers.
+3. Classify core health and correlated 404s before invoking any per-endpoint
+   cache helper. Preserve all existing state and timestamps for router-wide or
+   correlated failures; feed success and only isolated confirmed optional 404
+   observations into the cache helpers.
 4. Migrate optional endpoint callers incrementally, beginning with Speedtest and
    NUT. Do not alter mutating endpoint behavior as part of this work.
 5. Retain exact-path behavior for Speedtest `showlog` and `showstat`. Do not let a
@@ -184,8 +190,9 @@ dynamic entity schema.
 
 - Begin with cached-positive `showlog` and `showstat` observations.
 - Return 404 from the next real request.
-- Assert that the matching positive entry is invalidated and the failure is
-  classified as optional disappearance.
+- Establish that core health is intact and the 404 is isolated before asserting
+  that the matching positive entry is invalidated and classified as optional
+  disappearance.
 - On the next access, confirm one real probe stores a short-lived negative
   result.
 - Assert later polls skip payload requests while the negative entry is fresh.
@@ -197,16 +204,18 @@ dynamic entity schema.
 - Assert endpoint availability entries are unchanged.
 - Assert recovery occurs on the first successful update after service returns.
 - Cover correlated 404 responses from core and optional endpoints and assert
-  they are treated as global health failure rather than independent plugin
-  removals.
+  they are classified as global health failure before cache mutation rather
+  than independent plugin removals. Assert positive, negative, and pending
+  state and all associated timestamps remain unchanged.
 
 ### Speedtest-only five-minute transient failure
 
 - For timeout and 5xx failures, assert the positive cache remains intact and
   recovery occurs on the first later success.
-- For isolated 404 responses, assert invalidation, negative probing, skipped
-  requests during the negative TTL, and recovery no later than one negative TTL
-  after the endpoint returns.
+- For 404 responses, first establish healthy core endpoints and no correlated
+  failures. Then assert invalidation, negative probing, skipped requests during
+  the negative TTL, and recovery no later than one negative TTL after the
+  endpoint returns.
 - Assert unrelated categories continue updating.
 
 ### Optional plugin installed while Home Assistant is running
@@ -228,6 +237,9 @@ dynamic entity schema.
 - Add focused cache and transport tests covering GET and POST method-aware keys,
   success refresh, exact 404 invalidation, negative TTL expiry, force refresh,
   malformed payloads, concurrency, and non-404 failures.
+- Add a deterministic controlled-interleaving regression in which an older
+  observation completes after a newer one and prove it cannot overwrite the
+  newer cache state or timestamp.
 - Add Speedtest and NUT behavioral regressions at their real caller seams.
 - Run the full pytest suite and `prek run --all-files`.
 
@@ -262,7 +274,12 @@ dynamic entity schema.
 - Removing an optional plugin produces at most one handled real-request 404,
   followed by bounded negative probes.
 - A timeout or 5xx outage does not poison endpoint availability state.
-- A router-wide outage cannot mark many plugins absent for the negative TTL.
+- Core-health and correlated-404 classification occurs before any per-endpoint
+  mutation; a router-wide failure preserves positive, negative, and pending
+  state and timestamps and cannot mark plugins absent for the negative TTL.
+- Per-key cache writes unconditionally reject stale observations, with a
+  deterministic controlled-interleaving regression proving an older result
+  cannot overwrite newer state or timestamps.
 - An isolated optional-endpoint outage does not affect unrelated categories.
 - Newly installed supported plugins are detected within the negative TTL.
 - Fixed-schema entities can become available without reloading the integration.

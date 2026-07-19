@@ -3367,6 +3367,116 @@ async def test_runtime_reconciler_adds_new_sensor_inventory_once(
     assert len(added_batches) == 2
 
 
+@pytest.mark.parametrize(
+    ("initial_state", "ready_state", "sync_option", "expected_key"),
+    [
+        (
+            {"telemetry": {"filesystems": [], "temps": {}}},
+            {
+                "telemetry": {
+                    "filesystems": [{"mountpoint": "/", "used_pct": 42}],
+                    "temps": {},
+                }
+            },
+            "telemetry",
+            "telemetry.filesystems.root",
+        ),
+        (
+            {"smart": [{"device": "nvme0"}], "smart_info": "not-ready"},
+            {"smart": [{"device": "nvme0"}], "smart_info": {}},
+            "smart",
+            "smart.nvme0.temperature",
+        ),
+    ],
+    ids=["filesystem-telemetry-path", "smart-info-mapping-readiness"],
+)
+@pytest.mark.asyncio
+async def test_runtime_reconciler_detects_sensor_inventory_readiness(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+    initial_state: dict[str, Any],
+    ready_state: dict[str, Any],
+    sync_option: str,
+    expected_key: str,
+) -> None:
+    """Runtime fingerprints should notice inventories when their payload becomes usable."""
+    entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        initial_state,
+        sync_telemetry=sync_option == "telemetry",
+        sync_smart=sync_option == "smart",
+    )
+    coordinator = getattr(entry.runtime_data, COORDINATOR)
+    listeners: list[Callable[..., None]] = []
+
+    def register_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture a coordinator listener and return its remover."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = register_listener
+    entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    await async_setup_entry(
+        ph_hass,
+        entry,
+        cast(
+            "AddEntitiesCallback",
+            lambda entities, _=False: added_batches.append(list(entities)),
+        ),
+    )
+
+    coordinator.data = ready_state
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 2
+    assert [entity.entity_description.key for entity in added_batches[1]] == [expected_key]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciler_detects_carp_interface_identity_change(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """A changed CARP interface plus subnet identity should trigger runtime discovery."""
+    entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        {"carp": {"interfaces": [{"interface": "igc0", "subnet": "192.0.2.1"}]}},
+        sync_carp=True,
+    )
+    coordinator = getattr(entry.runtime_data, COORDINATOR)
+    listeners: list[Callable[..., None]] = []
+
+    def register_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture a coordinator listener and return its remover."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = register_listener
+    entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    await async_setup_entry(
+        ph_hass,
+        entry,
+        cast(
+            "AddEntitiesCallback",
+            lambda entities, _=False: added_batches.append(list(entities)),
+        ),
+    )
+
+    coordinator.data = {"carp": {"interfaces": [{"interface": "igc1", "subnet": "192.0.2.1"}]}}
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 2
+    assert [entity.entity_description.key for entity in added_batches[1]] == [
+        "carp.interface.igc1.192_0_2_1"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_carp_entry_runtime_reconciler_adds_new_vip_once(
     ph_hass: HomeAssistant,
@@ -3405,8 +3515,7 @@ async def test_carp_entry_runtime_reconciler_adds_new_vip_once(
     coordinator.data = {
         "carp": {
             "interfaces": [
-                {"vhid": 1, "subnet": "192.0.2.1"},
-                {"vhid": 2, "subnet": "198.51.100.1"},
+                {"vhid": 2, "subnet": "192.0.2.1"},
             ]
         }
     }
@@ -3416,11 +3525,57 @@ async def test_carp_entry_runtime_reconciler_adds_new_vip_once(
     assert len(added_batches) == 2
     assert len(added_batches[1]) == 1
     assert isinstance(added_batches[1][0], OPNsenseCarpVipSensor)
-    assert added_batches[1][0].entity_description.key == "carp.vip.2.198_51_100_1"
+    assert added_batches[1][0].entity_description.key == "carp.vip.2.192_0_2_1"
 
     listeners[0]()
     await asyncio.sleep(0)
     assert len(added_batches) == 2
+
+
+@pytest.mark.asyncio
+async def test_carp_repair_authority_requires_vip_identity_only_for_carp_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Partial VIP rows must not authorize CARP-entry cleanup or block device CARP scope."""
+    captured_authority: list[dict[str, bool]] = []
+
+    def capture_scoped(
+        _entry: MockConfigEntry,
+        _platform: str,
+        _entities: Iterable[Any],
+        authority: dict[str, bool],
+    ) -> None:
+        """Capture scoped repair authority from sensor setup."""
+        captured_authority.append(authority)
+
+    monkeypatch.setattr(sensor_module, "record_scoped_reconciliation", capture_scoped)
+    partial_row = {"interface": "igc0", "subnet": "192.0.2.1"}
+
+    device_entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        {"carp": {"interfaces": [partial_row]}},
+        sync_carp=True,
+    )
+    await async_setup_entry(
+        ph_hass,
+        device_entry,
+        cast("AddEntitiesCallback", lambda entities, _=False: None),
+    )
+
+    carp_entry = make_config_entry(data={"entry_type": "carp"}, entry_id="partial-carp")
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = {"carp": {"interfaces": [partial_row]}}
+    setattr(carp_entry.runtime_data, COORDINATOR, coordinator)
+    await async_setup_entry(
+        ph_hass,
+        carp_entry,
+        cast("AddEntitiesCallback", lambda entities, _=False: None),
+    )
+
+    assert captured_authority[0]["carp"] is True
+    assert captured_authority[1]["carp"] is False
 
 
 @pytest.mark.parametrize(

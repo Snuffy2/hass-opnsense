@@ -39,7 +39,9 @@ def _inventory_fingerprint(state: object) -> tuple[tuple[str, tuple[str, ...]], 
         identities["services"] = {
             identity
             for row in services
-            if isinstance(row, Mapping) and (identity := _service_identity(row)) is not None
+            if isinstance(row, Mapping)
+            and row.get("locked", 1) != 1
+            and (identity := _service_identity(row)) is not None
         }
     for vpn_type in ("openvpn", "wireguard"):
         for group in ("clients", "servers"):
@@ -50,22 +52,30 @@ def _inventory_fingerprint(state: object) -> tuple[tuple[str, tuple[str, ...]], 
                 }
     firewall = state.get("firewall")
     if isinstance(firewall, MutableMapping):
-        inventories = {
-            "firewall.rules": firewall.get("rules"),
-            "firewall.source_nat": dict_get(firewall, "nat.source_nat"),
-            "firewall.d_nat": dict_get(firewall, "nat.d_nat"),
-            "firewall.one_to_one": dict_get(firewall, "nat.one_to_one"),
-            "firewall.npt": dict_get(firewall, "nat.npt"),
-        }
-        for name, rows in inventories.items():
-            if isinstance(rows, Mapping):
-                identities[name] = {
-                    str(rule_id)
-                    for key, row in rows.items()
-                    if (rule_id := firewall_rule_id_from_payload(key, row))
-                }
+        firewall_sections: tuple[tuple[str, Any], ...] = (
+            ("firewall.rules", dict_get(firewall, "rules")),
+            ("firewall.source_nat", dict_get(firewall, "nat.source_nat")),
+            ("firewall.d_nat", dict_get(firewall, "nat.d_nat")),
+            ("firewall.one_to_one", dict_get(firewall, "nat.one_to_one")),
+            ("firewall.npt", dict_get(firewall, "nat.npt")),
+        )
+        for name, rows in firewall_sections:
+            if not isinstance(rows, Mapping):
+                continue
+            if name == "firewall.rules":
+                validator = _is_valid_firewall_rule_row
+            else:
+                validator = _is_valid_nat_rule_row
+            identities[name] = {
+                str(rule_id)
+                for rule_key, rule in rows.items()
+                if validator(rule_key, rule)
+                and (rule_id := firewall_rule_id_from_payload(rule_key, rule))
+            }
     unbound = state.get(ATTR_UNBOUND_BLOCKLIST)
     if isinstance(unbound, Mapping):
+        if _is_valid_unbound_row(unbound.get("legacy")):
+            identities[f"{ATTR_UNBOUND_BLOCKLIST}.legacy"] = {"legacy"}
         identities["unbound"] = {
             str(key)
             for key, row in unbound.items()

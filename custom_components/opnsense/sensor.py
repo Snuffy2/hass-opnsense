@@ -130,14 +130,15 @@ def _inventory_fingerprint(state: object) -> tuple[tuple[str, tuple[str, ...]], 
                 str(key) for key, row in rows.items() if isinstance(row, MutableMapping)
             }
     smart = state.get("smart")
-    if isinstance(smart, list):
+    smart_info = state.get("smart_info")
+    if isinstance(smart, list) and isinstance(smart_info, Mapping):
         identities["smart"] = {
             get_smart_device_name(row) for row in smart if _is_valid_smart_device_row(row)
         }
     vnstat = dict_get(state, "vnstat.interfaces", {})
     if isinstance(vnstat, Mapping):
         identities["vnstat"] = {key for key in vnstat if _is_valid_vnstat_interface_row(key)}
-    filesystems = dict_get(state, "telemetry.system.disk.filesystems", [])
+    filesystems = dict_get(state, "telemetry.filesystems", [])
     if isinstance(filesystems, list):
         identities["filesystems"] = {
             row["mountpoint"] for row in filesystems if _is_valid_filesystem_row(row)
@@ -151,9 +152,19 @@ def _inventory_fingerprint(state: object) -> tuple[tuple[str, tuple[str, ...]], 
         }
     carp = dict_get(state, "carp.interfaces", [])
     if isinstance(carp, list):
-        identities["carp"] = {
-            str(row["subnet"]) for row in carp if _is_valid_carp_interface_row(row)
-        }
+        carp_identities: set[str] = set()
+        for interface in carp:
+            if not _is_valid_carp_interface_row(interface):
+                continue
+            carp_subnet = str(interface["subnet"])
+            carp_identities.add(
+                _build_carp_interface_sensor_key(interface.get("interface"), carp_subnet)
+            )
+            if _is_valid_carp_vip_interface_row(interface):
+                vhid = _normalize_carp_value(interface.get("vhid"))
+                carp_identities.add(_build_carp_vip_sensor_key(vhid, carp_subnet))
+        if carp_identities:
+            identities["carp"] = carp_identities
     dhcp = dict_get(state, "dhcp_leases.lease_interfaces", {})
     if isinstance(dhcp, Mapping):
         identities["dhcp"] = {str(key) for key in dhcp}
@@ -208,6 +219,13 @@ def _is_valid_carp_interface_row(interface: Any) -> bool:
         isinstance(interface, MutableMapping)
         and isinstance(interface.get("subnet"), str)
         and bool(interface["subnet"].strip())
+    )
+
+
+def _is_valid_carp_vip_interface_row(interface: Any) -> bool:
+    """Return whether a CARP interface row has a complete VIP identity."""
+    return _is_valid_carp_interface_row(interface) and bool(
+        _normalize_carp_value(interface.get("vhid"))
     )
 
 
@@ -1229,7 +1247,7 @@ async def _compile_smart_sensors(
     """
     if not isinstance(state, MutableMapping):
         return []
-    if "smart_info" not in state:
+    if not isinstance(state.get("smart_info"), Mapping):
         return []
     smart_devices = state.get("smart")
     if not isinstance(smart_devices, list):
@@ -1470,12 +1488,10 @@ async def _compile_carp_vip_sensors(
     entities: list[OPNsenseCarpVipSensor] = []
     seen_keys: set[str] = set()
     for interface in carp_interfaces:
-        if not isinstance(interface, Mapping):
+        if not _is_valid_carp_vip_interface_row(interface):
             continue
         vhid = _normalize_carp_value(interface.get("vhid"))
         subnet = _normalize_carp_value(interface.get("subnet"))
-        if not vhid or not subnet:
-            continue
         key = _build_carp_vip_sensor_key(vhid, subnet)
         if key in seen_keys:
             continue
@@ -1867,7 +1883,7 @@ async def async_setup_entry(
         carp_authority = {
             "carp": isinstance(carp, MutableMapping)
             and isinstance(carp.get("interfaces"), list)
-            and all(_is_valid_carp_interface_row(row) for row in carp["interfaces"])
+            and all(_is_valid_carp_vip_interface_row(row) for row in carp["interfaces"])
         }
         record_desired_entities(
             config_entry,

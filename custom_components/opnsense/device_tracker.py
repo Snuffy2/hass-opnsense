@@ -1,6 +1,6 @@
 """Support for tracking for OPNsense devices."""
 
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Iterable, Mapping, MutableMapping
 import contextlib
 from datetime import datetime, timedelta, timezone
 import logging
@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import (
     DeviceRegistry,
     async_get as async_get_dev_reg,
 )
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import slugify
@@ -204,6 +204,21 @@ def _hostname_from_arp_entry(entry: MutableMapping[str, Any]) -> str | None:
     return hostname or None
 
 
+def _normalize_mac_values(values: Iterable[Any]) -> list[str]:
+    """Normalize and dedupe MAC strings preserving discovery order."""
+    normalized_macs: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        normalized_mac = _normalize_mac_for_device_tracker(value)
+        if not normalized_mac or normalized_mac in seen:
+            continue
+        normalized_macs.append(normalized_mac)
+        seen.add(normalized_mac)
+    return normalized_macs
+
+
 def _arp_expires_attribute(value: object) -> str | datetime | None:
     """Return the Home Assistant attribute value for an ARP expiry.
 
@@ -383,12 +398,19 @@ async def async_setup_entry(
             isinstance(mac_address, str) and mac_address.strip() for mac_address in configured_macs
         )
     )
+    track_all_inventory = isinstance(arp_entries, list)
     if not isinstance(arp_entries, list):
         if not has_configured_macs:
             reconciliation_complete = False
         arp_entries = []
     elif not has_configured_macs:
         reconciliation_complete = _track_all_arp_entries_are_complete(arp_entries)
+    track_all_inventory_is_authoritative = (
+        coordinator.category_is_authoritative("arp_table")
+        and track_all_inventory
+        and _track_all_arp_entries_are_complete(arp_entries)
+    )
+    inventory_authoritative = has_configured_macs or track_all_inventory_is_authoritative
     devices, mac_addresses, enabled_default = _compile_tracked_devices(config_entry, arp_entries)
 
     entities = _build_scanner_entities(
@@ -397,6 +419,38 @@ async def async_setup_entry(
         devices,
         enabled_default=enabled_default,
     )
+
+    persisted_mac_addresses = _normalize_mac_values(previous_mac_addresses)
+
+    def _persist_discovered_macs(entities_to_add: list[OPNsenseScannerEntity]) -> None:
+        """Persist discovered MAC identities after successful entity registration."""
+        nonlocal persisted_mac_addresses
+        discovered_mac_addresses = _normalize_mac_values(
+            entity.mac_address for entity in entities_to_add
+        )
+        merged = _normalize_mac_values(persisted_mac_addresses + discovered_mac_addresses)
+        if merged == persisted_mac_addresses:
+            return
+
+        setattr(config_entry.runtime_data, SHOULD_RELOAD, False)
+        new_data = config_entry.data.copy()
+        new_data[TRACKED_MACS] = merged
+        hass.config_entries.async_update_entry(config_entry, data=new_data)
+        persisted_mac_addresses = merged
+
+    def _add_entities_with_tracking(
+        new_entities: Iterable[Entity], update_before_add: bool = False
+    ) -> None:
+        """Add entities and persist successfully registered track-all MACs."""
+        submitted_entities = list(new_entities)
+        if update_before_add:
+            async_add_entities(submitted_entities, True)
+        else:
+            async_add_entities(submitted_entities)
+        _persist_discovered_macs(
+            [entity for entity in submitted_entities if isinstance(entity, OPNsenseScannerEntity)]
+        )
+
     if not is_reconciliation_active(config_entry):
         _cleanup_stale_tracked_devices(
             hass=hass,
@@ -404,17 +458,16 @@ async def async_setup_entry(
             device_registry=dev_reg,
             previous_mac_addresses=previous_mac_addresses,
             current_mac_addresses=mac_addresses,
-            inventory_authoritative=has_configured_macs or reconciliation_complete,
+            inventory_authoritative=inventory_authoritative,
             expand_owned_mac_addresses=has_configured_macs,
         )
 
-    if (has_configured_macs or reconciliation_complete) and set(mac_addresses) != set(
-        previous_mac_addresses
-    ):
+    if inventory_authoritative and set(mac_addresses) != set(previous_mac_addresses):
         setattr(config_entry.runtime_data, SHOULD_RELOAD, False)
         new_data = config_entry.data.copy()
         new_data[TRACKED_MACS] = mac_addresses.copy()
         hass.config_entries.async_update_entry(config_entry, data=new_data)
+        persisted_mac_addresses = _normalize_mac_values(mac_addresses)
 
     _LOGGER.debug("[device_tracker async_setup_entry] entities: %s", len(entities))
     record_desired_entities(
@@ -427,9 +480,7 @@ async def async_setup_entry(
         "device_tracker",
         entities,
         {
-            "arp": coordinator.category_is_authoritative("arp_table")
-            and isinstance(arp_inventory, list)
-            and _track_all_arp_entries_are_complete(arp_inventory)
+            "arp": inventory_authoritative,
         },
     )
     async_add_entities(entities)
@@ -447,7 +498,7 @@ async def async_setup_entry(
             hass,
             config_entry,
             coordinator,
-            async_add_entities,
+            _add_entities_with_tracking,
             entities,
             async_compile_runtime_entities,
             inventory_fingerprint=lambda: _arp_inventory_fingerprint(coordinator.data),

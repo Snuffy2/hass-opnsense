@@ -291,6 +291,55 @@ def test_vpn_switch_rows_are_complete_defaults_and_rejects_falsy_rows() -> None:
     )
 
 
+def test_inventory_fingerprint_matches_switch_compiler_eligibility() -> None:
+    """Fingerprint eligibility should mirror switch compiler rules."""
+    state: dict[str, Any] = {
+        "services": [
+            {"id": "locked", "locked": 1, "name": "Locked", "status": True},
+            {"id": "svc", "locked": 0, "name": "Active"},
+            {"name": "Named", "locked": 0, "status": True},
+        ],
+        "firewall": {
+            "rules": {
+                "good-rule": {"uuid": "good-rule", "%interface": "wan"},
+                "bad-rule": {"uuid": "bad-rule", "interface": ["wan"]},
+            },
+            "nat": {
+                "source_nat": {
+                    "good-source": {"uuid": "good-source", "%interface": "wan"},
+                    "bad-source": {"uuid": "bad-source", "interface": ""},
+                },
+                "d_nat": {
+                    "good-destination": {"uuid": "good-destination", "interface": "wan"},
+                    "bad-destination": {"uuid": "bad-destination", "interface": "   "},
+                },
+                "one_to_one": {
+                    "good-oto": {"uuid": "good-oto", "interface": "wan"},
+                    "bad-oto": {"uuid": "bad-oto", "interface": []},
+                },
+                "npt": {
+                    "good-npt": {"uuid": "good-npt", "interface": "wan"},
+                    "bad-npt": {"uuid": "bad-npt", "interface": 0},
+                },
+            },
+        },
+        ATTR_UNBOUND_BLOCKLIST: {
+            "legacy": {"enabled": "1"},
+            "dns1": {"description": "dns1"},
+        },
+    }
+
+    fingerprint = dict(switch_mod._inventory_fingerprint(state))
+    assert fingerprint["services"] == ("Named", "svc")
+    assert fingerprint["firewall.rules"] == ("good-rule",)
+    assert fingerprint["firewall.source_nat"] == ("good-source",)
+    assert fingerprint["firewall.d_nat"] == ("good-destination",)
+    assert fingerprint["firewall.one_to_one"] == ("good-oto",)
+    assert fingerprint["firewall.npt"] == ("good-npt",)
+    assert fingerprint["unbound"] == ("dns1",)
+    assert fingerprint["unbound_blocklist.legacy"] == ("legacy",)
+
+
 @pytest.mark.asyncio
 async def test_async_setup_entry_records_none_for_malformed_firewall_nat_inventory(
     monkeypatch: pytest.MonkeyPatch,
@@ -4261,6 +4310,202 @@ async def test_runtime_reconciler_adds_new_switch_inventory_once(
 
     assert len(added_batches) == 2
     assert [entity.entity_description.key for entity in added_batches[1]] == ["service.svc2.status"]
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "initial_state",
+        "updated_state",
+        "expected_key",
+        "description",
+    ),
+    [
+        pytest.param(
+            {
+                "firewall": {
+                    "rules": {"rule-id": {"uuid": "rule-id", "interface": []}},
+                },
+            },
+            {
+                "firewall": {
+                    "rules": {"rule-id": {"uuid": "rule-id", "%interface": "wan"}},
+                },
+            },
+            "firewall.rule.rule-id",
+            "firewall rule",
+            id="firewall_invalid_rule",
+        ),
+        pytest.param(
+            {
+                "firewall": {
+                    "nat": {
+                        "source_nat": {
+                            "nat-id": {"uuid": "nat-id", "interface": "   "},
+                        },
+                    },
+                },
+            },
+            {
+                "firewall": {
+                    "nat": {
+                        "source_nat": {
+                            "nat-id": {"uuid": "nat-id", "%interface": "wan"},
+                        },
+                    },
+                },
+            },
+            "firewall.nat.source_nat.nat-id",
+            "source NAT rule",
+            id="nat_source_rule",
+        ),
+    ],
+)
+async def test_runtime_reconciler_adds_invalid_switch_row_when_identity_changes(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+    initial_state: dict[str, Any],
+    updated_state: dict[str, Any],
+    expected_key: str,
+    description: str,
+) -> None:
+    """Invalid rows should add one switch once they become compile-valid."""
+    coordinator = make_coord(initial_state)
+    config_entry = setup_switch_reconciliation_entry(
+        make_config_entry,
+        coordinator,
+        sync_firewall_and_nat=True,
+    )
+    listeners: list[Callable[..., None]] = []
+
+    def add_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = add_listener
+    config_entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        added_batches.append(list(entities))
+
+    await switch_mod.async_setup_entry(
+        ph_hass,
+        config_entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+    assert len(listeners) == 1, description
+    assert added_batches == [[]], description
+
+    coordinator.data = updated_state
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2, description
+    assert [entity.entity_description.key for entity in added_batches[1]] == [expected_key], (
+        description
+    )
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2, description
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciler_adds_service_switch_on_locked_to_unlocked_transition(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """A locked service row should create a switch when unlocked."""
+    coordinator = make_coord(
+        {"services": [{"id": "svc-id", "name": "Svc", "locked": 1, "status": True}]}
+    )
+    config_entry = setup_switch_reconciliation_entry(
+        make_config_entry,
+        coordinator,
+        sync_services=True,
+    )
+    listeners: list[Callable[..., None]] = []
+
+    def add_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = add_listener
+    config_entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        added_batches.append(list(entities))
+
+    await switch_mod.async_setup_entry(
+        ph_hass,
+        config_entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+    assert len(listeners) == 1
+    assert added_batches == [[]]
+
+    coordinator.data = {
+        "services": [{"id": "svc-id", "name": "Svc", "locked": 0, "status": True}],
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
+    assert [entity.entity_description.key for entity in added_batches[1]] == [
+        "service.svc-id.status"
+    ]
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciler_adds_legacy_unbound_switch_when_legacy_becomes_valid(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Legacy Unbound should be added when legacy payload becomes valid."""
+    coordinator = make_coord({"unbound_blocklist": {"legacy": {}}})
+    config_entry = setup_switch_reconciliation_entry(
+        make_config_entry,
+        coordinator,
+        sync_unbound=True,
+    )
+    listeners: list[Callable[..., None]] = []
+
+    def add_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = add_listener
+    config_entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        added_batches.append(list(entities))
+
+    await switch_mod.async_setup_entry(
+        ph_hass,
+        config_entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+    assert len(listeners) == 1
+    assert added_batches == [[]]
+
+    coordinator.data = {
+        ATTR_UNBOUND_BLOCKLIST: {"legacy": {"enabled": "1", "type": "dnsbl"}},
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
+    assert [entity.entity_description.key for entity in added_batches[1]] == [
+        "unbound_blocklist.switch",
+    ]
 
     listeners[0]()
     await asyncio.sleep(0)
