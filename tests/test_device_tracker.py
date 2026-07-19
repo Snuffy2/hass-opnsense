@@ -2360,10 +2360,9 @@ async def test_cleanup_with_persisted_stale_runtime_track_all_macs(
     entity_registry.async_get_entity_id.return_value = "device_tracker.runtime"
     ph_hass.config_entries.async_update = MagicMock()
 
-    def get_entity_id(domain: str, platform: str, unique_id: str) -> str | None:
-        return "device_tracker.runtime" if unique_id == "dev1_mac_11_22_33_44_55_66" else None
-
-    entity_registry.async_get_entity_id.side_effect = get_entity_id
+    entity_registry.async_get_entity_id.side_effect = lambda _domain, _platform, unique_id: (
+        "device_tracker.runtime" if unique_id == "dev1_mac_11_22_33_44_55_66" else None
+    )
     monkeypatch.setattr(er, "async_get", MagicMock(return_value=entity_registry))
 
     device_registry = MagicMock()

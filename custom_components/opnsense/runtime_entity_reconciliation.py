@@ -53,12 +53,6 @@ def _normalize_identity_token(value: str | None) -> str | None:
     return normalized_token or None
 
 
-def _identity_key(identity_token: tuple[str, str]) -> str:
-    """Build a string key for identity and collision tracking."""
-    prefix, token = identity_token
-    return f"{prefix}:{token}"
-
-
 def _entity_identity_tokens(entity: Entity) -> tuple[tuple[str, str], str | None]:
     """Extract normalized identity and unique-id collision tokens for an entity.
 
@@ -124,9 +118,9 @@ class _RuntimeEntityReconciler:
             identity = self._identity_or_none(entity)
             if identity is None:
                 continue
-            identity_key = _identity_key(identity[0])
+            (identity_prefix, identity_token), unique_token = identity
+            identity_key = f"{identity_prefix}:{identity_token}"
             self._seen_entity_identities.add(identity_key)
-            unique_token = identity[1]
             if unique_token is not None:
                 self._seen_unique_tokens.add(unique_token)
         self._inventory_fingerprint: Hashable | object = _FINGERPRINT_UNSET
@@ -225,7 +219,8 @@ class _RuntimeEntityReconciler:
                     if identity is None:
                         continue
 
-                    identity_key = _identity_key(identity[0])
+                    (identity_prefix, identity_token), unique_token = identity
+                    identity_key = f"{identity_prefix}:{identity_token}"
                     if (
                         identity_key in self._seen_entity_identities
                         or identity_key in reserved_identity_keys
@@ -237,7 +232,6 @@ class _RuntimeEntityReconciler:
                         )
                         continue
 
-                    unique_token = identity[1]
                     if unique_token is not None and (
                         unique_token in self._seen_unique_tokens
                         or unique_token in reserved_unique_tokens
