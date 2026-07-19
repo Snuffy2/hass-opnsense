@@ -32,6 +32,26 @@ from custom_components.opnsense.device_tracker import OPNsenseScannerEntity
 from custom_components.opnsense.entity import OPNsenseBaseEntity
 
 
+def capture_reconciled_desired_entities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    """Capture reconciliation desired entities during setup."""
+    captured: dict[str, Any] = {}
+
+    def capture(
+        _entry: MockConfigEntry,
+        _platform: str,
+        entities: Any | None = None,
+        scope_authority: Mapping[str, bool] | None = None,
+    ) -> None:
+        """Capture entities passed to ``record_desired_entities``."""
+        captured["entities"] = entities
+        captured["scope_authority"] = scope_authority
+
+    monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
+    return captured
+
+
 def _make_scanner_entity(
     coordinator: MagicMock,
     make_config_entry: Callable[..., MockConfigEntry],
@@ -1262,19 +1282,7 @@ async def test_async_setup_entry_records_empty_entities_for_missing_arp_inventor
     entry = make_config_entry(data={CONF_DEVICE_UNIQUE_ID: "dev1"})
     setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
 
-    recorded: dict[str, Any] = {}
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
-
-    monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
+    recorded = capture_reconciled_desired_entities(monkeypatch)
 
     await dt_mod.async_setup_entry(
         MagicMock(),
@@ -1298,19 +1306,7 @@ async def test_async_setup_entry_records_empty_authoritative_arp_inventory(
     entry = make_config_entry(data={CONF_DEVICE_UNIQUE_ID: "dev1"})
     setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
 
-    recorded: dict[str, Any] = {}
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
-
-    monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
+    recorded = capture_reconciled_desired_entities(monkeypatch)
 
     await dt_mod.async_setup_entry(
         MagicMock(),
@@ -1386,20 +1382,8 @@ async def test_async_setup_entry_records_entities_for_malformed_arp_rows_in_trac
         options={CONF_DEVICE_TRACKER_ENABLED: True},
     )
     setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
-    recorded: dict[str, Any] = {}
+    recorded = capture_reconciled_desired_entities(monkeypatch)
     added: list[Any] = []
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
-
-    monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
     await dt_mod.async_setup_entry(
         MagicMock(),
@@ -1435,20 +1419,8 @@ async def test_async_setup_entry_records_entities_for_invalid_mapping_rows_in_tr
         options={CONF_DEVICES: [], CONF_DEVICE_TRACKER_ENABLED: True},
     )
     setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
-    recorded: dict[str, Any] = {}
+    recorded = capture_reconciled_desired_entities(monkeypatch)
     added: list[Any] = []
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
-
-    monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
     await dt_mod.async_setup_entry(
         MagicMock(),
@@ -1482,20 +1454,8 @@ async def test_async_setup_entry_records_entities_for_duplicate_macs_in_track_al
         options={CONF_DEVICE_TRACKER_ENABLED: True},
     )
     setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
-    recorded: dict[str, Any] = {}
+    recorded = capture_reconciled_desired_entities(monkeypatch)
     added: list[Any] = []
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
-
-    monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
     await dt_mod.async_setup_entry(
         MagicMock(),
@@ -1536,20 +1496,8 @@ async def test_async_setup_entry_track_all_completeness_ignored_in_explicit_mac_
         },
     )
     setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
-    recorded: dict[str, Any] = {}
+    recorded = capture_reconciled_desired_entities(monkeypatch)
     added: list[Any] = []
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
-
-    monkeypatch.setattr(dt_mod, "record_desired_entities", capture)
 
     await dt_mod.async_setup_entry(
         MagicMock(),

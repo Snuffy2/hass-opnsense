@@ -280,23 +280,11 @@ async def test_async_setup_entry_records_entities_for_partial_vpn_inventory(
     setattr(config_entry.runtime_data, COORDINATOR, coordinator)
 
     created: list[Any] = []
-    recorded: dict[str, Any] = {}
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
+    recorded = capture_reconciled_desired_entities(monkeypatch)
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture switch entities emitted by setup."""
         created.extend(ents)
-
-    monkeypatch.setattr(switch_mod, "record_desired_entities", capture)
 
     await switch_mod.async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities)
@@ -406,24 +394,12 @@ async def test_async_setup_entry_records_entities_for_malformed_firewall_nat_inv
         coordinator=make_coord(state),
         sync_firewall_and_nat=True,
     )
-    recorded: dict[str, Any] = {}
+    recorded = capture_reconciled_desired_entities(monkeypatch)
     created: list[Any] = []
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture switch entities emitted by setup."""
         created.extend(ents)
-
-    monkeypatch.setattr(switch_mod, "record_desired_entities", capture)
 
     await switch_mod.async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities)
@@ -558,24 +534,12 @@ async def test_async_setup_entry_records_entities_and_carp_authority(
         coordinator=make_coord(state),
         sync_carp=True,
     )
-    captured: dict[str, Any] = {}
+    captured = capture_reconciled_desired_entities(monkeypatch)
     created: list[Any] = []
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        captured["entities"] = entities
-        captured["scope_authority"] = scope_authority
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture switch entities emitted by setup."""
         created.extend(ents)
-
-    monkeypatch.setattr(switch_mod, "record_desired_entities", capture)
 
     await switch_mod.async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities)
@@ -4281,24 +4245,12 @@ async def test_async_setup_entry_records_entities_for_malformed_service_identity
     )
     setattr(config_entry.runtime_data, COORDINATOR, coordinator)
 
-    recorded: dict[str, Any] = {}
+    recorded = capture_reconciled_desired_entities(monkeypatch)
     created: list[Any] = []
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture desired entities input for reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
 
     def add_entities(ents: Iterable[Any], _update_before_add: bool = False) -> None:
         """Capture compiled switch entities."""
         created.extend(ents)
-
-    monkeypatch.setattr(switch_mod, "record_desired_entities", capture)
 
     await switch_mod.async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", add_entities)

@@ -3743,19 +3743,7 @@ async def test_async_setup_entry_records_entities_for_partial_vpn_inventory(
     coordinator.data = state
     setattr(config_entry.runtime_data, COORDINATOR, coordinator)
 
-    recorded: dict[str, Any] = {}
-
-    def capture(
-        _entry: MockConfigEntry,
-        _platform: str,
-        entities: Any | None = None,
-        scope_authority: Mapping[str, bool] | None = None,
-    ) -> None:
-        """Capture the desired-entity payload sent to reconciliation."""
-        recorded["entities"] = entities
-        recorded["scope_authority"] = scope_authority
-
-    monkeypatch.setattr(sensor_module, "record_desired_entities", capture)
+    recorded = capture_reconciled_desired_entities(monkeypatch)
 
     await async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", lambda ents, _=False: None)
