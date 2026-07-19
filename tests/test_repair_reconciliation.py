@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity import Entity
+from homeassistant.util import slugify
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -24,6 +25,11 @@ from custom_components.opnsense.repair_reconciliation import (
     parse_repair_marker,
     record_desired_entities,
 )
+
+
+def _production_unique_id(device_id: str, description_key: str) -> str:
+    """Build a registry unique ID through the production normalization path."""
+    return slugify(f"{device_id}_{description_key}")
 
 
 class _EntityRegistry:
@@ -332,8 +338,16 @@ def test_finalize_removes_only_stale_snapshot_and_preserves_device_associations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Finalization removes stale pre-repair rows but never new rows or used devices."""
-    surviving = _entry("old_id_interface.lan.status", entity_id="sensor.keep", device_id="used")
-    stale = _entry("old_id_interface.wan.status", entity_id="sensor.stale", device_id="obsolete")
+    surviving = _entry(
+        _production_unique_id("old_id", "interface.lan.status"),
+        entity_id="sensor.keep",
+        device_id="used",
+    )
+    stale = _entry(
+        _production_unique_id("old_id", "interface.wan.status"),
+        entity_id="sensor.stale",
+        device_id="obsolete",
+    )
     reconciliation, registry, devices = _subject(
         monkeypatch,
         [surviving, stale],
@@ -367,9 +381,13 @@ def test_finalize_preserves_stale_entities_outside_authoritative_scopes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A complete category cannot authorize deletion from a sibling category."""
-    stale_interface = _entry("old_id_interface.wan.status", entity_id="sensor.interface")
-    stale_vnstat = _entry("old_id_vnstat.wan.today", entity_id="sensor.vnstat")
-    unknown = _entry("old_id_future.category", entity_id="sensor.future")
+    stale_interface = _entry(
+        _production_unique_id("old_id", "interface.wan.status"), entity_id="sensor.interface"
+    )
+    stale_vnstat = _entry(
+        _production_unique_id("old_id", "vnstat.wan.today"), entity_id="sensor.vnstat"
+    )
+    unknown = _entry(_production_unique_id("old_id", "future.category"), entity_id="sensor.future")
     reconciliation, registry, _devices = _subject(
         monkeypatch,
         [stale_interface, stale_vnstat, unknown],
@@ -385,6 +403,40 @@ def test_finalize_preserves_stale_entities_outside_authoritative_scopes(
     assert registry.async_get("sensor.future") is unknown
 
 
+@pytest.mark.parametrize(
+    ("domain", "scope", "description_key"),
+    [
+        ("binary_sensor", "interfaces", "interface.wan.enabled"),
+        ("sensor", "telemetry", "telemetry.temps.cpu"),
+        ("switch", "services", "service.svc.status"),
+        ("device_tracker", "arp", "mac_aa:bb:cc:dd:ee:ff"),
+    ],
+)
+def test_normalized_scope_prefixes_delete_authoritative_entities(
+    monkeypatch: pytest.MonkeyPatch,
+    domain: str,
+    scope: str,
+    description_key: str,
+) -> None:
+    """Slugified production unique IDs map to their authoritative category scopes."""
+    entity_id = f"{domain}.stale"
+    stale = _entry(
+        _production_unique_id("old_id", description_key),
+        entity_id=entity_id,
+    )
+    reconciliation, registry, _devices = _subject(
+        monkeypatch,
+        [stale],
+        [_device("main", "old_id")],
+    )
+    reconciliation.prepare()
+    reconciliation.authoritative_scopes.add((domain, scope))
+
+    reconciliation.finalize()
+
+    assert registry.removed == [entity_id]
+
+
 @pytest.mark.parametrize("authoritative", [False, True])
 def test_smart_scope_authority_controls_stale_temperature_cleanup(
     monkeypatch: pytest.MonkeyPatch,
@@ -392,7 +444,7 @@ def test_smart_scope_authority_controls_stale_temperature_cleanup(
 ) -> None:
     """SMART temperature rows are removed only from authoritative inventory."""
     stale_smart = _entry(
-        "old_id_smart.nvme0.temperature",
+        _production_unique_id("old_id", "smart.nvme0.temperature"),
         entity_id="sensor.smart_nvme0_temperature",
     )
     reconciliation, registry, _devices = _subject(
@@ -542,7 +594,11 @@ def test_finalize_wraps_detach_failure_as_registry_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Finalization surfaces detach failures as a repair reconciliation error."""
-    stale = _entry("old_id_interface.wan.status", entity_id="sensor.stale", device_id="obsolete")
+    stale = _entry(
+        _production_unique_id("old_id", "interface.wan.status"),
+        entity_id="sensor.stale",
+        device_id="obsolete",
+    )
     reconciliation, _, device_registry = _subject(
         monkeypatch,
         [stale],
@@ -584,7 +640,9 @@ def test_finalize_reassigns_shared_tracker_parent_to_remaining_router(
 ) -> None:
     """Shared tracker devices are reparented when another router still owns shared trackers."""
     stale = _entry(
-        "old_id_interface.wan.status", entity_id="sensor.stale", device_id="shared-device"
+        _production_unique_id("old_id", "interface.wan.status"),
+        entity_id="sensor.stale",
+        device_id="shared-device",
     )
     surviving_entry = _other_config_entry("entry-2", "survivor_router")
     current_router = _device("current_router", "new_id")
@@ -618,7 +676,9 @@ def test_finalize_clears_parent_from_shared_tracker_when_no_replacement_exists(
 ) -> None:
     """Shared tracker parent reference is cleared when no surviving router can be resolved."""
     stale = _entry(
-        "old_id_interface.wan.status", entity_id="sensor.stale", device_id="shared-device"
+        _production_unique_id("old_id", "interface.wan.status"),
+        entity_id="sensor.stale",
+        device_id="shared-device",
     )
     current_router = _device("current_router", "new_id")
     shared_tracker = _device("shared-device", "shared-tracker", config_entries={"entry-1"})
