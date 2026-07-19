@@ -8,6 +8,7 @@ calculations, and update flow.
 from collections.abc import Callable, MutableMapping
 from datetime import timedelta
 import time
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -166,6 +167,61 @@ async def test_get_states_fetches_smart_info_for_each_smart_device(
         any_order=True,
     )
     assert client.get_smart_info.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_states_prefers_status_aware_category_result(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Coordinator unwraps result data and retains category authority metadata."""
+    client = MagicMock()
+    result = SimpleNamespace(data={"interfaces": {}}, state="available", authoritative=True)
+    client.get_vnstat_result = AsyncMock(return_value=result)
+    client.get_vnstat = AsyncMock(return_value={"legacy": True})
+    entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=entry,
+    )
+
+    state = await coordinator._get_states([{"function": "get_vnstat", "state_key": "vnstat"}])
+
+    assert state["vnstat"] == {"interfaces": {}}
+    assert coordinator.category_result("vnstat") is result
+    assert coordinator.category_is_authoritative("vnstat") is True
+    client.get_vnstat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_states_legacy_optional_method_is_non_authoritative(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """An older client retains data while reporting pending non-authority."""
+    client = MagicMock(spec=["get_dhcp_leases"])
+    client.get_dhcp_leases = AsyncMock(return_value={"lease_interfaces": {}})
+    entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=entry,
+    )
+
+    state = await coordinator._get_states(
+        [{"function": "get_dhcp_leases", "state_key": "dhcp_leases"}]
+    )
+
+    assert state["dhcp_leases"] == {"lease_interfaces": {}}
+    result = coordinator.category_result("dhcp_leases")
+    assert isinstance(result, coordinator_module._LegacyCategoryResult)
+    assert result.state == "pending"
+    assert result.authoritative is False
 
 
 @pytest.mark.asyncio

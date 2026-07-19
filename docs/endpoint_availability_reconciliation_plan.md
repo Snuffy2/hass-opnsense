@@ -1,4 +1,20 @@
-# Endpoint Availability and Optional-Entity Reconciliation Plan
+# Endpoint Availability and Optional-Entity Reconciliation Contract
+
+## Implementation Status
+
+This contract is implemented on the coordinated aiopnsense and hass-opnsense
+feature branches. aiopnsense classifies optional category results as
+`available`, `pending`, `missing`, `transient`, or `malformed` and reports an
+explicit `authoritative` bit. hass-opnsense unwraps result data for the existing
+entity state contract while retaining the result as coordinator sidecar state.
+Legacy clients remain readable but are always `pending` and non-authoritative.
+
+Device-ID repair reconciliation records platform completion separately from
+category authority. Stale registry entities are removed only inside a category
+whose latest normalized inventory is both structurally complete and
+authoritative. Missing, transient, malformed, legacy, and unknown scopes are
+preserved, including tracker-device relationships. Runtime additions use stable
+fingerprints derived only from validated normalized inventory identities.
 
 ## Purpose
 
@@ -121,10 +137,12 @@ Create a companion aiopnsense branch from its latest `origin/main`.
 5. Retain exact-path behavior for Speedtest `showlog` and `showstat`. Do not let a
    parameterized request invalidate an unrelated probe key.
 
-### Phase 3: hass-opnsense coordinator consumption
+### Phase 3: hass-opnsense coordinator consumption (implemented)
 
-1. Update the aiopnsense dependency pin in both `manifest.json` and
-   `pyproject.toml` after the companion release is available.
+1. After the companion release is available, update the aiopnsense dependency
+   pin in both `manifest.json` and `pyproject.toml`, plus the aiopnsense pin used
+   by prek configuration. This remains a post-release step; no unreleased or
+   guessed stable version is pinned by this implementation.
 2. Keep transient transport failures distinct from an optional capability being
    absent:
    - transient failure: preserve the category contract and mark affected
@@ -139,7 +157,7 @@ Create a companion aiopnsense branch from its latest `origin/main`.
    cache reconciliation implicitly enable a category hass-opnsense does not
    support.
 
-### Phase 4: hass-opnsense entity lifecycle
+### Phase 4: hass-opnsense entity lifecycle (implemented)
 
 Choose entity behavior based on whether the optional capability has a static or
 dynamic entity schema.
@@ -253,11 +271,16 @@ dynamic entity schema.
 - aiopnsense and hass-opnsense full test and lint gates pass on coordinated
   branches.
 
-## Decisions to Confirm Before Implementation
+## Implemented Decisions
 
-1. Confirm the initial negative TTL (recommended starting value: five minutes).
-2. Decide whether correlated-404 protection uses one known core health endpoint
-   or a bounded threshold across unrelated endpoints.
+1. The initial negative TTL is five minutes.
+2. Optional endpoint results carry explicit category state and authority; repair
+   reconciliation consumes that authority rather than inferring deletion safety
+   from normalized empty payloads.
+3. Category scopes follow existing unique-ID families: binary sensors use
+   interfaces, SMART, and notices; sensors use telemetry, vnStat, Speedtest,
+   certificates, VPN, gateways, interfaces, CARP, and DHCP; switches use
+   firewall/NAT, services, VPN, CARP, and Unbound; trackers use ARP.
 3. Confirm which optional categories have fixed schemas and should always create
    configured entities.
 4. Decide whether NUT integration is part of the first hass-opnsense delivery or

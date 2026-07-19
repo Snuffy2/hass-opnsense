@@ -332,8 +332,8 @@ def test_finalize_removes_only_stale_snapshot_and_preserves_device_associations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Finalization removes stale pre-repair rows but never new rows or used devices."""
-    surviving = _entry("old_id_keep", entity_id="sensor.keep", device_id="used")
-    stale = _entry("old_id_stale", entity_id="sensor.stale", device_id="obsolete")
+    surviving = _entry("old_id_interface.lan.status", entity_id="sensor.keep", device_id="used")
+    stale = _entry("old_id_interface.wan.status", entity_id="sensor.stale", device_id="obsolete")
     reconciliation, registry, devices = _subject(
         monkeypatch,
         [surviving, stale],
@@ -347,6 +347,7 @@ def test_finalize_removes_only_stale_snapshot_and_preserves_device_associations(
     new_entity = _entry("new_id_new", entity_id="sensor.new", device_id="used")
     registry.entries.append(new_entity)
     reconciliation.desired_identities.add(("sensor", DOMAIN, surviving.unique_id))
+    reconciliation.authoritative_scopes.add(("sensor", "interfaces"))
 
     reconciliation.finalize()
 
@@ -360,6 +361,28 @@ def test_finalize_removes_only_stale_snapshot_and_preserves_device_associations(
         device_id for device_id, changes in devices.updates if "remove_config_entry_id" in changes
     ]
     assert all(device_id not in {"main", "used"} for device_id in removals)
+
+
+def test_finalize_preserves_stale_entities_outside_authoritative_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A complete category cannot authorize deletion from a sibling category."""
+    stale_interface = _entry("old_id_interface.wan.status", entity_id="sensor.interface")
+    stale_vnstat = _entry("old_id_vnstat.wan.today", entity_id="sensor.vnstat")
+    unknown = _entry("old_id_future.category", entity_id="sensor.future")
+    reconciliation, registry, _devices = _subject(
+        monkeypatch,
+        [stale_interface, stale_vnstat, unknown],
+        [_device("main", "old_id")],
+    )
+    reconciliation.prepare()
+    reconciliation.authoritative_scopes.add(("sensor", "interfaces"))
+
+    reconciliation.finalize()
+
+    assert registry.removed == ["sensor.interface"]
+    assert registry.async_get("sensor.vnstat") is stale_vnstat
+    assert registry.async_get("sensor.future") is unknown
 
 
 def test_finalize_preserves_desired_disabled_tracker_device_by_mac(
@@ -461,7 +484,7 @@ def test_finalize_wraps_detach_failure_as_registry_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Finalization surfaces detach failures as a repair reconciliation error."""
-    stale = _entry("old_id_stale", entity_id="sensor.stale")
+    stale = _entry("old_id_interface.wan.status", entity_id="sensor.stale", device_id="obsolete")
     reconciliation, _, device_registry = _subject(
         monkeypatch,
         [stale],
@@ -471,6 +494,7 @@ def test_finalize_wraps_detach_failure_as_registry_error(
         ],
     )
     reconciliation.prepare()
+    reconciliation.authoritative_scopes.add(("sensor", "interfaces"))
     monkeypatch.setattr(
         rr,
         "detach_shared_router_parent",
@@ -501,7 +525,9 @@ def test_finalize_reassigns_shared_tracker_parent_to_remaining_router(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Shared tracker devices are reparented when another router still owns shared trackers."""
-    stale = _entry("old_id_stale", entity_id="sensor.stale", device_id="shared-device")
+    stale = _entry(
+        "old_id_interface.wan.status", entity_id="sensor.stale", device_id="shared-device"
+    )
     surviving_entry = _other_config_entry("entry-2", "survivor_router")
     current_router = _device("current_router", "new_id")
     surviving_router = _device("survivor_router_id", "survivor_router", config_entries={"entry-2"})
@@ -519,6 +545,7 @@ def test_finalize_reassigns_shared_tracker_parent_to_remaining_router(
         extra_config_entries={"entry-2": surviving_entry},
     )
     reconciliation.prepare()
+    reconciliation.authoritative_scopes.add(("sensor", "interfaces"))
 
     reconciliation.finalize()
 
@@ -532,13 +559,16 @@ def test_finalize_clears_parent_from_shared_tracker_when_no_replacement_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Shared tracker parent reference is cleared when no surviving router can be resolved."""
-    stale = _entry("old_id_stale", entity_id="sensor.stale", device_id="shared-device")
+    stale = _entry(
+        "old_id_interface.wan.status", entity_id="sensor.stale", device_id="shared-device"
+    )
     current_router = _device("current_router", "new_id")
     shared_tracker = _device("shared-device", "shared-tracker", config_entries={"entry-1"})
     shared_tracker.via_device_id = current_router.id
 
     reconciliation, _, devices = _subject(monkeypatch, [stale], [current_router, shared_tracker])
     reconciliation.prepare()
+    reconciliation.authoritative_scopes.add(("sensor", "interfaces"))
 
     reconciliation.finalize()
 
