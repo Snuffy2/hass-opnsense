@@ -1,14 +1,16 @@
 """Shared runtime add-only coordinator-driven entity reconciler helpers."""
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Hashable, Iterable
 import logging
 from typing import Protocol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import slugify
 
 from .repair_reconciliation import is_reconciliation_active
 
@@ -16,6 +18,9 @@ _LOGGER = logging.getLogger(__name__)
 
 TypeCompileCallback = Callable[[], Awaitable[Iterable[Entity]]]
 TypeIsReconciliationActive = Callable[[ConfigEntry], bool]
+TypeInventoryFingerprint = Callable[[], Hashable]
+
+_FINGERPRINT_UNSET = object()
 
 
 class TypeRuntimeCoordinator(Protocol):
@@ -28,25 +33,58 @@ class TypeRuntimeCoordinator(Protocol):
         """Register an update listener and return its removal callback."""
 
 
-def _entity_identity(entity: Entity) -> str | None:
-    """Extract a stable per-platform identity for entity de-duplication.
+def _normalize_identity_token(value: str | None) -> str | None:
+    """Normalize a raw identity candidate into a stable comparison token.
 
     Args:
-        entity: Entity candidate returned by a runtime compile callback.
+        value: A raw value from description key or unique ID.
 
     Returns:
-        str | None: A non-empty entity description key, falling back to the
-            entity unique ID, or ``None`` when neither is available.
+        str | None: Slugified value or ``None`` when value is unusable.
+    """
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    normalized_token = slugify(normalized)
+    return normalized_token or None
+
+
+def _identity_key(identity_token: tuple[str, str]) -> str:
+    """Build a string key for identity and collision tracking."""
+    prefix, token = identity_token
+    return f"{prefix}:{token}"
+
+
+def _entity_identity_tokens(entity: Entity) -> tuple[tuple[str, str], str | None]:
+    """Extract normalized identity and unique-id collision tokens for an entity.
+
+    Args:
+        entity: Candidate entity to normalize.
+
+    Returns:
+        tuple[tuple[str, str], str | None]: Identity token and optional normalized
+            unique-id token.
+
+    Raises:
+        ValueError: When no stable identity can be derived.
     """
     description = getattr(entity, "entity_description", None)
     description_key = getattr(description, "key", None)
-    if isinstance(description_key, str) and description_key.strip():
-        return description_key
+    description_token = _normalize_identity_token(description_key)
 
-    unique_id = entity.unique_id
-    if isinstance(unique_id, str) and unique_id.strip():
-        return unique_id
-    return None
+    if description_token is not None:
+        unique_token = _normalize_identity_token(entity.unique_id)
+        return ("description", description_token), unique_token
+
+    unique_token = _normalize_identity_token(entity.unique_id)
+    if unique_token is None:
+        raise ValueError("Missing entity identity for runtime reconciliation")
+
+    return ("unique", unique_token), unique_token
 
 
 class _RuntimeEntityReconciler:
@@ -59,6 +97,7 @@ class _RuntimeEntityReconciler:
         async_add_entities: AddEntitiesCallback,
         compile_entities: TypeCompileCallback,
         is_reconciliation_active_fn: TypeIsReconciliationActive,
+        inventory_fingerprint: TypeInventoryFingerprint | None,
         initial_entities: Iterable[Entity],
     ) -> None:
         """Create the per-platform runtime reconciler state.
@@ -66,9 +105,10 @@ class _RuntimeEntityReconciler:
         Args:
             hass: Home Assistant instance used to schedule async work.
             config_entry: Config entry owning the listener and cleanup lifecycle.
-            async_add_entities: Callback used to add newly discovered entities.
+            async_add_entities: Callback used to add runtime entities.
             compile_entities: Async compiler for runtime entities.
             is_reconciliation_active_fn: Predicate for repair-era skip windows.
+            inventory_fingerprint: Optional coordinator-inventory fingerprint callback.
             initial_entities: Entities already added during setup.
         """
         self._hass = hass
@@ -76,11 +116,30 @@ class _RuntimeEntityReconciler:
         self._async_add_entities = async_add_entities
         self._compile_entities = compile_entities
         self._is_reconciliation_active_fn = is_reconciliation_active_fn
-        self._seen_entity_identities: set[str] = {
-            identity
-            for identity in (_entity_identity(entity) for entity in initial_entities)
-            if identity is not None
-        }
+        self._inventory_fingerprint_fn = inventory_fingerprint
+        initial_entities_tuple = tuple(initial_entities)
+        self._seen_entity_identities: set[str] = set()
+        self._seen_unique_tokens: set[str] = set()
+        for entity in initial_entities_tuple:
+            identity = self._identity_or_none(entity)
+            if identity is None:
+                continue
+            identity_key = _identity_key(identity[0])
+            self._seen_entity_identities.add(identity_key)
+            unique_token = identity[1]
+            if unique_token is not None:
+                self._seen_unique_tokens.add(unique_token)
+        self._inventory_fingerprint: Hashable | object = _FINGERPRINT_UNSET
+        self._pending_inventory_fingerprint: Hashable | object = _FINGERPRINT_UNSET
+        if self._inventory_fingerprint_fn is not None:
+            try:
+                self._inventory_fingerprint = self._inventory_fingerprint_fn()
+            except RuntimeError, TypeError, ValueError:
+                _LOGGER.exception(
+                    "Runtime inventory fingerprint callback failed for entry %s",
+                    self._config_entry.entry_id,
+                )
+
         self._compile_requested = False
         self._compile_task: asyncio.Task[None] | None = None
         self._unloaded = False
@@ -92,6 +151,14 @@ class _RuntimeEntityReconciler:
         """Return the coordinator listener unregister callback if available."""
         return self._remove_coordinator_listener
 
+    @staticmethod
+    def _identity_or_none(entity: Entity) -> tuple[tuple[str, str], str | None] | None:
+        """Resolve stable identity tokens or return ``None`` when unavailable."""
+        try:
+            return _entity_identity_tokens(entity)
+        except ValueError:
+            return None
+
     @callback
     def schedule_reconcile(self, *_args: object, **_kwargs: object) -> None:
         """Schedule a coordinator-driven reconciliation pass.
@@ -102,6 +169,24 @@ class _RuntimeEntityReconciler:
         """
         if self._unloaded:
             return
+
+        if self._inventory_fingerprint_fn is not None:
+            try:
+                next_fingerprint = self._inventory_fingerprint_fn()
+            except RuntimeError, TypeError, ValueError:
+                _LOGGER.exception(
+                    "Runtime inventory fingerprint callback failed for entry %s",
+                    self._config_entry.entry_id,
+                )
+                return
+            if next_fingerprint == self._inventory_fingerprint:
+                _LOGGER.debug(
+                    "Skipping runtime reconciler for %s because inventory is unchanged",
+                    self._config_entry.entry_id,
+                )
+                return
+            self._pending_inventory_fingerprint = next_fingerprint
+
         self._compile_requested = True
 
         if self._compile_task is None:
@@ -110,15 +195,16 @@ class _RuntimeEntityReconciler:
     async def _run_compilation(self) -> None:
         """Run serialized and coalesced compile passes until up-to-date.
 
-        The routine loops only while updates are pending and no unload is pending.
-        Each pass reserves stable entity identities before calling
-        ``async_add_entities``.
+        The routine loops while updates remain and no unload is pending. It reserves
+        identities before submission and rolls them back on submission failure.
         """
         try:
             while self._compile_requested and not self._unloaded:
                 self._compile_requested = False
+                pass_fingerprint = self._pending_inventory_fingerprint
                 to_add: list[Entity] = []
-                reserved_identities: list[str] = []
+                reserved_identity_keys: set[str] = set()
+                reserved_unique_tokens: set[str] = set()
 
                 if self._is_reconciliation_active_fn(self._config_entry):
                     self._compile_requested = True
@@ -129,14 +215,7 @@ class _RuntimeEntityReconciler:
                     return
 
                 try:
-                    new_entities = await self._compile_entities()
-                    for entity in new_entities:
-                        identity = _entity_identity(entity)
-                        if identity is None or identity in self._seen_entity_identities:
-                            continue
-                        self._seen_entity_identities.add(identity)
-                        reserved_identities.append(identity)
-                        to_add.append(entity)
+                    new_entities = tuple(await self._compile_entities())
                 except asyncio.CancelledError:
                     raise
                 except AttributeError, KeyError, RuntimeError, TypeError, ValueError:
@@ -145,22 +224,64 @@ class _RuntimeEntityReconciler:
                         self._config_entry.entry_id,
                     )
                     return
-                if to_add and not self._unloaded:
-                    submitted = False
+
+                for entity in new_entities:
+                    identity = self._identity_or_none(entity)
+                    if identity is None:
+                        continue
+
+                    identity_key = _identity_key(identity[0])
+                    if (
+                        identity_key in self._seen_entity_identities
+                        or identity_key in reserved_identity_keys
+                    ):
+                        _LOGGER.debug(
+                            "Skipping runtime entity %s for %s due duplicate identity key",
+                            identity_key,
+                            self._config_entry.entry_id,
+                        )
+                        continue
+
+                    unique_token = identity[1]
+                    if unique_token is not None and (
+                        unique_token in self._seen_unique_tokens
+                        or unique_token in reserved_unique_tokens
+                    ):
+                        _LOGGER.debug(
+                            "Skipping runtime entity %s for %s due normalized unique-id collision",
+                            identity_key,
+                            self._config_entry.entry_id,
+                        )
+                        continue
+
+                    reserved_identity_keys.add(identity_key)
+                    self._seen_entity_identities.add(identity_key)
+                    if unique_token is not None:
+                        reserved_unique_tokens.add(unique_token)
+                        self._seen_unique_tokens.add(unique_token)
+                    to_add.append(entity)
+
+                if to_add:
                     try:
                         self._async_add_entities(to_add)
-                        submitted = True
-                    finally:
-                        if not submitted:
-                            self._seen_entity_identities.difference_update(reserved_identities)
+                    except HomeAssistantError, RuntimeError, ValueError:
+                        self._seen_entity_identities.difference_update(reserved_identity_keys)
+                        self._seen_unique_tokens.difference_update(reserved_unique_tokens)
+                        _LOGGER.exception(
+                            "Runtime reconciler submit failed for entry %s",
+                            self._config_entry.entry_id,
+                        )
+                        return
+                if pass_fingerprint is not _FINGERPRINT_UNSET:
+                    self._inventory_fingerprint = pass_fingerprint
         finally:
             self._compile_task = None
 
     def attach_cleanup(self) -> None:
-        """Register unload cleanup for listener registration and in-flight tasks."""
+        """Register unload cleanup for listener and in-flight tasks."""
 
         def _cleanup() -> None:
-            """Stop future reconciler work and release listener/task resources."""
+            """Stop reconciler work and release listener/task resources."""
             if self._unloaded:
                 return
             self._unloaded = True
@@ -195,6 +316,7 @@ def attach_runtime_entity_reconciler(
     async_compile_entities: TypeCompileCallback,
     *,
     is_reconciliation_active_fn: TypeIsReconciliationActive = is_reconciliation_active,
+    inventory_fingerprint: TypeInventoryFingerprint | None = None,
 ) -> None:
     """Attach a runtime reconciler that only adds unseen coordinator-derived entities.
 
@@ -205,12 +327,15 @@ def attach_runtime_entity_reconciler(
         async_add_entities: Callback used to register newly discovered entities.
         initial_entities: Entities whose stable identities were already added
             during platform setup.
-        async_compile_entities: Async callback that compiles candidate runtime entities.
+        async_compile_entities: Async callback that compiles candidate runtime
+            entities.
         is_reconciliation_active_fn: Optional override used for unit tests.
+        inventory_fingerprint: Optional callback used to fingerprint coordinator
+            inventory before compiling runtime entities.
 
     Notes:
-        The function registers exactly one coordinator listener and one unload hook.
-        It never removes existing entities.
+        The function registers exactly one coordinator listener and one unload
+        hook. It never removes existing entities.
     """
     reconciler = _RuntimeEntityReconciler(
         hass=hass,
@@ -218,6 +343,7 @@ def attach_runtime_entity_reconciler(
         async_add_entities=async_add_entities,
         compile_entities=async_compile_entities,
         is_reconciliation_active_fn=is_reconciliation_active_fn,
+        inventory_fingerprint=inventory_fingerprint,
         initial_entities=initial_entities,
     )
     reconciler.attach_coordinator_listener(coordinator)
