@@ -4,6 +4,7 @@ These tests cover setup, coordinator update handling, restore state behavior,
 and device info formatting for the integration's device tracker entities.
 """
 
+import asyncio
 from collections.abc import Callable, Iterable, MutableMapping
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
@@ -220,6 +221,125 @@ async def test_async_setup_entry_configured_devices(
 
     assert target_entry is entry
     assert updated_data.get(TRACKED_MACS) == ["aa:bb:cc"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciler_adds_new_track_all_devices_once(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    coordinator: MagicMock,
+    make_config_entry: Callable[..., MockConfigEntry],
+    fake_reg_factory: Any,
+) -> None:
+    """Track-all updates should add new ARP devices once without cleanup or persistence."""
+    initial_mac = "aa:bb:cc:dd:ee:ff"
+    coordinator.data = {"arp_table": [{"mac": initial_mac, "hostname": "initial"}]}
+    listeners: list[Callable[..., None]] = []
+
+    def add_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture the runtime reconciliation listener."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = add_listener
+    entry = make_config_entry(
+        data={TRACKED_MACS: [initial_mac], CONF_DEVICE_UNIQUE_ID: "dev1"},
+        options={CONF_DEVICE_TRACKER_ENABLED: True},
+        entry_id="runtime-track-all",
+    )
+    setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
+    entry.async_on_unload = MagicMock()
+    ph_hass.config_entries.async_update_entry = MagicMock()
+    monkeypatch.setattr(
+        dt_mod,
+        "async_get_dev_reg",
+        lambda _hass: fake_reg_factory(device_exists=False),
+    )
+    cleanup = MagicMock()
+    record_desired = MagicMock()
+    monkeypatch.setattr(dt_mod, "_cleanup_stale_tracked_devices", cleanup)
+    monkeypatch.setattr(dt_mod, "record_desired_entities", record_desired)
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Capture each device tracker entity batch."""
+        added_batches.append(list(entities))
+
+    await dt_mod.async_setup_entry(
+        ph_hass,
+        entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+
+    assert len(listeners) == 1
+    assert entry.async_on_unload.call_count == 1
+    assert [entity.mac_address for entity in added_batches[0]] == [initial_mac]
+    assert cleanup.call_count == 1
+    assert record_desired.call_count == 1
+    ph_hass.config_entries.async_update_entry.assert_not_called()
+
+    coordinator.data = {"arp_table": "incomplete"}
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 1
+
+    new_mac = "11:22:33:44:55:66"
+    coordinator.data = {
+        "arp_table": [
+            {"mac": initial_mac, "hostname": "initial"},
+            "malformed",
+            {"mac": new_mac, "hostname": "new"},
+        ]
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 2
+    assert [entity.mac_address for entity in added_batches[1]] == [new_mac]
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
+    assert cleanup.call_count == 1
+    assert record_desired.call_count == 1
+    ph_hass.config_entries.async_update_entry.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_configured_mac_mode_does_not_attach_runtime_reconciler(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    coordinator: MagicMock,
+    make_config_entry: Callable[..., MockConfigEntry],
+    fake_reg_factory: Any,
+) -> None:
+    """Configured-MAC mode should remain a setup-only fixed tracker inventory."""
+    configured_mac = "aa:bb:cc:dd:ee:ff"
+    coordinator.data = {"arp_table": [{"mac": configured_mac}]}
+    entry = make_config_entry(
+        data={TRACKED_MACS: [configured_mac], CONF_DEVICE_UNIQUE_ID: "dev1"},
+        options={CONF_DEVICE_TRACKER_ENABLED: True, CONF_DEVICES: [configured_mac]},
+        entry_id="configured-trackers",
+    )
+    setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
+    ph_hass.config_entries.async_update_entry = MagicMock()
+    monkeypatch.setattr(
+        dt_mod,
+        "async_get_dev_reg",
+        lambda _hass: fake_reg_factory(device_exists=False),
+    )
+    attach_reconciler = MagicMock()
+    monkeypatch.setattr(dt_mod, "attach_runtime_entity_reconciler", attach_reconciler)
+    added: list[Any] = []
+
+    await dt_mod.async_setup_entry(
+        ph_hass,
+        entry,
+        cast("AddEntitiesCallback", added.extend),
+    )
+
+    assert [entity.mac_address for entity in added] == [configured_mac]
+    attach_reconciler.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1357,6 +1477,157 @@ async def test_async_setup_entry_removes_previous_mac(
         "dev_to_remove", remove_config_entry_id=entry.entry_id
     )
     assert hass.config_entries.async_update_entry.called
+
+
+def test_configured_mode_cleanup_includes_runtime_discovered_device_registry_macs(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Configured-mode cleanup should remove track-all devices absent from persisted MACs."""
+    configured_mac = "aa:bb:cc:dd:ee:ff"
+    runtime_mac = "11:22:33:44:55:66"
+    router_mac = "00:11:22:33:44:55"
+    entry = make_config_entry(
+        data={TRACKED_MACS: [configured_mac], CONF_DEVICE_UNIQUE_ID: "dev1"},
+        options={CONF_DEVICE_TRACKER_ENABLED: True, CONF_DEVICES: [configured_mac]},
+        entry_id="configured-after-track-all",
+    )
+    router_device = MagicMock(
+        id="router-device",
+        identifiers={(DOMAIN, "dev1")},
+        connections={(dr.CONNECTION_NETWORK_MAC, router_mac)},
+    )
+    runtime_device = MagicMock(
+        id="runtime-device",
+        identifiers=set(),
+        connections={(dr.CONNECTION_NETWORK_MAC, runtime_mac)},
+        config_entries={entry.entry_id},
+        via_device_id="router-device",
+    )
+    device_registry = MagicMock()
+
+    def get_device(
+        *,
+        identifiers: set[tuple[str, str]] | None = None,
+        connections: set[tuple[str, str]] | None = None,
+    ) -> Any:
+        """Return the router or runtime-discovered tracker device."""
+        if identifiers is not None:
+            return router_device
+        if connections == {(dr.CONNECTION_NETWORK_MAC, runtime_mac)}:
+            return runtime_device
+        return None
+
+    device_registry.async_get_device.side_effect = get_device
+    entity_registry = MagicMock()
+    entity_registry.async_get_entity_id.return_value = "device_tracker.runtime_discovery"
+    monkeypatch.setattr(er, "async_get", MagicMock(return_value=entity_registry))
+    monkeypatch.setattr(
+        dt_mod.dr,
+        "async_entries_for_config_entry",
+        MagicMock(return_value=[router_device, runtime_device]),
+    )
+    detach = MagicMock(return_value=(True, None))
+    monkeypatch.setattr(dt_mod, "detach_shared_router_parent", detach)
+
+    dt_mod._cleanup_stale_tracked_devices(
+        hass=ph_hass,
+        config_entry=entry,
+        device_registry=device_registry,
+        previous_mac_addresses=[configured_mac],
+        current_mac_addresses=[configured_mac],
+        inventory_authoritative=True,
+        expand_owned_mac_addresses=True,
+    )
+
+    entity_registry.async_get_entity_id.assert_called_once_with(
+        Platform.DEVICE_TRACKER,
+        DOMAIN,
+        "dev1_mac_11_22_33_44_55_66",
+    )
+    entity_registry.async_remove.assert_called_once_with("device_tracker.runtime_discovery")
+    detach.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arp_table",
+    [
+        "malformed-container",
+        [{"mac": "aa:bb:cc:dd:ee:ff"}, "malformed-row"],
+    ],
+)
+async def test_incomplete_track_all_reload_marks_cleanup_non_authoritative(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    coordinator: MagicMock,
+    make_config_entry: Callable[..., MockConfigEntry],
+    fake_reg_factory: Any,
+    arp_table: Any,
+) -> None:
+    """Incomplete track-all ARP data should never authorize stale tracker deletion."""
+    coordinator.data = {"arp_table": arp_table}
+    entry = make_config_entry(
+        data={
+            TRACKED_MACS: ["aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"],
+            CONF_DEVICE_UNIQUE_ID: "dev1",
+        },
+        options={CONF_DEVICE_TRACKER_ENABLED: True},
+        entry_id="incomplete-track-all",
+    )
+    setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
+    monkeypatch.setattr(
+        dt_mod,
+        "async_get_dev_reg",
+        lambda _hass: fake_reg_factory(device_exists=False),
+    )
+    cleanup = MagicMock()
+    monkeypatch.setattr(dt_mod, "_cleanup_stale_tracked_devices", cleanup)
+    ph_hass.config_entries.async_update_entry = MagicMock()
+
+    await dt_mod.async_setup_entry(ph_hass, entry, MagicMock())
+
+    cleanup.assert_called_once()
+    assert cleanup.call_args.kwargs["inventory_authoritative"] is False
+    assert cleanup.call_args.kwargs["expand_owned_mac_addresses"] is False
+    ph_hass.config_entries.async_update_entry.assert_not_called()
+    assert entry.data[TRACKED_MACS] == ["aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"]
+
+
+def test_track_all_cleanup_does_not_expand_temporarily_absent_runtime_devices(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Complete track-all reloads should retain runtime devices absent from one inventory."""
+    current_mac = "aa:bb:cc:dd:ee:ff"
+    runtime_mac = "11:22:33:44:55:66"
+    entry = make_config_entry(
+        data={TRACKED_MACS: [current_mac], CONF_DEVICE_UNIQUE_ID: "dev1"},
+        options={CONF_DEVICE_TRACKER_ENABLED: True},
+        entry_id="track-all-runtime-absence",
+    )
+    runtime_device = MagicMock(
+        identifiers=set(),
+        connections={(dr.CONNECTION_NETWORK_MAC, runtime_mac)},
+    )
+    owned_entries = MagicMock(return_value=[runtime_device])
+    monkeypatch.setattr(dt_mod.dr, "async_entries_for_config_entry", owned_entries)
+    device_registry = MagicMock()
+
+    dt_mod._cleanup_stale_tracked_devices(
+        hass=ph_hass,
+        config_entry=entry,
+        device_registry=device_registry,
+        previous_mac_addresses=[current_mac],
+        current_mac_addresses=[current_mac],
+        inventory_authoritative=True,
+        expand_owned_mac_addresses=False,
+    )
+
+    owned_entries.assert_not_called()
+    device_registry.async_get_device.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity
 from .helpers import coerce_bool, dict_get, get_smart_device_name
 from .repair_reconciliation import record_desired_entities
+from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -183,6 +184,32 @@ async def _compile_smart_status_binary_sensors(
     return entities
 
 
+async def _compile_runtime_inventory_binary_sensors(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+    config: Mapping[str, Any],
+) -> list:
+    """Compile option-enabled binary-sensor inventory from current state.
+
+    Args:
+        config_entry: Config entry owning the runtime entities.
+        coordinator: Data update coordinator supplying current state.
+        config: Config-entry options controlling inventory synchronization.
+
+    Returns:
+        list: Inventory-driven binary-sensor candidates for add-only reconciliation.
+    """
+    if not isinstance(coordinator.data, MutableMapping):
+        return []
+
+    entities: list = []
+    if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_interface_enabled_binary_sensors(config_entry, coordinator))
+    if config.get(CONF_SYNC_SMART, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_smart_status_binary_sensors(config_entry, coordinator))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -237,6 +264,19 @@ async def async_setup_entry(
         config_entry, "binary_sensor", entities if reconciliation_complete else None
     )
     async_add_entities(entities)
+
+    async def async_compile_runtime_entities() -> list:
+        """Compile current option-enabled binary-sensor inventory for runtime additions."""
+        return await _compile_runtime_inventory_binary_sensors(config_entry, coordinator, config)
+
+    attach_runtime_entity_reconciler(
+        hass,
+        config_entry,
+        coordinator,
+        async_add_entities,
+        entities,
+        async_compile_runtime_entities,
+    )
 
 
 class OPNsenseBinarySensor(OPNsenseEntity, BinarySensorEntity):

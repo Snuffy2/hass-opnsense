@@ -52,6 +52,7 @@ from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity, OPNsenseEntityCoordinator
 from .helpers import coerce_bool, dict_get, get_smart_device_name, is_carp_entry
 from .repair_reconciliation import record_desired_entities
+from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 from .traffic_coordinator import OPNsenseLiveTrafficCoordinator
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
@@ -1731,6 +1732,51 @@ async def _compile_vpn_sensors(
     return entities
 
 
+async def _compile_runtime_inventory_sensors(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+    config: Mapping[str, Any],
+    *,
+    carp_entry: bool = False,
+) -> list:
+    """Compile option-enabled inventory sensors from current coordinator data.
+
+    Args:
+        config_entry: Config entry owning the runtime entities.
+        coordinator: Data update coordinator supplying current state.
+        config: Config-entry options controlling inventory synchronization.
+        carp_entry: Whether to compile the CARP virtual endpoint inventory.
+
+    Returns:
+        list: Inventory-driven sensor candidates for add-only reconciliation.
+    """
+    state = coordinator.data
+    if not isinstance(state, MutableMapping):
+        return []
+    if carp_entry:
+        return await _compile_carp_vip_sensors(config_entry, coordinator, state)
+
+    entities: list = []
+    if config.get(CONF_SYNC_TELEMETRY, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_filesystem_sensors(config_entry, coordinator, state))
+        entities.extend(await _compile_temperature_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_VNSTAT, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_vnstat_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_SMART, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_smart_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_vpn_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_GATEWAYS, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_gateway_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_INTERFACES, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_interface_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_CARP, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_carp_interface_sensors(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_DHCP_LEASES, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_dhcp_leases_sensors(config_entry, coordinator, state))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -1769,6 +1815,24 @@ async def async_setup_entry(
         entities.extend(await _compile_carp_status_sensor(config_entry, coordinator, state))
         entities.extend(await _compile_carp_vip_sensors(config_entry, coordinator, state))
         async_add_entities(entities)
+
+        async def async_compile_carp_runtime_entities() -> list:
+            """Compile current CARP VIP inventory for runtime additions."""
+            return await _compile_runtime_inventory_sensors(
+                config_entry,
+                coordinator,
+                config,
+                carp_entry=True,
+            )
+
+        attach_runtime_entity_reconciler(
+            hass,
+            config_entry,
+            coordinator,
+            async_add_entities,
+            entities,
+            async_compile_carp_runtime_entities,
+        )
         return
 
     reconciliation_complete = True
@@ -1875,6 +1939,19 @@ async def async_setup_entry(
     _LOGGER.debug("[sensor async_setup_entry] entities: %s", len(entities))
     record_desired_entities(config_entry, "sensor", entities if reconciliation_complete else None)
     async_add_entities(entities)
+
+    async def async_compile_runtime_entities() -> list:
+        """Compile current option-enabled sensor inventory for runtime additions."""
+        return await _compile_runtime_inventory_sensors(config_entry, coordinator, config)
+
+    attach_runtime_entity_reconciler(
+        hass,
+        config_entry,
+        coordinator,
+        async_add_entities,
+        entities,
+        async_compile_runtime_entities,
+    )
 
 
 def slugify_filesystem_mountpoint(mountpoint: str) -> str:

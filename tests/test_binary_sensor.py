@@ -4,6 +4,7 @@ These tests validate async_setup_entry and the update handlers for the
 binary sensor entities.
 """
 
+import asyncio
 from collections.abc import Callable, Iterable
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -12,6 +13,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntityDescription,
 )
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -78,6 +80,80 @@ def setup_binary_sensor_reconciliation_entry(
     coordinator.data = coordinator_data
     setattr(entry.runtime_data, COORDINATOR, coordinator)
     return entry
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciler_adds_new_binary_sensor_inventory_once(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Runtime updates should add new binary sensors without re-adding notices."""
+    entry = setup_binary_sensor_reconciliation_entry(
+        make_config_entry,
+        coordinator_data={
+            "interfaces": {"wan": {"name": "WAN"}},
+            "smart": [],
+        },
+        sync_interfaces=True,
+        sync_smart=True,
+        sync_notices=True,
+    )
+    coordinator = getattr(entry.runtime_data, COORDINATOR)
+    listeners: list[Callable[..., None]] = []
+
+    def register_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture a coordinator listener and return its remover."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = register_listener
+    entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Capture each platform entity batch."""
+        added_batches.append(list(entities))
+
+    await async_setup_entry(
+        ph_hass,
+        entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+
+    assert len(listeners) == 1
+    assert any(
+        isinstance(entity, OPNsensePendingNoticesPresentBinarySensor) for entity in added_batches[0]
+    )
+    initial_unique_ids = {entity.unique_id for entity in added_batches[0]}
+
+    coordinator.data = {}
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 1
+    assert {entity.unique_id for entity in added_batches[0]} == initial_unique_ids
+
+    coordinator.data = {
+        "interfaces": {
+            "wan": {"name": "WAN"},
+            "lan": {"name": "LAN"},
+        },
+        "smart": [{"device": "nvme0"}],
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 2
+    assert {entity.entity_description.key for entity in added_batches[1]} == {
+        "interface.lan.enabled",
+        "smart.nvme0.status",
+    }
+    assert not any(
+        isinstance(entity, OPNsensePendingNoticesPresentBinarySensor) for entity in added_batches[1]
+    )
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
 
 
 def test_binary_sensor_description_builders_preserve_entity_contract() -> None:

@@ -10,7 +10,7 @@ from homeassistant.components.device_tracker import ScannerEntity, SourceType
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
     DeviceRegistry,
@@ -44,6 +44,7 @@ from .helpers import (
     normalize_arp_mac,
 )
 from .repair_reconciliation import is_reconciliation_active, record_desired_entities
+from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -263,6 +264,70 @@ def _compile_tracked_devices(
     return devices, mac_addresses, False
 
 
+def _build_scanner_entities(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+    devices: list[dict[str, Any]],
+    *,
+    enabled_default: bool,
+) -> list[OPNsenseScannerEntity]:
+    """Build scanner entities from compiled tracker device data.
+
+    Args:
+        config_entry: Config entry owning the tracker entities.
+        coordinator: Coordinator providing ARP updates.
+        devices: Compiled device dictionaries containing stable MAC identities.
+        enabled_default: Whether new entities should be enabled by default.
+
+    Returns:
+        Scanner entities for device rows with string MAC identities.
+    """
+    entities: list[OPNsenseScannerEntity] = []
+    for device in devices:
+        mac = device.get("mac")
+        if not isinstance(mac, str):
+            continue
+        entities.append(
+            OPNsenseScannerEntity(
+                config_entry=config_entry,
+                coordinator=coordinator,
+                enabled_default=enabled_default,
+                mac=mac,
+                mac_vendor=device.get("manufacturer"),
+                hostname=device.get("hostname"),
+            )
+        )
+    return entities
+
+
+async def _compile_runtime_track_all_entities(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+) -> list[OPNsenseScannerEntity]:
+    """Compile current ARP devices for add-only track-all reconciliation.
+
+    Args:
+        config_entry: Config entry owning the tracker entities.
+        coordinator: Coordinator providing the current ARP inventory.
+
+    Returns:
+        Scanner entity candidates from valid rows in the current ARP table.
+    """
+    state = coordinator.data
+    if not isinstance(state, MutableMapping):
+        return []
+    arp_entries = dict_get(state, "arp_table")
+    if not isinstance(arp_entries, list):
+        return []
+    devices, _mac_addresses = _devices_from_arp_entries(arp_entries)
+    return _build_scanner_entities(
+        config_entry,
+        coordinator,
+        devices,
+        enabled_default=False,
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -286,7 +351,6 @@ async def async_setup_entry(
         _LOGGER.error("Missing state data in device tracker async_setup_entry")
         return
     reconciliation_complete = True
-    entities: list = []
 
     arp_entries = dict_get(state, "arp_table")
     configured_macs = config_entry.options.get(CONF_DEVICES, [])
@@ -304,19 +368,12 @@ async def async_setup_entry(
         reconciliation_complete = _track_all_arp_entries_are_complete(arp_entries)
     devices, mac_addresses, enabled_default = _compile_tracked_devices(config_entry, arp_entries)
 
-    for device in devices:
-        mac = device.get("mac")
-        if not isinstance(mac, str):
-            continue
-        entity = OPNsenseScannerEntity(
-            config_entry=config_entry,
-            coordinator=coordinator,
-            enabled_default=enabled_default,
-            mac=mac,
-            mac_vendor=device.get("manufacturer", None),
-            hostname=device.get("hostname", None),
-        )
-        entities.append(entity)
+    entities = _build_scanner_entities(
+        config_entry,
+        coordinator,
+        devices,
+        enabled_default=enabled_default,
+    )
     if not is_reconciliation_active(config_entry):
         _cleanup_stale_tracked_devices(
             hass=hass,
@@ -324,9 +381,13 @@ async def async_setup_entry(
             device_registry=dev_reg,
             previous_mac_addresses=previous_mac_addresses,
             current_mac_addresses=mac_addresses,
+            inventory_authoritative=has_configured_macs or reconciliation_complete,
+            expand_owned_mac_addresses=has_configured_macs,
         )
 
-    if set(mac_addresses) != set(previous_mac_addresses):
+    if (has_configured_macs or reconciliation_complete) and set(mac_addresses) != set(
+        previous_mac_addresses
+    ):
         setattr(config_entry.runtime_data, SHOULD_RELOAD, False)
         new_data = config_entry.data.copy()
         new_data[TRACKED_MACS] = mac_addresses.copy()
@@ -338,6 +399,24 @@ async def async_setup_entry(
     )
     async_add_entities(entities)
 
+    tracker_enabled = config_entry.options.get(
+        CONF_DEVICE_TRACKER_ENABLED, DEFAULT_DEVICE_TRACKER_ENABLED
+    )
+    if tracker_enabled and not has_configured_macs:
+
+        async def async_compile_runtime_entities() -> list[OPNsenseScannerEntity]:
+            """Compile track-all ARP inventory for runtime additions."""
+            return await _compile_runtime_track_all_entities(config_entry, coordinator)
+
+        attach_runtime_entity_reconciler(
+            hass,
+            config_entry,
+            coordinator,
+            async_add_entities,
+            entities,
+            async_compile_runtime_entities,
+        )
+
 
 def _cleanup_stale_tracked_devices(
     hass: HomeAssistant,
@@ -345,6 +424,9 @@ def _cleanup_stale_tracked_devices(
     device_registry: DeviceRegistry,
     previous_mac_addresses: list[Any],
     current_mac_addresses: list[str],
+    *,
+    inventory_authoritative: bool,
+    expand_owned_mac_addresses: bool,
 ) -> None:
     """Remove stale tracker entities and reparent shared tracker devices.
 
@@ -354,8 +436,30 @@ def _cleanup_stale_tracked_devices(
         device_registry: Device registry used to query and mutate tracked devices.
         previous_mac_addresses: Previously persisted MAC addresses from config entry data.
         current_mac_addresses: MAC addresses currently discovered during setup.
+        inventory_authoritative: Whether the current inventory can safely drive deletion.
+        expand_owned_mac_addresses: Whether config-entry-owned tracker devices should
+            supplement persisted MAC bookkeeping for a configured-mode transition.
     """
-    stale_mac_addresses = set(previous_mac_addresses) - set(current_mac_addresses)
+    if not inventory_authoritative:
+        return
+
+    owned_mac_addresses: set[str] = set()
+    if expand_owned_mac_addresses:
+        router_identifier = (DOMAIN, config_entry.data[CONF_DEVICE_UNIQUE_ID])
+        for device_entry in dr.async_entries_for_config_entry(
+            device_registry, config_entry.entry_id
+        ):
+            if router_identifier in device_entry.identifiers:
+                continue
+            owned_mac_addresses.update(
+                connection_value
+                for connection_type, connection_value in device_entry.connections
+                if connection_type == CONNECTION_NETWORK_MAC and connection_value
+            )
+
+    stale_mac_addresses = (set(previous_mac_addresses) | owned_mac_addresses) - set(
+        current_mac_addresses
+    )
     if not stale_mac_addresses:
         return
 

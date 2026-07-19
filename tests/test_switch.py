@@ -472,11 +472,40 @@ async def test_async_setup_entry_records_none_for_invalid_carp_summary(
     assert "entities" in captured
     if expected_entities is None:
         assert captured["entities"] is None
-        assert len(created) == 0
+        assert len(created) == 1
     else:
         assert isinstance(captured["entities"], list)
         assert len(captured["entities"]) == expected_entities
         assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_carp_maintenance_switch_recovers_when_summary_appears_after_setup(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+    coordinator: MagicMock,
+) -> None:
+    """The fixed CARP switch should exist unavailable and recover on later data."""
+    switches = await collect_setup_carp_switches(
+        ph_hass,
+        make_config_entry,
+        coordinator,
+        include_summary=False,
+    )
+
+    assert len(switches) == 1
+    switch = switches[0]
+    switch.hass = ph_hass
+    switch.entity_id = "switch.carp_maintenance_mode"
+    stub_async_write_ha_state(switch)
+    switch._handle_coordinator_update()
+    assert switch.available is False
+
+    coordinator.data["carp"] = {"status_summary": {"maintenance_mode": True, "enabled": True}}
+    switch._handle_coordinator_update()
+
+    assert switch.available is True
+    assert switch.is_on is True
 
 
 async def collect_setup_carp_switches(
@@ -543,16 +572,17 @@ async def test_compile_carp_maintenance_switch(
 
 
 @pytest.mark.asyncio
-async def test_compile_carp_maintenance_switch_skips_missing_summary(
+async def test_compile_carp_maintenance_switch_precreates_without_summary(
     coordinator: MagicMock,
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
-    """CARP maintenance switch should not compile without CARP summary data."""
+    """CARP maintenance switch should compile before CARP summary data exists."""
     config_entry = make_carp_config_entry(make_config_entry, coordinator)
 
     entities = await _compile_carp_maintenance_switch(config_entry, coordinator, {"carp": {}})
 
-    assert entities == []
+    assert len(entities) == 1
+    assert isinstance(entities[0], OPNsenseCarpMaintenanceSwitch)
 
 
 @pytest.mark.asyncio
@@ -599,7 +629,7 @@ async def test_async_setup_entry_carp_maintenance_switch_sync_gate(
     [
         pytest.param("26.1", True, 1, id="old-firmware-with-carp-summary"),
         pytest.param(object(), True, 1, id="invalid-firmware-with-carp-summary"),
-        pytest.param("26.1.1", False, 0, id="supported-firmware-without-carp-summary"),
+        pytest.param("26.1.1", False, 1, id="supported-firmware-without-carp-summary"),
     ],
 )
 async def test_async_setup_entry_carp_maintenance_switch_uses_summary_shape(
@@ -610,7 +640,7 @@ async def test_async_setup_entry_carp_maintenance_switch_uses_summary_shape(
     include_summary: bool,
     expected_count: int,
 ) -> None:
-    """CARP maintenance switch should compile from CARP summary shape."""
+    """CARP maintenance switch should compile independently of CARP summary shape."""
     carp_switches = await collect_setup_carp_switches(
         ph_hass,
         make_config_entry,
@@ -1282,6 +1312,8 @@ async def test_async_setup_entry_all_flags(
         expected += len(vpn_blob.get("servers", {}) or {})
     # unbound blocklist counts as a single entity when enabled
     expected += 1
+    # CARP maintenance is a fixed-schema entity enabled by default.
+    expected += 1
 
     assert calls.get("len") == expected
 
@@ -1359,6 +1391,7 @@ async def test_async_setup_entry_new_firewall_api(
             CONF_SYNC_FIREWALL_AND_NAT: True,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: False,
         },
         title="OPNsenseTest",
@@ -1417,6 +1450,7 @@ async def test_async_setup_entry_new_firewall_api_without_firmware_uses_firewall
             CONF_SYNC_FIREWALL_AND_NAT: True,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: False,
         },
         title="OPNsenseTest",
@@ -1482,6 +1516,7 @@ async def test_async_setup_entry_uses_firewall_state_for_old_firmware(
             CONF_SYNC_FIREWALL_AND_NAT: True,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: False,
         },
         title="OPNsenseTest",
@@ -1541,6 +1576,7 @@ async def test_async_setup_entry_uses_firewall_state_when_firmware_unknown(
             CONF_SYNC_FIREWALL_AND_NAT: True,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: False,
         },
         title="OPNsenseTest",
@@ -1591,6 +1627,7 @@ async def test_async_setup_entry_compiles_available_native_sections_independentl
             CONF_SYNC_FIREWALL_AND_NAT: True,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: False,
         },
         title="OPNsenseTest",
@@ -2868,6 +2905,7 @@ async def test_async_setup_entry_respects_config_flags(
             CONF_SYNC_FIREWALL_AND_NAT: False,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: True,
         }
     )
@@ -2964,6 +3002,7 @@ async def test_async_setup_entry_skips_malformed_switch_rows(
             CONF_SYNC_FIREWALL_AND_NAT: False,
             CONF_SYNC_SERVICES: True,
             CONF_SYNC_VPN: True,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: True,
         }
     )
@@ -3027,6 +3066,7 @@ async def test_async_setup_entry_unbound_skips_when_firmware_unparseable(
             CONF_SYNC_FIREWALL_AND_NAT: False,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: True,
         }
     )
@@ -3062,6 +3102,7 @@ async def test_async_setup_entry_unbound_uses_state_shape_for_unknown_firmware_e
             CONF_SYNC_FIREWALL_AND_NAT: False,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: True,
         }
     )
@@ -3100,6 +3141,7 @@ async def test_async_setup_entry_unbound_skips_when_firmware_unparseable_and_no_
             CONF_SYNC_FIREWALL_AND_NAT: False,
             CONF_SYNC_SERVICES: False,
             CONF_SYNC_VPN: False,
+            CONF_SYNC_CARP: False,
             CONF_SYNC_UNBOUND: True,
         }
     )
@@ -4146,6 +4188,83 @@ async def test_async_setup_entry_records_none_for_malformed_service_identity_row
     )
     assert recorded["entities"] is None
     assert [entity.entity_description.key for entity in created] == ["service.svc.status"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciler_adds_new_switch_inventory_once(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Runtime updates should add new inventory switches once and exclude fixed CARP."""
+    coordinator = make_coord(
+        {
+            "services": [{"id": "svc1", "name": "Svc 1", "locked": 0, "status": True}],
+            "carp": {"status_summary": {"maintenance_mode": False}},
+        }
+    )
+    config_entry = setup_switch_reconciliation_entry(
+        make_config_entry,
+        coordinator,
+        sync_services=True,
+        sync_carp=True,
+    )
+    listeners: list[Callable[..., None]] = []
+
+    def add_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture the runtime reconciliation listener."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = add_listener
+    config_entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Capture each switch entity batch."""
+        added_batches.append(list(entities))
+
+    await switch_mod.async_setup_entry(
+        ph_hass,
+        config_entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+
+    assert len(listeners) == 1
+    assert config_entry.async_on_unload.call_count == 1
+    assert {entity.entity_description.key for entity in added_batches[0]} == {
+        "service.svc1.status",
+        "carp.maintenance_mode",
+    }
+
+    coordinator.data = {"services": ["malformed"], "carp": {}}
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 1
+
+    coordinator.data = {
+        "services": [
+            {"id": "svc1", "name": "Svc 1", "locked": 0, "status": True},
+            {"id": "svc2", "name": "Svc 2", "locked": 0, "status": False},
+        ],
+        "carp": {"status_summary": {"maintenance_mode": True}},
+        "firewall": {
+            "rules": {
+                "disabled-by-config": {
+                    "uuid": "disabled-by-config",
+                    "interface": "wan",
+                }
+            }
+        },
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 2
+    assert [entity.entity_description.key for entity in added_batches[1]] == ["service.svc2.status"]
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
 
 
 def test_service_switch_get_service_matches_normalized_identity(

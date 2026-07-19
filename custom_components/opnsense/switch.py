@@ -24,6 +24,7 @@ from .coordinator import OPNsenseDataUpdateCoordinator
 from .entity import OPNsenseEntity
 from .helpers import coerce_bool, dict_get, firewall_rule_id_from_payload
 from .repair_reconciliation import record_desired_entities
+from .runtime_entity_reconciliation import attach_runtime_entity_reconciler
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
@@ -350,23 +351,19 @@ async def _compile_vpn_switches(
 async def _compile_carp_maintenance_switch(
     config_entry: ConfigEntry,
     coordinator: OPNsenseDataUpdateCoordinator,
-    state: MutableMapping[str, Any],
+    _state: MutableMapping[str, Any],
 ) -> list:
     """Compile the CARP persistent maintenance mode switch.
 
     Args:
         config_entry: The Home Assistant config entry.
         coordinator: The data update coordinator.
-        state: The current state data from OPNsense.
+        _state: The current state data from OPNsense. CARP status is not
+            required at setup because this fixed-schema entity starts unavailable.
 
     Returns:
-        list: A list containing one OPNsenseCarpMaintenanceSwitch entity when
-            CARP summary data is available.
+        list: A list containing the fixed OPNsenseCarpMaintenanceSwitch entity.
     """
-    status_summary = dict_get(state, "carp.status_summary")
-    if not isinstance(status_summary, MutableMapping):
-        return []
-
     return [
         _create_switch(
             OPNsenseCarpMaintenanceSwitch,
@@ -583,6 +580,46 @@ async def _compile_nat_npt_rules_switches(
     return await _compile_nat_rule_switches(config_entry, coordinator, state, "npt", "NAT NPTv6")
 
 
+async def _compile_runtime_inventory_switches(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+    config: Mapping[str, Any],
+) -> list:
+    """Compile option-enabled inventory switches for runtime additions.
+
+    Args:
+        config_entry: Config entry owning the switch entities.
+        coordinator: Coordinator providing the current inventory payload.
+        config: Setup-time config entry data containing sync options.
+
+    Returns:
+        Current inventory-derived switch candidates. The fixed CARP maintenance
+        switch is intentionally excluded from runtime reconciliation.
+    """
+    state = coordinator.data
+    if not isinstance(state, MutableMapping):
+        return []
+
+    entities: list = []
+    if config.get(CONF_SYNC_FIREWALL_AND_NAT, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_firewall_rules_switches(config_entry, coordinator, state))
+        entities.extend(await _compile_nat_source_rules_switches(config_entry, coordinator, state))
+        entities.extend(
+            await _compile_nat_destination_rules_switches(config_entry, coordinator, state)
+        )
+        entities.extend(
+            await _compile_nat_one_to_one_rules_switches(config_entry, coordinator, state)
+        )
+        entities.extend(await _compile_nat_npt_rules_switches(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_SERVICES, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_service_switches(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_VPN, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_vpn_switches(config_entry, coordinator, state))
+    if config.get(CONF_SYNC_UNBOUND, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_unbound_switches(config_entry, coordinator, state))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -693,6 +730,19 @@ async def async_setup_entry(
         entities if reconciliation_complete else None,
     )
     async_add_entities(entities)
+
+    async def async_compile_runtime_entities() -> list:
+        """Compile current option-enabled switch inventory for runtime additions."""
+        return await _compile_runtime_inventory_switches(config_entry, coordinator, config)
+
+    attach_runtime_entity_reconciler(
+        hass,
+        config_entry,
+        coordinator,
+        async_add_entities,
+        entities,
+        async_compile_runtime_entities,
+    )
 
 
 class OPNsenseSwitch(OPNsenseEntity, SwitchEntity):

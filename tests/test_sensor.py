@@ -1,5 +1,6 @@
 """These tests import the integration code via relative imports and assert behavior across sensor variants using a synthesized coordinator state."""
 
+import asyncio
 from collections.abc import Callable, Iterable
 from typing import Any, Never, cast
 from unittest.mock import MagicMock
@@ -10,6 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import PERCENTAGE, UnitOfDataRate, UnitOfInformation, UnitOfTemperature
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import slugify
 import pytest
@@ -584,6 +586,54 @@ async def test_compile_gateway_sensors_keeps_gateway_id_in_entity_key(
     assert status_entity._attr_unique_id == slugify(
         f"{entry.data['device_unique_id']}_gateway.WAN_GW.status"
     )
+
+
+@pytest.mark.asyncio
+async def test_gateway_runtime_reconciler_does_not_duplicate_when_display_name_changes(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Gateway runtime updates with renamed display names should not resubmit entities."""
+    entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        {"gateways": {"wan": {"name": "Old WAN", "status": "online"}}},
+        sync_gateways=True,
+    )
+    coordinator = getattr(entry.runtime_data, COORDINATOR)
+    listeners: list[Callable[..., None]] = []
+
+    def register_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture a coordinator listener and return its remover."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = register_listener
+    entry.async_on_unload = MagicMock()
+    entry.add_to_hass(ph_hass)
+    added_batches: list[list[Any]] = []
+
+    await async_setup_entry(
+        ph_hass,
+        entry,
+        cast(
+            "AddEntitiesCallback",
+            lambda entities, _=False: added_batches.append(list(entities)),
+        ),
+    )
+
+    assert len(listeners) == 1
+    initial_status = next(
+        entity
+        for entity in added_batches[0]
+        if entity.entity_description.key == "gateway.wan.status"
+    )
+    assert initial_status.unique_id == slugify("id_gateway.Old WAN.status")
+
+    coordinator.data = {"gateways": {"wan": {"name": "Renamed WAN", "status": "online"}}}
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 1
 
 
 @pytest.mark.parametrize(
@@ -3197,6 +3247,130 @@ def _setup_entry_with_all_syncs(
     coord.data = state
     setattr(entry.runtime_data, COORDINATOR, coord)
     return entry, coord
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciler_adds_new_sensor_inventory_once(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Runtime updates should add new sensors without re-adding static entities."""
+    entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        {
+            "telemetry": {"filesystems": [], "temps": {}},
+            "interfaces": {"wan": {"name": "WAN"}},
+        },
+        sync_telemetry=True,
+        sync_interfaces=True,
+    )
+    coordinator = getattr(entry.runtime_data, COORDINATOR)
+    listeners: list[Callable[..., None]] = []
+
+    def register_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture a coordinator listener and return its remover."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = register_listener
+    entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Capture each platform entity batch."""
+        added_batches.append(list(entities))
+
+    await async_setup_entry(
+        ph_hass,
+        entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+
+    assert len(listeners) == 1
+    assert any(isinstance(entity, OPNsenseStaticKeySensor) for entity in added_batches[0])
+    initial_unique_ids = {entity.unique_id for entity in added_batches[0]}
+
+    coordinator.data = {}
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 1
+    assert {entity.unique_id for entity in added_batches[0]} == initial_unique_ids
+
+    coordinator.data = {
+        "telemetry": "incomplete",
+        "interfaces": {
+            "wan": {"name": "WAN"},
+            "lan": {"name": "LAN"},
+        },
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 2
+    assert all(
+        entity.entity_description.key.startswith("interface.lan.") for entity in added_batches[1]
+    )
+    assert not any(isinstance(entity, OPNsenseStaticKeySensor) for entity in added_batches[1])
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
+
+
+@pytest.mark.asyncio
+async def test_carp_entry_runtime_reconciler_adds_new_vip_once(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """CARP entries should discover new VIP sensors without duplicating static sensors."""
+    entry = make_config_entry(
+        data={"entry_type": "carp"},
+        entry_id="carp-runtime-entry",
+        title="CARP Runtime",
+    )
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = {"carp": {"interfaces": [{"vhid": 1, "subnet": "192.0.2.1"}]}}
+    listeners: list[Callable[..., None]] = []
+
+    def register_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture a coordinator listener and return its remover."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = register_listener
+    setattr(entry.runtime_data, COORDINATOR, coordinator)
+    entry.async_on_unload = MagicMock()
+    added_batches: list[list[Any]] = []
+
+    await async_setup_entry(
+        ph_hass,
+        entry,
+        cast(
+            "AddEntitiesCallback",
+            lambda entities, _=False: added_batches.append(list(entities)),
+        ),
+    )
+
+    assert len(listeners) == 1
+    coordinator.data = {
+        "carp": {
+            "interfaces": [
+                {"vhid": 1, "subnet": "192.0.2.1"},
+                {"vhid": 2, "subnet": "198.51.100.1"},
+            ]
+        }
+    }
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 2
+    assert len(added_batches[1]) == 1
+    assert isinstance(added_batches[1][0], OPNsenseCarpVipSensor)
+    assert added_batches[1][0].entity_description.key == "carp.vip.2.198_51_100_1"
+
+    listeners[0]()
+    await asyncio.sleep(0)
+    assert len(added_batches) == 2
 
 
 @pytest.mark.parametrize(
