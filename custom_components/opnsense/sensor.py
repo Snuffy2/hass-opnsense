@@ -1112,9 +1112,6 @@ async def _compile_speedtest_sensors(
     """
     if not isinstance(state, MutableMapping):
         return []
-    speedtest = state.get("speedtest")
-    if not isinstance(speedtest, MutableMapping) or not speedtest.get("available", False):
-        return []
 
     metric_definitions: tuple[tuple[str, str, Any, str], ...] = (
         (
@@ -1790,10 +1787,7 @@ async def async_setup_entry(
         else:
             reconciliation_complete = False
     if config.get(CONF_SYNC_SPEEDTEST, DEFAULT_SYNC_OPTION_VALUE):
-        if "speedtest" in state and isinstance(state.get("speedtest"), MutableMapping):
-            entities.extend(await _compile_speedtest_sensors(config_entry, coordinator, state))
-        else:
-            reconciliation_complete = False
+        entities.extend(await _compile_speedtest_sensors(config_entry, coordinator, state))
     if config.get(CONF_SYNC_NUT, DEFAULT_SYNC_OPTION_VALUE):
         nut_entities, nut_inventory_complete = await _compile_nut_sensors_for_setup(
             config_entry, coordinator, state
@@ -2093,6 +2087,11 @@ class OPNsenseSpeedtestSensor(OPNsenseSensor):
         """Handle coordinator updates for speedtest sensors."""
         state: dict[str, Any] = self.coordinator.data
         if not isinstance(state, MutableMapping):
+            self._mark_unavailable()
+            return
+
+        speedtest = state.get("speedtest")
+        if not isinstance(speedtest, MutableMapping) or speedtest.get("available") is not True:
             self._mark_unavailable()
             return
 

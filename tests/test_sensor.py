@@ -3508,8 +3508,46 @@ async def test_async_setup_entry_ignores_unconsumed_openvpn_client_rows(
         ({}, False, True, False, False, False, False, False, False, False, None),
         ({"vnstat": {}}, False, True, False, False, False, False, False, False, False, []),
         # Speedtest
-        ({}, False, False, True, False, False, False, False, False, False, None),
-        ({"speedtest": {}}, False, False, True, False, False, False, False, False, False, []),
+        (
+            {},
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            [
+                "speedtest.last.download",
+                "speedtest.last.upload",
+                "speedtest.last.latency",
+                "speedtest.average.download",
+                "speedtest.average.upload",
+                "speedtest.average.latency",
+            ],
+        ),
+        (
+            {"speedtest": {}},
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            [
+                "speedtest.last.download",
+                "speedtest.last.upload",
+                "speedtest.last.latency",
+                "speedtest.average.download",
+                "speedtest.average.upload",
+                "speedtest.average.latency",
+            ],
+        ),
         # Telemetry
         ({}, True, False, False, False, False, False, False, False, False, None),
         (
@@ -3681,6 +3719,9 @@ async def test_async_setup_entry_records_none_or_authoritative_empty_for_invento
         return
 
     assert isinstance(entities, list)
+    if isinstance(expected, list):
+        assert {entity.entity_description.key for entity in entities} == set(expected)
+        return
     keys = {entity.entity_description.key for entity in entities}
     if expected == "telemetry_authoritative_empty":
         assert "telemetry.cpu.usage_total" in keys
@@ -5494,6 +5535,7 @@ def test_speedtest_sensor_attribute_filtering(
     """Speedtest sensors should only include non-None attributes."""
     state = {
         "speedtest": {
+            "available": True,
             "last": {
                 "download": {
                     "value": 850.5,
@@ -5559,11 +5601,19 @@ def test_speedtest_sensor_attribute_filtering(
 
 
 @pytest.mark.asyncio
-async def test_async_setup_entry_skips_speedtest_sensors_when_unavailable(
+@pytest.mark.parametrize(
+    "initial_state",
+    [
+        {},
+        {"speedtest": {}},
+        {"speedtest": {"available": False}},
+    ],
+)
+async def test_async_setup_entry_creates_speedtest_sensors_when_initial_speedtest_is_unavailable(
     make_config_entry: Callable[..., MockConfigEntry],
+    initial_state: dict[str, Any],
 ) -> None:
-    """Speedtest sensors should not be created when speedtest is unavailable."""
-    state = {"speedtest": {"available": False}}
+    """Speedtest sensors should remain registered until valid data becomes available."""
     entry = make_config_entry(
         {
             "device_unique_id": "id",
@@ -5579,10 +5629,11 @@ async def test_async_setup_entry_skips_speedtest_sensors_when_unavailable(
         }
     )
     coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
-    coordinator.data = state
+    coordinator.data = initial_state
     setattr(entry.runtime_data, COORDINATOR, coordinator)
 
-    created: list = []
+    created: list[Any] = []
+    add_calls: list[list[Any]] = []
 
     def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
         """Add entities.
@@ -5590,10 +5641,73 @@ async def test_async_setup_entry_skips_speedtest_sensors_when_unavailable(
         Args:
             entities: Entities provided by pytest or the test case.
         """
-        created.extend(entities)
+        entity_batch = list(entities)
+        add_calls.append(entity_batch)
+        created.extend(entity_batch)
 
     await async_setup_entry(MagicMock(), entry, cast("AddEntitiesCallback", add_entities))
-    assert not any(isinstance(e, OPNsenseSpeedtestSensor) for e in created)
+    speedtest_sensors = [
+        entity for entity in created if isinstance(entity, OPNsenseSpeedtestSensor)
+    ]
+    assert len(add_calls) == 1
+    assert len(speedtest_sensors) == 6
+
+    for sensor in speedtest_sensors:
+        sensor.hass = MagicMock()
+        sensor.entity_id = f"sensor.{sensor.entity_description.key.replace('.', '_')}"
+        object.__setattr__(sensor, "async_write_ha_state", lambda: None)
+        sensor._handle_coordinator_update()
+        assert sensor.available is False
+
+    available_state = {
+        "speedtest": {
+            "available": True,
+            "last": {
+                "download": {"value": 10.0, "server_id": "1", "url": "https://example.test"},
+                "upload": {"value": 8.0, "server_id": "1", "url": "https://example.test"},
+                "latency": {"value": 2.5, "server_id": "1", "url": "https://example.test"},
+            },
+            "average": {
+                "download": {"value": 11.2, "samples": 12},
+                "upload": {"value": 9.4, "samples": 12},
+                "latency": {"value": 3.3, "samples": 12},
+            },
+        }
+    }
+    coordinator.data = available_state
+
+    by_key = {sensor.entity_description.key: sensor for sensor in speedtest_sensors}
+    expected_keys = set(by_key)
+    original_entity_ids = {key: id(sensor) for key, sensor in by_key.items()}
+    for sensor in speedtest_sensors:
+        sensor._handle_coordinator_update()
+
+    assert all(sensor.available is True for sensor in speedtest_sensors)
+    assert by_key["speedtest.last.upload"].native_value == 8.0
+    assert by_key["speedtest.average.latency"].native_value == 3.3
+
+    coordinator.data = {
+        "speedtest": {
+            **available_state["speedtest"],
+            "available": False,
+        }
+    }
+    for sensor in speedtest_sensors:
+        sensor._handle_coordinator_update()
+
+    assert all(sensor.available is False for sensor in speedtest_sensors)
+
+    coordinator.data = available_state
+    for sensor in speedtest_sensors:
+        sensor._handle_coordinator_update()
+
+    recovered_by_key = {sensor.entity_description.key: sensor for sensor in speedtest_sensors}
+    assert set(recovered_by_key) == expected_keys
+    assert {key: id(sensor) for key, sensor in recovered_by_key.items()} == original_entity_ids
+    assert len(add_calls) == 1
+    assert all(sensor.available is True for sensor in speedtest_sensors)
+    assert recovered_by_key["speedtest.last.upload"].native_value == 8.0
+    assert recovered_by_key["speedtest.average.latency"].native_value == 3.3
 
 
 @pytest.mark.asyncio
