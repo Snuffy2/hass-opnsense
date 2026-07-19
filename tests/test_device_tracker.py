@@ -65,6 +65,35 @@ def _make_scanner_entity(
     )
 
 
+def test_device_tracker_inventory_and_normalization_reject_invalid_inputs() -> None:
+    """Fingerprinting and configured normalization should ignore malformed values."""
+    assert dt_mod._arp_inventory_fingerprint(None) == ()
+    assert dt_mod._normalize_mac_values([None, 42, object()]) == []
+
+
+def test_build_scanner_entities_skips_device_without_string_mac(
+    coordinator: MagicMock,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Scanner compilation should skip malformed device identity rows."""
+    assert (
+        dt_mod._build_scanner_entities(
+            make_config_entry(), coordinator, [{"mac": 42}], enabled_default=False
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_track_all_compiler_rejects_non_mapping_state(
+    coordinator: MagicMock,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Runtime track-all compilation should reject malformed coordinator state."""
+    coordinator.data = None
+    assert await dt_mod._compile_runtime_track_all_entities(make_config_entry(), coordinator) == []
+
+
 def test_device_from_arp_entry_skips_malformed_and_nonmatching_entries() -> None:
     """Device lookup should ignore malformed and nonmatching ARP entries."""
     device = dt_mod._device_from_arp_entry(
@@ -2164,9 +2193,9 @@ async def test_runtime_track_all_additions_merge_tracked_macs_without_duplicates
     monkeypatch.setattr(dt_mod, "attach_runtime_entity_reconciler", capture_reconciler)
     ph_hass.config_entries.async_update_entry = MagicMock()
 
-    await dt_mod.async_setup_entry(
-        ph_hass, entry, cast("AddEntitiesCallback", lambda _entities: None)
-    )
+    add_entities = MagicMock()
+    await dt_mod.async_setup_entry(ph_hass, entry, cast("AddEntitiesCallback", add_entities))
+    add_entities.reset_mock()
     ph_hass.config_entries.async_update_entry.reset_mock()
 
     coordinator.data = {
@@ -2180,7 +2209,8 @@ async def test_runtime_track_all_additions_merge_tracked_macs_without_duplicates
         entity for entity in runtime_entities if entity.mac_address == "11:22:33:44:55:66"
     ]
 
-    captured["async_add_entities"](additional)
+    captured["async_add_entities"](additional, True)
+    add_entities.assert_called_once_with(additional, True)
     assert ph_hass.config_entries.async_update_entry.call_count == 1
     assert ph_hass.config_entries.async_update_entry.call_args.kwargs["data"][TRACKED_MACS] == [
         "aa:bb:cc:dd:ee:ff",

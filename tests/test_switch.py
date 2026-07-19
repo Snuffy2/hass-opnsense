@@ -57,6 +57,42 @@ def make_coord(data: Any) -> Any:
     return m
 
 
+def test_switch_inventory_fingerprint_rejects_non_mapping_state() -> None:
+    """Inventory fingerprinting should reject malformed coordinator state."""
+    assert switch_mod._inventory_fingerprint(None) == ()
+
+
+@pytest.mark.asyncio
+async def test_runtime_switch_compiler_rejects_non_mapping_state(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Runtime switch compilation should reject malformed coordinator state."""
+    coordinator = make_coord(None)
+    assert (
+        await switch_mod._compile_runtime_inventory_switches(make_config_entry(), coordinator, {})
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_switch_compiler_honors_vpn_sync_option(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """VPN runtime inventory should invoke the VPN switch compiler."""
+    coordinator = make_coord({})
+    compiled = object()
+    compiler = AsyncMock(return_value=[compiled])
+    monkeypatch.setattr(switch_mod, "_compile_vpn_switches", compiler)
+
+    entities = await switch_mod._compile_runtime_inventory_switches(
+        make_config_entry(), coordinator, {CONF_SYNC_VPN: True}
+    )
+
+    assert compiled in entities
+    compiler.assert_awaited_once()
+
+
 def make_carp_config_entry(
     make_config_entry: Callable[..., MockConfigEntry],
     coordinator: Any,

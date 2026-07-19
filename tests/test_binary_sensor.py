@@ -183,6 +183,27 @@ def test_binary_sensor_description_builders_preserve_entity_contract() -> None:
     assert notices_description.entity_registry_enabled_default is True
 
 
+def test_binary_sensor_inventory_fingerprint_rejects_non_mapping_state() -> None:
+    """Inventory fingerprinting should reject malformed coordinator state."""
+    assert binary_sensor_module._inventory_fingerprint(None) == ((), ())
+
+
+@pytest.mark.asyncio
+async def test_runtime_binary_sensor_compiler_rejects_non_mapping_state(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Runtime compilation should reject malformed coordinator state."""
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = None
+
+    assert (
+        await binary_sensor_module._compile_runtime_inventory_binary_sensors(
+            make_config_entry(), coordinator, {}
+        )
+        == []
+    )
+
+
 @pytest.mark.asyncio
 async def test_async_setup_entry_creates_entities_when_enabled(
     make_config_entry: Callable[..., MockConfigEntry],

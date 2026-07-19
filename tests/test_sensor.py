@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Callable, Iterable
 from typing import Any, Never, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -71,6 +71,55 @@ def test_static_sensor_descriptions_live_in_sensor_module() -> None:
     assert "telemetry.cpu.usage_total" in telemetry_keys
     assert "certificates" in certificate_keys
     assert nut_keys == {"nut.ups_status", "nut.battery_charge", "nut.ups_load"}
+
+
+def test_sensor_inventory_fingerprint_rejects_non_mapping_state() -> None:
+    """Inventory fingerprinting should reject malformed coordinator state."""
+    assert sensor_module._inventory_fingerprint(None) == ()
+
+
+@pytest.mark.asyncio
+async def test_runtime_sensor_compiler_rejects_non_mapping_state(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Runtime sensor compilation should reject malformed coordinator state."""
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = None
+    assert (
+        await sensor_module._compile_runtime_inventory_sensors(make_config_entry(), coordinator, {})
+        == []
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("option", "compiler_name"),
+    [
+        (CONF_SYNC_VNSTAT, "_compile_vnstat_sensors"),
+        (CONF_SYNC_VPN, "_compile_vpn_sensors"),
+        (CONF_SYNC_GATEWAYS, "_compile_gateway_sensors"),
+        (CONF_SYNC_DHCP_LEASES, "_compile_dhcp_leases_sensors"),
+    ],
+)
+async def test_runtime_sensor_compiler_honors_inventory_sync_options(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+    option: str,
+    compiler_name: str,
+) -> None:
+    """Each runtime inventory option should invoke its corresponding compiler."""
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = {}
+    compiled = object()
+    compiler = AsyncMock(return_value=[compiled])
+    monkeypatch.setattr(sensor_module, compiler_name, compiler)
+
+    entities = await sensor_module._compile_runtime_inventory_sensors(
+        make_config_entry(), coordinator, {option: True}
+    )
+
+    assert compiled in entities
+    compiler.assert_awaited_once()
 
 
 @pytest.mark.asyncio

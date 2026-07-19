@@ -12,6 +12,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.opnsense.runtime_entity_reconciliation import (
+    _RuntimeEntityReconciler,
     attach_runtime_entity_reconciler,
 )
 
@@ -567,3 +568,153 @@ async def test_reconciler_cleanup_stops_reconciliation_and_listener(
     assert calls == 1
     assert added == []
     assert coordinator.remove_calls == 1
+
+
+def test_reconciler_ignores_invalid_initial_identity_and_exposes_listener(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Invalid initial identities are ignored and the listener remover is exposed."""
+    entry = make_config_entry(entry_id="entry-runtime-invalid-initial")
+    entry.async_on_unload = MagicMock()
+    coordinator = _RuntimeCoordinator()
+
+    async def _compile() -> list[_SimpleEntity]:
+        return []
+
+    reconciler = _RuntimeEntityReconciler(
+        hass=MagicMock(),
+        config_entry=entry,
+        async_add_entities=_ignore_entities,
+        compile_entities=_compile,
+        is_reconciliation_active_fn=lambda _entry: False,
+        inventory_fingerprint=None,
+        initial_entities=[_SimpleEntity(None), _SimpleEntity("valid", "   ")],
+    )
+
+    assert reconciler.remove_coordinator_listener is None
+    assert reconciler._seen_entity_identities == {"unique:valid"}
+
+    reconciler.attach_coordinator_listener(coordinator)
+
+    assert reconciler.remove_coordinator_listener is not None
+
+
+@pytest.mark.asyncio
+async def test_reconciler_handles_fingerprint_exceptions_during_init_and_schedule(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Fingerprint failures neither break setup nor schedule compilation."""
+    entry = make_config_entry(entry_id="entry-runtime-fingerprint-errors")
+    entry.async_on_unload = MagicMock()
+    coordinator = _RuntimeCoordinator()
+    fingerprint_calls = 0
+    compile_calls = 0
+
+    def _fingerprint() -> tuple[str]:
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        raise ValueError("invalid inventory")
+
+    async def _compile() -> list[_SimpleEntity]:
+        nonlocal compile_calls
+        compile_calls += 1
+        return []
+
+    attach_runtime_entity_reconciler(
+        ph_hass,
+        entry,
+        coordinator,
+        _ignore_entities,
+        [],
+        _compile,
+        inventory_fingerprint=_fingerprint,
+    )
+
+    coordinator.fire_update()
+    await asyncio.sleep(0)
+
+    assert fingerprint_calls == 2
+    assert compile_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_reconciler_skips_unloaded_and_active_reconciliation(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Unload and repair reconciliation windows prevent compilation."""
+    entry = make_config_entry(entry_id="entry-runtime-inactive-windows")
+    unload_callbacks: list[Callable[[], None]] = []
+    entry.async_on_unload = MagicMock(side_effect=unload_callbacks.append)
+    coordinator = _RuntimeCoordinator()
+    compile_calls = 0
+
+    async def _compile() -> list[_SimpleEntity]:
+        nonlocal compile_calls
+        compile_calls += 1
+        return []
+
+    attach_runtime_entity_reconciler(
+        ph_hass,
+        entry,
+        coordinator,
+        _ignore_entities,
+        [],
+        _compile,
+        is_reconciliation_active_fn=lambda _entry: True,
+    )
+
+    coordinator.fire_update()
+    await asyncio.sleep(0)
+    assert compile_calls == 0
+
+    listener = coordinator._listeners[0]
+    unload_callbacks[0]()
+    unload_callbacks[0]()
+    listener()
+    await asyncio.sleep(0)
+
+    assert coordinator.remove_calls == 1
+    assert compile_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_reconciler_skips_invalid_compiled_entities_and_unique_collisions(
+    ph_hass: HomeAssistant,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Invalid identities and normalized unique collisions are not submitted."""
+    entry = make_config_entry(entry_id="entry-runtime-invalid-compiled")
+    entry.async_on_unload = MagicMock()
+    coordinator = _RuntimeCoordinator()
+    added_batches: list[list[Entity]] = []
+
+    async def _compile() -> list[_SimpleEntity]:
+        return [
+            _SimpleEntity(None),
+            _SimpleEntity("Shared Unique", "first-description"),
+            _SimpleEntity("shared-unique", "second-description"),
+        ]
+
+    def _add_entities(
+        new_entities: Iterable[Entity],
+        update_before_add: bool = False,
+    ) -> None:
+        del update_before_add
+        added_batches.append(list(new_entities))
+
+    attach_runtime_entity_reconciler(
+        ph_hass,
+        entry,
+        coordinator,
+        _add_entities,
+        [],
+        _compile,
+    )
+
+    coordinator.fire_update()
+    await asyncio.sleep(0)
+
+    assert len(added_batches) == 1
+    assert [entity.unique_id for entity in added_batches[0]] == ["Shared Unique"]
