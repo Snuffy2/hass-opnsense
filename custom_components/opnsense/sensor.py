@@ -1073,27 +1073,25 @@ async def _compile_nut_sensors_for_setup(
         tuple[list, bool]: Compiled NUT sensor entities and whether the NUT
             inventory is complete enough for entity reconciliation.
     """
+    entities = _create_sensors(
+        OPNsenseNUTSensor,
+        config_entry,
+        coordinator,
+        STATIC_NUT_SENSORS,
+    )
     if "nut_ups_status" not in state:
-        return [], False
+        return entities, False
     nut_payload = state.get("nut_ups_status")
     if not isinstance(nut_payload, Mapping):
-        return [], False
+        return entities, False
     if not nut_payload:
-        return [], True
+        return entities, True
     status = nut_payload.get("status")
     if not isinstance(status, Mapping):
-        return [], False
+        return entities, False
     if not status:
-        return [], True
-    return (
-        _create_sensors(
-            OPNsenseNUTSensor,
-            config_entry,
-            coordinator,
-            STATIC_NUT_SENSORS,
-        ),
-        True,
-    )
+        return entities, True
+    return entities, True
 
 
 async def _compile_vnstat_sensors(
@@ -1934,7 +1932,9 @@ async def async_setup_entry(
             config_entry, coordinator, state
         )
         entities.extend(nut_entities)
-        scope_authority["nut"] = nut_inventory_complete
+        scope_authority["nut"] = nut_inventory_complete and coordinator.category_is_authoritative(
+            "nut_ups_status"
+        )
     if config.get(CONF_SYNC_SMART, DEFAULT_SYNC_OPTION_VALUE):
         client = getattr(config_entry.runtime_data, OPNSENSE_CLIENT, None)
         client_supports_smart = callable(getattr(client, "get_smart", None))
@@ -1951,8 +1951,10 @@ async def async_setup_entry(
             _is_valid_smart_device_row(device) for device in state["smart"]
         )
         entities.extend(await _compile_smart_sensors(config_entry, coordinator, state))
-        scope_authority["smart"] = has_smart_inventory and coordinator.category_is_authoritative(
-            "smart"
+        scope_authority["smart"] = (
+            has_smart_inventory
+            and coordinator.category_is_authoritative("smart")
+            and coordinator.category_is_authoritative("smart_info")
         )
     if config.get(CONF_SYNC_CERTIFICATES, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_static_certificate_sensors(config_entry, coordinator))

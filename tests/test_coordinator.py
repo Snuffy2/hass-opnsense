@@ -197,6 +197,87 @@ async def test_get_states_prefers_status_aware_category_result(
 
 
 @pytest.mark.asyncio
+async def test_get_states_prefers_status_aware_nut_result(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """NUT status data and deletion authority come from the result method."""
+    client = MagicMock()
+    result = SimpleNamespace(data={}, state="available", authoritative=True)
+    client.get_nut_ups_status_result = AsyncMock(return_value=result)
+    client.get_nut_ups_status = AsyncMock(return_value={"status": {"ups.status": "OL"}})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+
+    state = await coordinator._get_states(
+        [{"function": "get_nut_ups_status", "state_key": "nut_ups_status"}]
+    )
+
+    assert state["nut_ups_status"] == {}
+    assert coordinator.category_result("nut_ups_status") is result
+    assert coordinator.category_is_authoritative("nut_ups_status") is True
+    client.get_nut_ups_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_states_nut_transient_keeps_unrelated_category(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """A transient NUT result must not interrupt an unrelated category update."""
+    client = MagicMock()
+    result = SimpleNamespace(data={}, state="transient", authoritative=False)
+    client.get_nut_ups_status_result = AsyncMock(return_value=result)
+    client.get_system_info = AsyncMock(return_value={"name": "router"})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+
+    state = await coordinator._get_states(
+        [
+            {"function": "get_nut_ups_status", "state_key": "nut_ups_status"},
+            {"function": "get_system_info", "state_key": "system_info"},
+        ]
+    )
+
+    assert state == {"nut_ups_status": {}, "system_info": {"name": "router"}}
+    assert coordinator.category_is_authoritative("nut_ups_status") is False
+
+
+@pytest.mark.asyncio
+async def test_get_states_legacy_nut_is_non_authoritative(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """A flattened legacy NUT payload can never authorize stale deletion."""
+    client = MagicMock(spec=["get_nut_ups_status"])
+    client.get_nut_ups_status = AsyncMock(return_value={})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+
+    state = await coordinator._get_states(
+        [{"function": "get_nut_ups_status", "state_key": "nut_ups_status"}]
+    )
+
+    assert state == {"nut_ups_status": {}}
+    assert coordinator.category_is_authoritative("nut_ups_status") is False
+
+
+@pytest.mark.asyncio
 async def test_get_states_legacy_optional_method_is_non_authoritative(
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
@@ -323,10 +404,10 @@ async def test_get_states_uses_smart_ident_when_device_missing(
 
 
 @pytest.mark.asyncio
-async def test_get_states_does_not_catch_smart_info_timeout(
+async def test_get_states_isolates_smart_info_timeout(
     make_config_entry: Callable[..., MockConfigEntry],
 ) -> None:
-    """Public aiopnsense SMART errors should propagate through the coordinator."""
+    """One legacy SMART detail error should not abort unrelated detail polling."""
     client = MagicMock()
     client.get_smart = AsyncMock(
         return_value=[
@@ -335,9 +416,7 @@ async def test_get_states_does_not_catch_smart_info_timeout(
         ]
     )
     client.get_smart_info = AsyncMock(
-        side_effect=[
-            OPNsenseTimeoutError("nvme0 timed out"),
-        ]
+        side_effect=[OPNsenseTimeoutError("nvme0 timed out"), {"temperature": {"current": 42}}]
     )
     entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "id", CONF_SYNC_SMART: True})
     coordinator = OPNsenseDataUpdateCoordinator(
@@ -349,15 +428,133 @@ async def test_get_states_does_not_catch_smart_info_timeout(
         config_entry=entry,
     )
 
-    with pytest.raises(OPNsenseTimeoutError, match="nvme0 timed out"):
-        await coordinator._get_states(
-            [
-                {"function": "get_smart", "state_key": "smart"},
-                {"function": "get_smart_info", "state_key": "smart_info"},
-            ]
-        )
+    state = await coordinator._get_states(
+        [
+            {"function": "get_smart", "state_key": "smart"},
+            {"function": "get_smart_info", "state_key": "smart_info"},
+        ]
+    )
 
-    assert client.get_smart_info.await_args_list == [call(device="nvme0", info_type="A")]
+    assert state["smart_info"] == {"ada0": {"temperature": {"current": 42}}}
+    assert client.get_smart_info.await_args_list == [
+        call(device="nvme0", info_type="A"),
+        call(device="ada0", info_type="A"),
+    ]
+    result = coordinator.category_result("smart_info")
+    assert isinstance(result, coordinator_module._AggregateCategoryResult)
+    assert result.state == "pending"
+    assert coordinator.category_is_authoritative("smart_info") is False
+
+
+@pytest.mark.asyncio
+async def test_get_states_aggregates_status_aware_smart_details(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Healthy SMART details survive a sibling transient result without authority."""
+    client = MagicMock()
+    client.get_smart_result = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[{"device": "nvme0"}, {"device": "ada0"}],
+            state="available",
+            authoritative=True,
+        )
+    )
+    client.get_smart = AsyncMock()
+    client.get_smart_info_result = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                data={"temperature": {"current": 71}},
+                state="available",
+                authoritative=True,
+            ),
+            SimpleNamespace(data={}, state="transient", authoritative=False),
+        ]
+    )
+    client.get_smart_info = AsyncMock()
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+
+    state = await coordinator._get_states(
+        [
+            {"function": "get_smart", "state_key": "smart"},
+            {"function": "get_smart_info", "state_key": "smart_info"},
+        ]
+    )
+
+    assert state["smart_info"] == {"nvme0": {"temperature": {"current": 71}}, "ada0": {}}
+    assert coordinator.category_is_authoritative("smart") is True
+    assert coordinator.category_is_authoritative("smart_info") is False
+    client.get_smart_info.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("detail_states", "expected_state", "expected_authority"),
+    [
+        pytest.param(["available"], "available", True, id="available"),
+        pytest.param(["missing"], "missing", False, id="missing"),
+        pytest.param(["malformed"], "malformed", False, id="malformed"),
+        pytest.param(["transient"], "transient", False, id="transient"),
+        pytest.param(["pending"], "pending", False, id="pending"),
+        pytest.param(
+            ["available", "missing", "malformed"],
+            "malformed",
+            False,
+            id="mixed-malformed-precedes-missing",
+        ),
+        pytest.param(
+            ["missing", "transient", "pending"],
+            "pending",
+            False,
+            id="mixed-pending-precedes-transient",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_states_preserves_smart_detail_result_state_precedence(
+    make_config_entry: Callable[..., MockConfigEntry],
+    detail_states: list[str],
+    expected_state: str,
+    expected_authority: bool,
+) -> None:
+    """SMART detail aggregation retains the highest-priority category state."""
+    devices = [{"device": f"disk{index}"} for index in range(len(detail_states))]
+    client = MagicMock()
+    client.get_smart_result = AsyncMock(
+        return_value=SimpleNamespace(data=devices, state="available", authoritative=True)
+    )
+    client.get_smart = AsyncMock()
+    client.get_smart_info_result = AsyncMock(
+        side_effect=[
+            SimpleNamespace(data={}, state=state, authoritative=True) for state in detail_states
+        ]
+    )
+    client.get_smart_info = AsyncMock()
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+
+    await coordinator._get_states(
+        [
+            {"function": "get_smart", "state_key": "smart"},
+            {"function": "get_smart_info", "state_key": "smart_info"},
+        ]
+    )
+
+    result = coordinator.category_result("smart_info")
+    assert isinstance(result, coordinator_module._AggregateCategoryResult)
+    assert result.state == expected_state
+    assert result.authoritative is expected_authority
 
 
 @pytest.mark.asyncio

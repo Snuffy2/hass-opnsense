@@ -9,6 +9,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from aiopnsense.exceptions import OPNsenseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -55,6 +56,14 @@ _PREVIOUS_STATE_KEYS: tuple[str, ...] = (
     "wireguard",
 )
 
+_CATEGORY_STATE_PRECEDENCE: tuple[str, ...] = (
+    "pending",
+    "transient",
+    "malformed",
+    "missing",
+    "available",
+)
+
 
 @dataclass(frozen=True)
 class _LegacyCategoryResult:
@@ -63,6 +72,33 @@ class _LegacyCategoryResult:
     data: object
     state: str = "pending"
     authoritative: bool = False
+
+
+@dataclass(frozen=True)
+class _AggregateCategoryResult:
+    """Status wrapper for a category assembled from multiple optional calls."""
+
+    data: object
+    state: str
+    authoritative: bool
+
+
+def _aggregate_category_state(states: list[str]) -> str:
+    """Return the highest-priority state observed across category results.
+
+    Args:
+        states: Per-request result states to combine.
+
+    Returns:
+        str: Deterministic aggregate state. Unknown states fail closed as pending.
+    """
+    normalized_states = {
+        state if state in _CATEGORY_STATE_PRECEDENCE else "pending" for state in states
+    }
+    return next(
+        (state for state in _CATEGORY_STATE_PRECEDENCE if state in normalized_states),
+        "available",
+    )
 
 
 class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
@@ -150,6 +186,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
             method_name: str = cat.get("function", "")
             result_method_name = {
                 "get_smart": "get_smart_result",
+                "get_nut_ups_status": "get_nut_ups_status_result",
                 "get_vnstat": "get_vnstat_result",
                 "get_unbound_blocklist": "get_unbound_blocklist_result",
                 "get_dhcp_leases": "get_dhcp_leases_result",
@@ -167,6 +204,12 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                     state[cat.get("state_key")] = await method(expected_id=self._device_unique_id)
                 elif method_name == "get_smart_info":
                     smart_info: dict[str, Any] = {}
+                    detail_states: list[str] = []
+                    details_authoritative = True
+                    smart_info_result = getattr(self._client, "get_smart_info_result", None)
+                    if not inspect.iscoroutinefunction(smart_info_result):
+                        smart_info_result = None
+                        details_authoritative = False
                     smart_devices = state.get("smart")
                     if isinstance(smart_devices, list):
                         for smart_device in smart_devices:
@@ -175,11 +218,40 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                             device_name = get_smart_device_name(smart_device)
                             if not device_name:
                                 continue
-                            smart_info[device_name] = await method(
-                                device=device_name,
-                                info_type=cat.get("info_type", "A"),
-                            )
+                            detail_method = smart_info_result or method
+                            try:
+                                detail_value = await detail_method(
+                                    device=device_name,
+                                    info_type=cat.get("info_type", "A"),
+                                )
+                            except (OPNsenseError, TimeoutError) as err:
+                                details_authoritative = False
+                                detail_states.append("transient")
+                                _LOGGER.debug(
+                                    "SMART detail unavailable for %s: %s", device_name, err
+                                )
+                                continue
+                            if smart_info_result is not None:
+                                detail_state = str(getattr(detail_value, "state", "pending"))
+                                detail_states.append(detail_state)
+                                detail_data = getattr(detail_value, "data", None)
+                                if detail_state != "available" or not getattr(
+                                    detail_value, "authoritative", False
+                                ):
+                                    details_authoritative = False
+                            else:
+                                detail_states.append("pending")
+                                detail_data = detail_value
+                            if isinstance(detail_data, Mapping):
+                                smart_info[device_name] = dict(detail_data)
+                            else:
+                                details_authoritative = False
                     state[cat.get("state_key")] = smart_info
+                    self._category_results[cat.get("state_key")] = _AggregateCategoryResult(
+                        data=smart_info,
+                        state=_aggregate_category_state(detail_states),
+                        authoritative=details_authoritative,
+                    )
                 else:
                     value = await method()
                     state_key = cat.get("state_key")

@@ -2,6 +2,8 @@
 
 import asyncio
 from collections.abc import Callable, Iterable, Mapping
+from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any, Never, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -4238,6 +4240,107 @@ async def test_async_setup_entry_records_authority_false_when_smart_info_is_requ
     assert captured["scope_authority"] == {"smart": False}
 
 
+@pytest.mark.parametrize("list_authoritative", [False, True])
+@pytest.mark.parametrize("detail_authoritative", [False, True])
+@pytest.mark.parametrize("schema_complete", [False, True])
+@pytest.mark.asyncio
+async def test_async_setup_entry_smart_cleanup_requires_all_authority_conditions(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+    list_authoritative: bool,
+    detail_authoritative: bool,
+    schema_complete: bool,
+) -> None:
+    """SMART cleanup needs authoritative list/details and a complete schema."""
+    state: dict[str, Any] = {
+        "smart": [{"device": "nvme0"}],
+        "smart_info": {} if schema_complete else "malformed",
+    }
+    client = MagicMock(spec=["get_smart", "get_smart_info"])
+    config_entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        coordinator_data=state,
+        sync_smart=True,
+        opnsense_client=client,
+    )
+    coordinator = getattr(config_entry.runtime_data, COORDINATOR)
+    coordinator.category_is_authoritative.side_effect = lambda state_key: {
+        "smart": list_authoritative,
+        "smart_info": detail_authoritative,
+    }[state_key]
+    captured = capture_reconciled_desired_entities(monkeypatch)
+
+    await async_setup_entry(
+        MagicMock(), config_entry, cast("AddEntitiesCallback", lambda _entities: None)
+    )
+
+    assert captured["scope_authority"] == {
+        "smart": list_authoritative and detail_authoritative and schema_complete
+    }
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_consumes_smart_coordinator_sidecar_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Sensor reconciliation consumes real coordinator list and detail sidecars."""
+    client = MagicMock()
+    client.get_smart_result = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[{"device": "nvme0"}], state="available", authoritative=True
+        )
+    )
+    client.get_smart = AsyncMock()
+    client.get_smart_info_result = AsyncMock(
+        return_value=SimpleNamespace(
+            data={"temperature": {"current": 37}},
+            state="available",
+            authoritative=True,
+        )
+    )
+    client.get_smart_info = AsyncMock()
+    config_entry = make_config_entry(
+        {
+            CONF_DEVICE_UNIQUE_ID: "id",
+            CONF_SYNC_SMART: True,
+            CONF_SYNC_TELEMETRY: False,
+            CONF_SYNC_VNSTAT: False,
+            CONF_SYNC_SPEEDTEST: False,
+            CONF_SYNC_NUT: False,
+            CONF_SYNC_GATEWAYS: False,
+            CONF_SYNC_INTERFACES: False,
+            CONF_SYNC_CARP: False,
+            CONF_SYNC_DHCP_LEASES: False,
+            CONF_SYNC_VPN: False,
+            CONF_SYNC_CERTIFICATES: False,
+        }
+    )
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=config_entry,
+    )
+    coordinator.data = await coordinator._get_states(
+        [
+            {"function": "get_smart", "state_key": "smart"},
+            {"function": "get_smart_info", "state_key": "smart_info"},
+        ]
+    )
+    setattr(config_entry.runtime_data, COORDINATOR, coordinator)
+    setattr(config_entry.runtime_data, OPNSENSE_CLIENT, client)
+    captured = capture_reconciled_desired_entities(monkeypatch)
+
+    await async_setup_entry(
+        MagicMock(), config_entry, cast("AddEntitiesCallback", lambda _entities: None)
+    )
+
+    assert captured["scope_authority"] == {"smart": True}
+
+
 @pytest.mark.parametrize(
     ("compile_helper", "state"),
     [
@@ -4675,15 +4778,47 @@ async def test_compile_nut_sensors_for_setup_exposes_core_metrics_and_status_att
 
 
 @pytest.mark.asyncio
+async def test_nut_sensors_precreated_unavailable_then_recover(
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Fixed NUT sensors recover from missing initial data without a reload."""
+    state: dict[str, Any] = {}
+    entry = make_config_entry({CONF_DEVICE_UNIQUE_ID: "id", CONF_SYNC_NUT: True})
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = state
+
+    entities, complete = await sensor_module._compile_nut_sensors_for_setup(
+        entry, coordinator, state
+    )
+    assert complete is False
+    assert len(entities) == 3
+    for entity in entities:
+        entity.hass = MagicMock()
+        entity.entity_id = f"sensor.{entity.entity_description.key.replace('.', '_')}"
+        object.__setattr__(entity, "async_write_ha_state", lambda: None)
+        entity._handle_coordinator_update()
+    assert all(not entity.available for entity in entities)
+
+    coordinator.data = {
+        "nut_ups_status": {"status": {"ups.status": "OL", "battery.charge": "98", "ups.load": "15"}}
+    }
+    for entity in entities:
+        entity._handle_coordinator_update()
+
+    assert all(entity.available for entity in entities)
+    assert {entity.native_value for entity in entities} == {"OL", 98.0, 15.0}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("state", "expected_count", "expected_complete"),
     [
-        pytest.param({}, 0, False, id="missing-nut-payload"),
-        pytest.param({"nut_ups_status": "bad"}, 0, False, id="non-mapping-payload"),
-        pytest.param({"nut_ups_status": {"status": "bad"}}, 0, False, id="non-mapping-status"),
-        pytest.param({"nut_ups_status": {"foo": "bar"}}, 0, False, id="missing-status"),
-        pytest.param({"nut_ups_status": {}}, 0, True, id="empty-payload-complete"),
-        pytest.param({"nut_ups_status": {"status": {}}}, 0, True, id="empty-status-complete"),
+        pytest.param({}, 3, False, id="missing-nut-payload"),
+        pytest.param({"nut_ups_status": "bad"}, 3, False, id="non-mapping-payload"),
+        pytest.param({"nut_ups_status": {"status": "bad"}}, 3, False, id="non-mapping-status"),
+        pytest.param({"nut_ups_status": {"foo": "bar"}}, 3, False, id="missing-status"),
+        pytest.param({"nut_ups_status": {}}, 3, True, id="empty-payload-complete"),
+        pytest.param({"nut_ups_status": {"status": {}}}, 3, True, id="empty-status-complete"),
         pytest.param(
             {
                 "nut_ups_status": {
@@ -4754,8 +4889,32 @@ async def test_async_setup_entry_records_nut_scope_authority(
         MagicMock(), config_entry, cast("AddEntitiesCallback", lambda _entities: None)
     )
 
-    assert captured["entities"] == []
+    assert {entity.entity_description.key for entity in captured["entities"]} == {
+        "nut.ups_status",
+        "nut.battery_charge",
+        "nut.ups_load",
+    }
     assert captured["scope_authority"] == {"nut": expected_authority}
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_legacy_empty_nut_is_not_authoritative(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Schema-complete flattened NUT data remains non-authoritative."""
+    config_entry = setup_sensor_reconciliation_entry(
+        make_config_entry, coordinator_data={"nut_ups_status": {}}, sync_nut=True
+    )
+    coordinator = getattr(config_entry.runtime_data, COORDINATOR)
+    coordinator.category_is_authoritative.return_value = False
+    captured = capture_reconciled_desired_entities(monkeypatch)
+
+    await async_setup_entry(
+        MagicMock(), config_entry, cast("AddEntitiesCallback", lambda _entities: None)
+    )
+
+    assert captured["scope_authority"] == {"nut": False}
 
 
 @pytest.mark.parametrize(
