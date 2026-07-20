@@ -5,6 +5,7 @@ category building, state fetching, device ID mismatch handling, speed
 calculations, and update flow.
 """
 
+import asyncio
 from collections.abc import Callable, MutableMapping
 from datetime import timedelta
 import time
@@ -555,6 +556,144 @@ async def test_get_states_preserves_smart_detail_result_state_precedence(
     assert isinstance(result, coordinator_module._AggregateCategoryResult)
     assert result.state == expected_state
     assert result.authoritative is expected_authority
+
+
+@pytest.mark.asyncio
+async def test_get_states_fetches_smart_details_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Multiple SMART detail requests overlap within the concurrency bound."""
+    monkeypatch.setattr(coordinator_module, "_SMART_DETAIL_CATEGORY_TIMEOUT", 1.0)
+    barrier = asyncio.Barrier(2)
+
+    async def get_detail(*, device: str, info_type: str) -> SimpleNamespace:
+        """Wait until both device requests have entered the client seam."""
+        assert info_type == "A"
+        await barrier.wait()
+        return SimpleNamespace(data={"device": device}, state="available", authoritative=True)
+
+    client = MagicMock()
+    client.get_smart_result = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[{"device": "nvme0"}, {"device": "ada0"}],
+            state="available",
+            authoritative=True,
+        )
+    )
+    client.get_smart = AsyncMock()
+    client.get_smart_info_result = AsyncMock(side_effect=get_detail)
+    client.get_smart_info = AsyncMock()
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+
+    state = await coordinator._get_states(
+        [
+            {"function": "get_smart", "state_key": "smart"},
+            {"function": "get_smart_info", "state_key": "smart_info"},
+        ]
+    )
+
+    assert state["smart_info"] == {
+        "nvme0": {"device": "nvme0"},
+        "ada0": {"device": "ada0"},
+    }
+    assert coordinator.category_is_authoritative("smart_info") is True
+
+
+@pytest.mark.asyncio
+async def test_get_states_smart_detail_deadline_cancels_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """The category deadline cancels unfinished details before later categories."""
+    all_started = asyncio.Event()
+    healthy_done = asyncio.Event()
+    started: set[str] = set()
+    cancelled: set[str] = set()
+    never_finishes = asyncio.Event()
+
+    async def get_detail(*, device: str, info_type: str) -> SimpleNamespace:
+        """Block until the coordinator cancels the outstanding request."""
+        assert info_type == "A"
+        started.add(device)
+        if len(started) == 2:
+            all_started.set()
+        await all_started.wait()
+        if device == "nvme0":
+            healthy_done.set()
+            return SimpleNamespace(
+                data={"temperature": {"current": 37}},
+                state="available",
+                authoritative=True,
+            )
+        try:
+            await never_finishes.wait()
+        except asyncio.CancelledError:
+            cancelled.add(device)
+            raise
+        raise AssertionError("unreachable")
+
+    real_wait = asyncio.wait
+
+    async def deadline_wait(
+        tasks: list[asyncio.Task], **kwargs: float
+    ) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        """End the fixed category budget after every test request is in flight."""
+        assert kwargs["timeout"] == coordinator_module._SMART_DETAIL_CATEGORY_TIMEOUT
+        await all_started.wait()
+        await healthy_done.wait()
+        done = {task for task in tasks if task.done()}
+        return done, set(tasks) - done
+
+    monkeypatch.setattr(coordinator_module.asyncio, "wait", deadline_wait)
+    client = MagicMock()
+    client.get_smart_result = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[{"device": "nvme0"}, {"device": "ada0"}],
+            state="available",
+            authoritative=True,
+        )
+    )
+    client.get_smart = AsyncMock()
+    client.get_smart_info_result = AsyncMock(side_effect=get_detail)
+    client.get_smart_info = AsyncMock()
+    client.get_system_info = AsyncMock(return_value={"name": "router"})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+
+    state = await coordinator._get_states(
+        [
+            {"function": "get_smart", "state_key": "smart"},
+            {"function": "get_smart_info", "state_key": "smart_info"},
+            {"function": "get_system_info", "state_key": "system_info"},
+        ]
+    )
+    monkeypatch.setattr(coordinator_module.asyncio, "wait", real_wait)
+
+    assert started == {"nvme0", "ada0"}
+    assert cancelled == {"ada0"}
+    assert state == {
+        "smart": [{"device": "nvme0"}, {"device": "ada0"}],
+        "smart_info": {"nvme0": {"temperature": {"current": 37}}},
+        "system_info": {"name": "router"},
+    }
+    result = coordinator.category_result("smart_info")
+    assert isinstance(result, coordinator_module._AggregateCategoryResult)
+    assert result.state == "transient"
+    assert result.authoritative is False
 
 
 @pytest.mark.asyncio

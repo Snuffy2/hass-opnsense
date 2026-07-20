@@ -1,5 +1,6 @@
 """OPNsense Coordinator."""
 
+import asyncio
 from collections.abc import Callable, Mapping, MutableMapping
 import copy
 from dataclasses import dataclass
@@ -63,6 +64,8 @@ _CATEGORY_STATE_PRECEDENCE: tuple[str, ...] = (
     "missing",
     "available",
 )
+_SMART_DETAIL_CATEGORY_TIMEOUT = 30.0
+_SMART_DETAIL_MAX_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,15 @@ class _AggregateCategoryResult:
     """Status wrapper for a category assembled from multiple optional calls."""
 
     data: object
+    state: str
+    authoritative: bool
+
+
+@dataclass(frozen=True)
+class _SmartDetailFetch:
+    """Normalized outcome from one SMART detail request."""
+
+    data: dict[str, Any] | None
     state: str
     authoritative: bool
 
@@ -171,6 +183,89 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
             if key in self._state
         }
 
+    async def _async_fetch_smart_details(
+        self,
+        device_names: list[str],
+        method: Callable,
+        *,
+        info_type: str,
+        status_aware: bool,
+    ) -> tuple[dict[str, Any], _AggregateCategoryResult]:
+        """Fetch SMART details concurrently under one fixed category deadline.
+
+        Args:
+            device_names: Valid SMART device identifiers in deterministic output order.
+            method: Status-aware or legacy SMART detail client method.
+            info_type: SMART detail report type passed to aiopnsense.
+            status_aware: Whether method results include category status metadata.
+
+        Returns:
+            tuple[dict[str, Any], _AggregateCategoryResult]: Healthy detail data and
+                aggregate status/authority for sensor reconciliation.
+        """
+        semaphore = asyncio.Semaphore(_SMART_DETAIL_MAX_CONCURRENCY)
+
+        async def _fetch(device_name: str) -> _SmartDetailFetch:
+            """Fetch and normalize one device without hiding unexpected errors."""
+            async with semaphore:
+                try:
+                    value = await method(device=device_name, info_type=info_type)
+                except (OPNsenseError, TimeoutError) as err:
+                    _LOGGER.debug("SMART detail unavailable for %s: %s", device_name, err)
+                    return _SmartDetailFetch(None, "transient", False)
+            if status_aware:
+                detail_state = str(getattr(value, "state", "pending"))
+                detail_data = getattr(value, "data", None)
+                authoritative = detail_state == "available" and bool(
+                    getattr(value, "authoritative", False)
+                )
+            else:
+                detail_state = "pending"
+                detail_data = value
+                authoritative = False
+            if not isinstance(detail_data, Mapping):
+                return _SmartDetailFetch(None, detail_state, False)
+            return _SmartDetailFetch(dict(detail_data), detail_state, authoritative)
+
+        tasks = [asyncio.create_task(_fetch(device_name)) for device_name in device_names]
+        if not tasks:
+            result = _AggregateCategoryResult({}, "available", status_aware)
+            return {}, result
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=_SMART_DETAIL_CATEGORY_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        smart_info: dict[str, Any] = {}
+        detail_states: list[str] = []
+        details_authoritative = status_aware
+        for device_name, task in zip(device_names, tasks, strict=True):
+            if task not in done:
+                detail_states.append("transient")
+                details_authoritative = False
+                continue
+            detail = task.result()
+            detail_states.append(detail.state)
+            details_authoritative = details_authoritative and detail.authoritative
+            if detail.data is not None:
+                smart_info[device_name] = detail.data
+        aggregate = _AggregateCategoryResult(
+            data=smart_info,
+            state=_aggregate_category_state(detail_states),
+            authoritative=details_authoritative,
+        )
+        return smart_info, aggregate
+
     async def _get_states(self, categories: list) -> dict[str, Any]:
         """Fetch state payloads for the requested category call definitions.
 
@@ -203,14 +298,11 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 if method_name == "get_device_unique_id":
                     state[cat.get("state_key")] = await method(expected_id=self._device_unique_id)
                 elif method_name == "get_smart_info":
-                    smart_info: dict[str, Any] = {}
-                    detail_states: list[str] = []
-                    details_authoritative = True
                     smart_info_result = getattr(self._client, "get_smart_info_result", None)
                     if not inspect.iscoroutinefunction(smart_info_result):
                         smart_info_result = None
-                        details_authoritative = False
                     smart_devices = state.get("smart")
+                    device_names: list[str] = []
                     if isinstance(smart_devices, list):
                         for smart_device in smart_devices:
                             if not isinstance(smart_device, Mapping):
@@ -218,40 +310,15 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                             device_name = get_smart_device_name(smart_device)
                             if not device_name:
                                 continue
-                            detail_method = smart_info_result or method
-                            try:
-                                detail_value = await detail_method(
-                                    device=device_name,
-                                    info_type=cat.get("info_type", "A"),
-                                )
-                            except (OPNsenseError, TimeoutError) as err:
-                                details_authoritative = False
-                                detail_states.append("transient")
-                                _LOGGER.debug(
-                                    "SMART detail unavailable for %s: %s", device_name, err
-                                )
-                                continue
-                            if smart_info_result is not None:
-                                detail_state = str(getattr(detail_value, "state", "pending"))
-                                detail_states.append(detail_state)
-                                detail_data = getattr(detail_value, "data", None)
-                                if detail_state != "available" or not getattr(
-                                    detail_value, "authoritative", False
-                                ):
-                                    details_authoritative = False
-                            else:
-                                detail_states.append("pending")
-                                detail_data = detail_value
-                            if isinstance(detail_data, Mapping):
-                                smart_info[device_name] = dict(detail_data)
-                            else:
-                                details_authoritative = False
-                    state[cat.get("state_key")] = smart_info
-                    self._category_results[cat.get("state_key")] = _AggregateCategoryResult(
-                        data=smart_info,
-                        state=_aggregate_category_state(detail_states),
-                        authoritative=details_authoritative,
+                            device_names.append(device_name)
+                    smart_info, aggregate = await self._async_fetch_smart_details(
+                        device_names,
+                        smart_info_result or method,
+                        info_type=cat.get("info_type", "A"),
+                        status_aware=smart_info_result is not None,
                     )
+                    state[cat.get("state_key")] = smart_info
+                    self._category_results[cat.get("state_key")] = aggregate
                 else:
                     value = await method()
                     state_key = cat.get("state_key")

@@ -56,8 +56,9 @@ This requires coordinated changes in both repositories:
   expected 404 as a capability change.
 - hass-opnsense compiles entities during platform setup. Coordinator data that
   gains a new optional capability later does not itself add entities.
-- hass-opnsense currently polls NUT UPS status when its granular sync option is
-  enabled and exposes three fixed, disabled-by-default sensors. Those sensors
+- hass-opnsense currently polls NUT UPS status through its separately
+  configurable granular sync option, which follows the integration's existing
+  default-enabled sync behavior. It exposes three fixed, disabled-by-default sensors. Those sensors
   are pre-created even when the initial payload is missing or empty so endpoint
   recovery does not require an integration reload.
 
@@ -174,10 +175,16 @@ Create a companion aiopnsense branch from its latest `origin/main`.
      retry.
 3. Verify that one optional category failing does not fail or erase unrelated
    coordinator categories.
-4. NUT remains a separate, explicit granular sync category. Its result sidecar,
-   not a flattened empty mapping, supplies repair authority. SMART list results
-   and every applicable per-device detail result must all be authoritative and
-   schema-complete before SMART reconciliation may delete stale entities.
+4. NUT remains a separately configurable, default-enabled granular sync
+   category. Its result sidecar, not a flattened empty mapping, supplies repair
+   authority. SMART sensor metrics require an authoritative list plus every
+   applicable per-device detail result to be authoritative and schema-complete
+   before stale metric sensors may be deleted. SMART status binary sensors
+   depend only on the authoritative, schema-complete SMART list.
+5. Fetch per-device SMART details with controlled concurrency and one fixed
+   category deadline. Preserve completed healthy details, cancel unfinished
+   calls as transient and non-authoritative, and continue later categories
+   without accumulating one timeout per disk.
 
 ### Phase 4: hass-opnsense entity lifecycle (branch implemented; release pending)
 
@@ -320,7 +327,9 @@ dynamic entity schema.
    firewall/NAT, services, VPN, CARP, and Unbound; trackers use ARP.
 4. NUT is a fixed three-sensor schema and always creates its configured entities;
    dynamic SMART sensors continue to follow validated device inventory.
-5. NUT integration is part of this hass-opnsense delivery as an explicit
-   granular sync category built on the result contract.
+5. NUT integration is part of this hass-opnsense delivery as a separately
+   configurable granular sync category built on the result contract. It follows
+   the existing default-enabled granular sync behavior rather than requiring
+   explicit opt-in.
 6. Decide whether the first optional-endpoint disappearance is debug-only or a
    rate-limited warning.

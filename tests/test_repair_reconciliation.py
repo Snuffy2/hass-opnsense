@@ -2,18 +2,36 @@
 
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import slugify
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.opnsense import repair_reconciliation as rr
-from custom_components.opnsense.const import CONF_DEVICE_UNIQUE_ID, DOMAIN
+from custom_components.opnsense import repair_reconciliation as rr, sensor as sensor_module
+from custom_components.opnsense.const import (
+    CONF_DEVICE_UNIQUE_ID,
+    CONF_SYNC_CARP,
+    CONF_SYNC_CERTIFICATES,
+    CONF_SYNC_DHCP_LEASES,
+    CONF_SYNC_GATEWAYS,
+    CONF_SYNC_INTERFACES,
+    CONF_SYNC_NUT,
+    CONF_SYNC_SMART,
+    CONF_SYNC_SPEEDTEST,
+    CONF_SYNC_TELEMETRY,
+    CONF_SYNC_VNSTAT,
+    CONF_SYNC_VPN,
+    COORDINATOR,
+    DOMAIN,
+    OPNSENSE_CLIENT,
+)
+from custom_components.opnsense.coordinator import OPNsenseDataUpdateCoordinator
 from custom_components.opnsense.repair_reconciliation import (
     REPAIR_MARKER_KEY,
     RepairMarker,
@@ -461,6 +479,75 @@ def test_smart_scope_authority_controls_stale_temperature_cleanup(
 
     assert ("sensor.smart_nvme0_temperature" in registry.removed) is authoritative
     assert (registry.async_get("sensor.smart_nvme0_temperature") is None) is authoritative
+
+
+@pytest.mark.parametrize(
+    ("detail_state", "stale_removed"),
+    [
+        pytest.param("transient", False, id="transient-detail-preserves-stale"),
+        pytest.param("malformed", False, id="malformed-detail-preserves-stale"),
+        pytest.param("available", True, id="complete-authority-deletes-stale"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_sensor_smart_detail_authority_controls_registry_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+    detail_state: str,
+    stale_removed: bool,
+) -> None:
+    """Sensor setup authority reaches the destructive SMART registry seam."""
+    stale_smart = _entry(
+        _production_unique_id("old_id", "smart.ada0.temperature"),
+        entity_id="sensor.smart_ada0_temperature",
+    )
+    reconciliation, registry, _devices = _subject(
+        monkeypatch,
+        [stale_smart],
+        [_device("main", "old_id")],
+    )
+    reconciliation.prepare()
+    config_entry = reconciliation.config_entry
+    object.__setattr__(
+        config_entry,
+        "data",
+        {
+            CONF_DEVICE_UNIQUE_ID: "new_id",
+            CONF_SYNC_TELEMETRY: False,
+            CONF_SYNC_VNSTAT: False,
+            CONF_SYNC_SPEEDTEST: False,
+            CONF_SYNC_NUT: False,
+            CONF_SYNC_SMART: True,
+            CONF_SYNC_CERTIFICATES: False,
+            CONF_SYNC_VPN: False,
+            CONF_SYNC_GATEWAYS: False,
+            CONF_SYNC_INTERFACES: False,
+            CONF_SYNC_CARP: False,
+            CONF_SYNC_DHCP_LEASES: False,
+        },
+    )
+    coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
+    coordinator.data = {
+        "smart": [{"device": "nvme0"}],
+        "smart_info": {"nvme0": {"temperature": {"current": 37}}},
+    }
+    coordinator.category_is_authoritative.side_effect = lambda state_key: {
+        "smart": True,
+        "smart_info": detail_state == "available",
+    }[state_key]
+    client = MagicMock(spec=["get_smart", "get_smart_info"])
+    runtime_data = SimpleNamespace(repair_reconciliation=reconciliation)
+    setattr(runtime_data, COORDINATOR, coordinator)
+    setattr(runtime_data, OPNSENSE_CLIENT, client)
+    object.__setattr__(config_entry, "runtime_data", runtime_data)
+
+    await sensor_module.async_setup_entry(
+        reconciliation.hass,
+        config_entry,
+        cast("AddEntitiesCallback", lambda _entities: None),
+    )
+    reconciliation.finalize()
+
+    assert ("sensor.smart_ada0_temperature" in registry.removed) is stale_removed
 
 
 def test_finalize_preserves_desired_disabled_tracker_device_by_mac(
