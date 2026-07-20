@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping, MutableMapping
 import copy
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import partial
 import inspect
 import logging
 import time
@@ -65,6 +66,7 @@ _CATEGORY_STATE_PRECEDENCE: tuple[str, ...] = (
     "available",
 )
 _SMART_DETAIL_CATEGORY_TIMEOUT = 30.0
+_SMART_DETAIL_CANCEL_GRACE = 0.25
 _SMART_DETAIL_MAX_CONCURRENCY = 4
 
 
@@ -153,6 +155,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
         self._device_unique_id: str | None = device_unique_id
         self._updating: bool = False
         self._category_results: dict[str, object] = {}
+        self._smart_detail_lingering_tasks: dict[str, asyncio.Task[_SmartDetailFetch]] = {}
         super().__init__(
             hass=hass,
             logger=_LOGGER,
@@ -204,6 +207,7 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 aggregate status/authority for sensor reconciliation.
         """
         semaphore = asyncio.Semaphore(_SMART_DETAIL_MAX_CONCURRENCY)
+        device_names = list(dict.fromkeys(device_names))
 
         async def _fetch(device_name: str) -> _SmartDetailFetch:
             """Fetch and normalize one device without hiding unexpected errors."""
@@ -227,9 +231,25 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 return _SmartDetailFetch(None, detail_state, False)
             return _SmartDetailFetch(dict(detail_data), detail_state, authoritative)
 
-        tasks = [asyncio.create_task(_fetch(device_name)) for device_name in device_names]
+        blocked_devices: set[str] = set()
+        task_by_device: dict[str, asyncio.Task[_SmartDetailFetch]] = {}
+        for device_name in device_names:
+            lingering_task = self._smart_detail_lingering_tasks.get(device_name)
+            if lingering_task is not None and lingering_task.done():
+                self._smart_detail_task_done(device_name, lingering_task)
+                lingering_task = None
+            if lingering_task is not None:
+                blocked_devices.add(device_name)
+                continue
+            task_by_device[device_name] = asyncio.create_task(_fetch(device_name))
+        tasks = list(task_by_device.values())
         if not tasks:
-            result = _AggregateCategoryResult({}, "available", status_aware)
+            blocked_states = ["transient" for _device_name in blocked_devices]
+            result = _AggregateCategoryResult(
+                {},
+                _aggregate_category_state(blocked_states),
+                status_aware and not blocked_devices,
+            )
             return {}, result
         try:
             done, pending = await asyncio.wait(
@@ -237,19 +257,21 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
                 timeout=_SMART_DETAIL_CATEGORY_TIMEOUT,
             )
         except asyncio.CancelledError:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.shield(self._async_cancel_smart_detail_tasks(task_by_device))
             raise
-        for task in pending:
-            task.cancel()
         if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+            await self._async_cancel_smart_detail_tasks(
+                {
+                    device_name: task
+                    for device_name, task in task_by_device.items()
+                    if task in pending
+                }
+            )
 
         smart_info: dict[str, Any] = {}
-        detail_states: list[str] = []
-        details_authoritative = status_aware
-        for device_name, task in zip(device_names, tasks, strict=True):
+        detail_states: list[str] = ["transient" for _device_name in blocked_devices]
+        details_authoritative = status_aware and not blocked_devices
+        for device_name, task in task_by_device.items():
             if task not in done:
                 detail_states.append("transient")
                 details_authoritative = False
@@ -265,6 +287,58 @@ class OPNsenseDataUpdateCoordinator(DataUpdateCoordinator):
             authoritative=details_authoritative,
         )
         return smart_info, aggregate
+
+    async def _async_cancel_smart_detail_tasks(
+        self,
+        task_by_device: dict[str, asyncio.Task[_SmartDetailFetch]],
+    ) -> None:
+        """Cancel SMART detail tasks with bounded cooperative cleanup.
+
+        Cancellation-resistant tasks are detached, observed, and retained per
+        device so a later refresh cannot start an overlapping request.
+
+        Args:
+            task_by_device: Outstanding detail tasks keyed by SMART device.
+        """
+        if not task_by_device:
+            return
+        for task in task_by_device.values():
+            task.cancel()
+        done, pending = await asyncio.wait(
+            task_by_device.values(),
+            timeout=_SMART_DETAIL_CANCEL_GRACE,
+        )
+        for device_name, task in task_by_device.items():
+            if task in done:
+                self._consume_smart_detail_task_exception(task)
+                continue
+            if task not in pending:
+                continue
+            self._smart_detail_lingering_tasks[device_name] = task
+            task.add_done_callback(partial(self._smart_detail_task_done, device_name))
+
+    def _smart_detail_task_done(
+        self,
+        device_name: str,
+        task: asyncio.Task[_SmartDetailFetch],
+    ) -> None:
+        """Observe a detached detail task and release its per-device guard."""
+        if self._smart_detail_lingering_tasks.get(device_name) is not task:
+            return
+        self._smart_detail_lingering_tasks.pop(device_name, None)
+        self._consume_smart_detail_task_exception(task)
+
+    @staticmethod
+    def _consume_smart_detail_task_exception(
+        task: asyncio.Task[_SmartDetailFetch],
+    ) -> None:
+        """Consume and log any eventual detached-task exception."""
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            _LOGGER.error("Detached SMART detail request failed: %s", error)
 
     async def _get_states(self, categories: list) -> dict[str, Any]:
         """Fetch state payloads for the requested category call definitions.

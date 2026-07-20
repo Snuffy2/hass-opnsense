@@ -646,6 +646,8 @@ async def test_get_states_smart_detail_deadline_cancels_and_continues(
         tasks: list[asyncio.Task], **kwargs: float
     ) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
         """End the fixed category budget after every test request is in flight."""
+        if kwargs["timeout"] == coordinator_module._SMART_DETAIL_CANCEL_GRACE:
+            return await real_wait(tasks, timeout=kwargs["timeout"])
         assert kwargs["timeout"] == coordinator_module._SMART_DETAIL_CATEGORY_TIMEOUT
         await all_started.wait()
         await healthy_done.wait()
@@ -694,6 +696,152 @@ async def test_get_states_smart_detail_deadline_cancels_and_continues(
     assert isinstance(result, coordinator_module._AggregateCategoryResult)
     assert result.state == "transient"
     assert result.authoritative is False
+
+
+@pytest.mark.asyncio
+async def test_smart_detail_cancellation_resistance_blocks_overlap_then_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A detached detail task blocks overlap until its per-device guard clears."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    lingering_finished = asyncio.Event()
+    detail_calls = 0
+
+    async def get_detail(*, device: str, info_type: str) -> SimpleNamespace:
+        """Resist the first cancellation, then allow a later clean retry."""
+        nonlocal detail_calls
+        assert device == "nvme0"
+        assert info_type == "A"
+        detail_calls += 1
+        if detail_calls > 1:
+            return SimpleNamespace(data={"ok": True}, state="available", authoritative=True)
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        lingering_finished.set()
+        raise RuntimeError("late detached failure")
+
+    real_wait = asyncio.wait
+    category_waits = 0
+
+    async def bounded_wait(
+        tasks: list[asyncio.Task], **kwargs: float
+    ) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        """Expire the first category budget and its cancellation grace immediately."""
+        nonlocal category_waits
+        timeout = kwargs["timeout"]
+        if timeout == coordinator_module._SMART_DETAIL_CANCEL_GRACE:
+            return set(), set(tasks)
+        if timeout == coordinator_module._SMART_DETAIL_CATEGORY_TIMEOUT:
+            category_waits += 1
+            if category_waits == 1:
+                await started.wait()
+                return set(), set(tasks)
+        return await real_wait(tasks, timeout=timeout)
+
+    monkeypatch.setattr(coordinator_module.asyncio, "wait", bounded_wait)
+    client = MagicMock()
+    client.get_smart_result = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[{"device": "nvme0"}], state="available", authoritative=True
+        )
+    )
+    client.get_smart = AsyncMock()
+    client.get_smart_info_result = AsyncMock(side_effect=get_detail)
+    client.get_smart_info = AsyncMock()
+    client.get_system_info = AsyncMock(return_value={"name": "router"})
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=client,
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+    categories = [
+        {"function": "get_smart", "state_key": "smart"},
+        {"function": "get_smart_info", "state_key": "smart_info"},
+        {"function": "get_system_info", "state_key": "system_info"},
+    ]
+
+    first_state = await coordinator._get_states(categories)
+    second_state = await coordinator._get_states(categories)
+
+    assert first_state["system_info"] == {"name": "router"}
+    assert first_state["smart_info"] == {}
+    assert second_state["smart_info"] == {}
+    assert detail_calls == 1
+    assert coordinator.category_is_authoritative("smart_info") is False
+
+    release.set()
+    await lingering_finished.wait()
+    third_state = await coordinator._get_states(categories)
+
+    assert detail_calls == 2
+    assert third_state["smart_info"] == {"nvme0": {"ok": True}}
+    assert coordinator.category_is_authoritative("smart_info") is True
+    assert coordinator._smart_detail_lingering_tasks == {}
+    assert "Detached SMART detail request failed: late detached failure" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_smart_detail_outer_cancellation_uses_bounded_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+) -> None:
+    """Outer coordinator cancellation re-raises after bounded detail cleanup."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def get_detail(*, device: str, info_type: str) -> SimpleNamespace:
+        """Remain alive beyond outer cancellation until the test releases it."""
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        finished.set()
+        return SimpleNamespace(data={}, state="available", authoritative=True)
+
+    real_wait = asyncio.wait
+
+    async def grace_wait(
+        tasks: list[asyncio.Task], **kwargs: float
+    ) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        """Represent expiration of only the bounded cancellation grace."""
+        if kwargs["timeout"] == coordinator_module._SMART_DETAIL_CANCEL_GRACE:
+            return set(), set(tasks)
+        return await real_wait(tasks, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(coordinator_module.asyncio, "wait", grace_wait)
+    coordinator = OPNsenseDataUpdateCoordinator(
+        hass=MagicMock(),
+        client=MagicMock(),
+        name="n",
+        update_interval=timedelta(seconds=1),
+        device_unique_id="id",
+        config_entry=make_config_entry({CONF_DEVICE_UNIQUE_ID: "id"}),
+    )
+    outer_task = asyncio.create_task(
+        coordinator._async_fetch_smart_details(
+            ["nvme0"], get_detail, info_type="A", status_aware=True
+        )
+    )
+    await started.wait()
+
+    outer_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await outer_task
+
+    assert "nvme0" in coordinator._smart_detail_lingering_tasks
+    release.set()
+    await finished.wait()
 
 
 @pytest.mark.asyncio

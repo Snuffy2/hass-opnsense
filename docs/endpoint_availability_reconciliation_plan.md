@@ -182,9 +182,12 @@ Create a companion aiopnsense branch from its latest `origin/main`.
    before stale metric sensors may be deleted. SMART status binary sensors
    depend only on the authoritative, schema-complete SMART list.
 5. Fetch per-device SMART details with controlled concurrency and one fixed
-   category deadline. Preserve completed healthy details, cancel unfinished
-   calls as transient and non-authoritative, and continue later categories
-   without accumulating one timeout per disk.
+   category budget followed by a small, bounded cancellation-cleanup grace.
+   Preserve completed healthy details and mark unfinished calls transient and
+   non-authoritative. If a call resists cancellation beyond the grace, observe
+   it in the background and suppress overlapping requests for that device until
+   it finishes. Later categories continue without accumulating one timeout per
+   disk or waiting indefinitely for cancellation.
 
 ### Phase 4: hass-opnsense entity lifecycle (branch implemented; release pending)
 
