@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 from homeassistant.components.device_tracker import SourceType
 from homeassistant.const import Platform
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import pytest
@@ -355,6 +356,84 @@ async def test_runtime_reconciler_adds_new_track_all_devices_once(
     assert ph_hass.config_entries.async_update_entry.call_args.kwargs["data"][TRACKED_MACS] == [
         initial_mac,
         new_mac,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persistence_error",
+    [
+        HomeAssistantError("storage failed"),
+        RuntimeError("runtime failure"),
+        ValueError("invalid update"),
+    ],
+)
+async def test_runtime_tracker_persistence_failure_retries_without_duplicate_submission(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    coordinator: MagicMock,
+    make_config_entry: Callable[..., MockConfigEntry],
+    fake_reg_factory: Any,
+    persistence_error: HomeAssistantError | RuntimeError | ValueError,
+) -> None:
+    """A failed post-submit MAC write retries without resubmitting the entity."""
+    coordinator.data = {"arp_table": []}
+    listeners: list[Callable[..., None]] = []
+
+    def add_listener(listener: Callable[..., None]) -> Callable[[], None]:
+        """Capture the runtime reconciliation listener."""
+        listeners.append(listener)
+        return lambda: None
+
+    coordinator.async_add_listener.side_effect = add_listener
+    entry = make_config_entry(
+        data={TRACKED_MACS: [], CONF_DEVICE_UNIQUE_ID: "dev1"},
+        options={CONF_DEVICE_TRACKER_ENABLED: True},
+        entry_id="runtime-persistence-retry",
+    )
+    setattr(entry.runtime_data, DEVICE_TRACKER_COORDINATOR, coordinator)
+    entry.async_on_unload = MagicMock()
+    ph_hass.config_entries.async_update_entry = MagicMock(
+        side_effect=[persistence_error, persistence_error, None]
+    )
+    monkeypatch.setattr(
+        dt_mod,
+        "async_get_dev_reg",
+        lambda _hass: fake_reg_factory(device_exists=False),
+    )
+    added_batches: list[list[Any]] = []
+
+    def add_entities(entities: Iterable[Any], _update_before_add: bool = False) -> None:
+        """Capture each device tracker entity batch."""
+        added_batches.append(list(entities))
+
+    await dt_mod.async_setup_entry(
+        ph_hass,
+        entry,
+        cast("AddEntitiesCallback", add_entities),
+    )
+
+    new_mac = "11:22:33:44:55:66"
+    coordinator.data = {"arp_table": [{"mac": new_mac}]}
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert [[entity.mac_address for entity in batch] for batch in added_batches] == [[], [new_mac]]
+    assert ph_hass.config_entries.async_update_entry.call_count == 1
+
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert [[entity.mac_address for entity in batch] for batch in added_batches] == [[], [new_mac]]
+    assert ph_hass.config_entries.async_update_entry.call_count == 2
+
+    listeners[0]()
+    await asyncio.sleep(0)
+
+    assert [[entity.mac_address for entity in batch] for batch in added_batches] == [[], [new_mac]]
+    assert ph_hass.config_entries.async_update_entry.call_count == 3
+    assert ph_hass.config_entries.async_update_entry.call_args.kwargs["data"][TRACKED_MACS] == [
+        new_mac
     ]
 
 

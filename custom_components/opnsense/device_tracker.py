@@ -10,6 +10,7 @@ from homeassistant.components.device_tracker import ScannerEntity, SourceType
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
@@ -412,22 +413,38 @@ async def async_setup_entry(
     )
 
     persisted_mac_addresses = _normalize_mac_values(previous_mac_addresses)
+    pending_mac_addresses: list[str] = []
+    persistence_retry_generation = 0
 
     def _persist_discovered_macs(entities_to_add: list[OPNsenseScannerEntity]) -> None:
         """Persist discovered MAC identities after successful entity registration."""
-        nonlocal persisted_mac_addresses
+        nonlocal pending_mac_addresses, persisted_mac_addresses, persistence_retry_generation
         discovered_mac_addresses = _normalize_mac_values(
             entity.mac_address for entity in entities_to_add
         )
-        merged = _normalize_mac_values(persisted_mac_addresses + discovered_mac_addresses)
+        pending_mac_addresses = _normalize_mac_values(
+            pending_mac_addresses + discovered_mac_addresses
+        )
+        merged = _normalize_mac_values(persisted_mac_addresses + pending_mac_addresses)
         if merged == persisted_mac_addresses:
+            pending_mac_addresses = []
             return
 
         setattr(config_entry.runtime_data, SHOULD_RELOAD, False)
         new_data = config_entry.data.copy()
         new_data[TRACKED_MACS] = merged
-        hass.config_entries.async_update_entry(config_entry, data=new_data)
+        try:
+            hass.config_entries.async_update_entry(config_entry, data=new_data)
+        except HomeAssistantError, RuntimeError, ValueError:
+            persistence_retry_generation += 1
+            _LOGGER.exception(
+                "Could not persist runtime device tracker MACs for entry %s; "
+                "will retry after a coordinator update",
+                config_entry.entry_id,
+            )
+            return
         persisted_mac_addresses = merged
+        pending_mac_addresses = []
 
     def _add_entities_with_tracking(
         new_entities: Iterable[Entity], update_before_add: bool = False
@@ -478,6 +495,7 @@ async def async_setup_entry(
 
         async def async_compile_runtime_entities() -> list[OPNsenseScannerEntity]:
             """Compile track-all ARP inventory for runtime additions."""
+            _persist_discovered_macs([])
             return await _compile_runtime_track_all_entities(config_entry, coordinator)
 
         attach_runtime_entity_reconciler(
@@ -487,7 +505,10 @@ async def async_setup_entry(
             _add_entities_with_tracking,
             entities,
             async_compile_runtime_entities,
-            inventory_fingerprint=lambda: _arp_inventory_fingerprint(coordinator.data),
+            inventory_fingerprint=lambda: (
+                _arp_inventory_fingerprint(coordinator.data),
+                persistence_retry_generation,
+            ),
         )
 
 
