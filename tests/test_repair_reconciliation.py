@@ -408,6 +408,7 @@ def test_finalize_preserves_stale_entities_outside_authoritative_scopes(
     [
         ("binary_sensor", "interfaces", "interface.wan.enabled"),
         ("sensor", "telemetry", "telemetry.temps.cpu"),
+        ("sensor", "nut", "nut.ups_status"),
         ("switch", "services", "service.svc.status"),
         ("device_tracker", "arp", "mac_aa:bb:cc:dd:ee:ff"),
     ],

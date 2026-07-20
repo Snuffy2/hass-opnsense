@@ -3308,6 +3308,7 @@ def setup_sensor_reconciliation_entry(
     )
     coordinator = MagicMock(spec=OPNsenseDataUpdateCoordinator)
     coordinator.data = coordinator_data
+    coordinator.category_is_authoritative.return_value = True
     setattr(entry.runtime_data, COORDINATOR, coordinator)
     if opnsense_client is not None:
         setattr(entry.runtime_data, OPNSENSE_CLIENT, opnsense_client)
@@ -3730,6 +3731,7 @@ async def test_async_setup_entry_records_entities_for_partial_vpn_inventory(
             CONF_SYNC_TELEMETRY: False,
             CONF_SYNC_VNSTAT: False,
             CONF_SYNC_SPEEDTEST: False,
+            CONF_SYNC_NUT: False,
             CONF_SYNC_SMART: False,
             CONF_SYNC_GATEWAYS: False,
             CONF_SYNC_INTERFACES: False,
@@ -4173,10 +4175,10 @@ async def test_async_setup_entry_records_entities_and_inventory_authority(
 
 
 @pytest.mark.parametrize(
-    ("client_methods", "expected"),
+    ("client_methods", "expected_authority"),
     [
-        pytest.param(("get_smart",), [], id="supports_get_smart"),
-        pytest.param((), None, id="missing_get_smart"),
+        pytest.param(("get_smart",), True, id="supports_get_smart"),
+        pytest.param((), False, id="missing_get_smart"),
     ],
 )
 @pytest.mark.asyncio
@@ -4184,18 +4186,17 @@ async def test_async_setup_entry_reconciles_smart_inventory_by_client_capability
     monkeypatch: pytest.MonkeyPatch,
     make_config_entry: Callable[..., MockConfigEntry],
     client_methods: tuple[str, ...],
-    expected: list[Any] | None,
+    expected_authority: bool,
 ) -> None:
     """SMART desired-entity reconciliation should reflect client smart capability.
 
-    If the client supports ``get_smart``, smart entities reconcile as empty.
-    If the client lacks ``get_smart``, smart entities reconcile as ``None``.
+    SMART entities remain empty while cleanup authority follows client capability.
 
     Args:
         monkeypatch: Monkeypatch fixture for capturing desired-entity calls.
         make_config_entry: Fixture that creates a typed mock config entry.
         client_methods: Client method names exposed by ``spec`` on the mock.
-        expected: Expected reconciled desired entities value from setup.
+        expected_authority: Whether SMART cleanup is authoritative.
     """
     client = MagicMock(spec=list(client_methods))
     config_entry = setup_sensor_reconciliation_entry(
@@ -4209,10 +4210,8 @@ async def test_async_setup_entry_reconciles_smart_inventory_by_client_capability
     await async_setup_entry(
         MagicMock(), config_entry, cast("AddEntitiesCallback", lambda ents, _=False: None)
     )
-    if expected is None:
-        assert captured["entities"] is None
-    else:
-        assert captured["entities"] == expected
+    assert captured["entities"] == []
+    assert captured["scope_authority"] == {"smart": expected_authority}
 
 
 @pytest.mark.asyncio
@@ -4727,6 +4726,36 @@ async def test_compile_nut_sensors_for_setup_reports_inventory_completeness(
     assert len(entities) == expected_count
     if expected_count:
         assert all(isinstance(entity, OPNsenseNUTSensor) for entity in entities)
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_authority"),
+    [
+        pytest.param({}, False, id="missing"),
+        pytest.param({"nut_ups_status": {}}, True, id="authoritative-empty"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_async_setup_entry_records_nut_scope_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config_entry: Callable[..., MockConfigEntry],
+    state: dict[str, Any],
+    expected_authority: bool,
+) -> None:
+    """NUT repair cleanup authority should follow inventory completeness."""
+    config_entry = setup_sensor_reconciliation_entry(
+        make_config_entry,
+        coordinator_data=state,
+        sync_nut=True,
+    )
+    captured = capture_reconciled_desired_entities(monkeypatch)
+
+    await async_setup_entry(
+        MagicMock(), config_entry, cast("AddEntitiesCallback", lambda _entities: None)
+    )
+
+    assert captured["entities"] == []
+    assert captured["scope_authority"] == {"nut": expected_authority}
 
 
 @pytest.mark.parametrize(
