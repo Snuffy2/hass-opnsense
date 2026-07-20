@@ -2,12 +2,22 @@
 
 ## Implementation Status
 
-This contract is implemented on the coordinated aiopnsense and hass-opnsense
-feature branches. aiopnsense classifies optional category results as
+The code contract is implemented on coordinated aiopnsense and hass-opnsense
+feature branches, but it is not yet released or pinned in hass-opnsense.
+aiopnsense classifies optional category results as
 `available`, `pending`, `missing`, `transient`, or `malformed` and reports an
 explicit `authoritative` bit. hass-opnsense unwraps result data for the existing
 entity state contract while retaining the result as coordinator sidecar state.
 Legacy clients remain readable but are always `pending` and non-authoritative.
+The consumer contract includes `get_nut_ups_status_result() ->
+CategoryResult[dict]` and per-device `get_smart_info_result(device,
+info_type="a") -> CategoryResult[dict]`; the existing flattened getters remain
+available only as compatibility fallbacks.
+
+Branch-local contract tests exercise these public method names and result
+shapes. Cross-repository validation against an installed, published aiopnsense
+artifact remains pending until a real release exists; no version is guessed and
+no dependency pin is changed before that gate passes.
 
 Device-ID repair reconciliation records platform completion separately from
 category authority. Stale registry entities are removed only inside a category
@@ -46,8 +56,10 @@ This requires coordinated changes in both repositories:
   expected 404 as a capability change.
 - hass-opnsense compiles entities during platform setup. Coordinator data that
   gains a new optional capability later does not itself add entities.
-- aiopnsense exposes NUT UPS status, but `origin/main` of hass-opnsense does not
-  currently poll or expose it.
+- hass-opnsense currently polls NUT UPS status when its granular sync option is
+  enabled and exposes three fixed, disabled-by-default sensors. Those sensors
+  are pre-created even when the initial payload is missing or empty so endpoint
+  recovery does not require an integration reload.
 
 ## Desired Semantics
 
@@ -143,12 +155,15 @@ Create a companion aiopnsense branch from its latest `origin/main`.
 5. Retain exact-path behavior for Speedtest `showlog` and `showstat`. Do not let a
    parameterized request invalidate an unrelated probe key.
 
-### Phase 3: hass-opnsense coordinator consumption (implemented)
+### Phase 3: hass-opnsense coordinator consumption (branch implemented; release pending)
 
 1. After the companion release is available, update the aiopnsense dependency
    pin in both `manifest.json` and `pyproject.toml`, plus the aiopnsense pin used
    by prek configuration. This remains a post-release step; no unreleased or
    guessed stable version is pinned by this implementation.
+   The pin gate is explicit: do not change any of these three files until a real
+   aiopnsense release containing both public result methods exists and its
+   published artifact passes the cross-repository contract tests.
 2. Keep transient transport failures distinct from an optional capability being
    absent:
    - transient failure: preserve the category contract and mark affected
@@ -159,17 +174,18 @@ Create a companion aiopnsense branch from its latest `origin/main`.
      retry.
 3. Verify that one optional category failing does not fail or erase unrelated
    coordinator categories.
-4. Add NUT polling only as a separate, explicit integration feature. Do not make
-   cache reconciliation implicitly enable a category hass-opnsense does not
-   support.
+4. NUT remains a separate, explicit granular sync category. Its result sidecar,
+   not a flattened empty mapping, supplies repair authority. SMART list results
+   and every applicable per-device detail result must all be authoritative and
+   schema-complete before SMART reconciliation may delete stale entities.
 
-### Phase 4: hass-opnsense entity lifecycle (implemented)
+### Phase 4: hass-opnsense entity lifecycle (branch implemented; release pending)
 
 Choose entity behavior based on whether the optional capability has a static or
 dynamic entity schema.
 
-1. For fixed schemas such as Speedtest metrics and the proposed fixed NUT
-   metrics, create the configured entities regardless of whether the plugin is
+1. For fixed schemas such as Speedtest and NUT metrics, create the configured
+   entities regardless of whether the plugin is
    currently installed. Keep them unavailable until valid coordinator data
    arrives. This avoids needing runtime platform re-entry when the plugin is
    installed later.
@@ -227,8 +243,8 @@ dynamic entity schema.
   observations are refreshed by later real requests.
 - For a fixed-schema hass-opnsense category, assert pre-created unavailable
   entities become available without an integration reload.
-- For NUT specifically, keep backend detection tests separate from the future
-  hass-opnsense NUT category/entity tests.
+- For NUT specifically, keep backend detection tests separate from
+  hass-opnsense category/entity recovery tests.
 
 ## Validation
 
@@ -252,6 +268,10 @@ dynamic entity schema.
   and later becoming available.
 - Add entity-registry reconciliation tests proving transient or incomplete data
   cannot delete existing entities.
+- After aiopnsense is released, install the published artifact in the
+  hass-opnsense test environment and run the public result-method contract tests
+  before changing dependency pins. This installed-artifact validation is still
+  pending.
 - Run the full pytest suite and `prek run --all-files`.
 
 ## Rollout and Observability
@@ -298,9 +318,9 @@ dynamic entity schema.
    interfaces, SMART, and notices; sensors use telemetry, vnStat, SMART,
    Speedtest, certificates, VPN, gateways, interfaces, CARP, and DHCP; switches use
    firewall/NAT, services, VPN, CARP, and Unbound; trackers use ARP.
-4. Confirm which optional categories have fixed schemas and should always create
-   configured entities.
-5. Decide whether NUT integration is part of the first hass-opnsense delivery or
-   remains a separate follow-up built on the cache contract.
+4. NUT is a fixed three-sensor schema and always creates its configured entities;
+   dynamic SMART sensors continue to follow validated device inventory.
+5. NUT integration is part of this hass-opnsense delivery as an explicit
+   granular sync category built on the result contract.
 6. Decide whether the first optional-endpoint disappearance is debug-only or a
    rate-limited warning.
