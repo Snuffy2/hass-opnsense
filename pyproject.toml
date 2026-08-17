@@ -23,7 +23,7 @@ version = { attr = "custom_components.opnsense.const.VERSION" }
 [dependency-groups]
 ha = [
     "aiopnsense==1.1.7",
-    "homeassistant",
+    "homeassistant>=2026.2.3",
 ]
 lint = [
     { include-group = "ha" },
@@ -38,6 +38,7 @@ lint = [
     "types-PyYAML",
     "types-requests",
     "types-setuptools",
+    "uv",
 ]
 pytest = [
     { include-group = "ha" },
