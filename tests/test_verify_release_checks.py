@@ -386,6 +386,26 @@ def test_release_workflow_uses_scoped_github_cli_credentials_for_git_pushes() ->
     """Authenticate release pushes without persisting checkout credentials."""
     document = _load_workflow("release.yml")
     steps = _named_steps(document, "release")
+    release_steps = document["jobs"]["release"]["steps"]
+    assert isinstance(release_steps, list)
+    command_pattern = re.compile(
+        r"(?m)^[ \t]*(?:(?P<setup>gh[ \t]+auth[ \t]+setup-git)"
+        r"(?=[ \t;&|]|$)|(?P<push>git[ \t]+push)(?=[ \t;&|]|$))"
+    )
+    setup_seen = False
+    push_found = False
+    for step in release_steps:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        for command_match in command_pattern.finditer(run):
+            if command_match.group("setup") is not None:
+                setup_seen = True
+            else:
+                push_found = True
+                assert setup_seen
     push_step_names = (
         "Publish B to an isolated validation branch",
         "Atomically advance target and guarded release tag",
@@ -397,7 +417,7 @@ def test_release_workflow_uses_scoped_github_cli_credentials_for_git_pushes() ->
         assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
         assert "extraheader" not in step["run"].lower()
 
-    assert "gh auth setup-git" in steps["Publish B to an isolated validation branch"]["run"]
+    assert push_found
 
 
 def test_release_workflow_preserves_resume_wiring_for_validated_release_commit() -> None:
