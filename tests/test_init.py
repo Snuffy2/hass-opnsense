@@ -25,7 +25,15 @@ from aiopnsense.exceptions import (
 )
 import awesomeversion
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PASSWORD, CONF_URL, CONF_USERNAME, CONF_VERIFY_SSL, Platform
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_URL,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+    EVENT_HOMEASSISTANT_CLOSE,
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
@@ -211,6 +219,103 @@ async def test_async_setup_entry_success(
     res = await init_mod.async_setup_entry(hass, entry)
     assert res is True
     assert DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entry_type", "expected_order"),
+    [
+        (
+            None,
+            [
+                "tracker_shutdown",
+                "live_shutdown",
+                "coordinator_shutdown",
+                "client_close",
+                "session_close",
+            ],
+        ),
+        (
+            ENTRY_TYPE_CARP,
+            ["coordinator_shutdown", "client_close", "session_close"],
+        ),
+    ],
+)
+async def test_async_setup_entry_closes_runtime_before_session_on_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    ph_hass: Any,
+    make_config_entry: Callable[..., MockConfigEntry],
+    entry_type: str | None,
+    expected_order: list[str],
+) -> None:
+    """HA stop should shut down polling and the client before session teardown.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): pytest fixture used to replace dependencies.
+        ph_hass (Any): Patched Home Assistant test instance.
+        make_config_entry (Callable[..., MockConfigEntry]): Fixture that creates a mock configuration entry.
+        entry_type (str | None): Optional CARP entry marker for the setup variant.
+        expected_order (list[str]): Resource shutdown order expected for the setup variant.
+    """
+    shutdown_order: list[str] = []
+    client = _make_valid_setup_client()
+    client.async_close = AsyncMock(side_effect=lambda: shutdown_order.append("client_close"))
+    coordinator = _make_setup_coordinator()
+    coordinator.data = {"carp": {"interfaces": [{"vhid": 1, "subnet": "192.0.2.1"}]}}
+    coordinator.async_shutdown = AsyncMock(
+        side_effect=lambda: shutdown_order.append("coordinator_shutdown")
+    )
+    tracker_coordinator = _make_setup_coordinator()
+    tracker_coordinator.async_shutdown = AsyncMock(
+        side_effect=lambda: shutdown_order.append("tracker_shutdown")
+    )
+    coordinators = iter([coordinator, tracker_coordinator])
+    live_coordinator = MagicMock()
+    live_coordinator.async_start = AsyncMock(return_value=None)
+    live_coordinator.async_shutdown = AsyncMock(
+        side_effect=lambda: shutdown_order.append("live_shutdown")
+    )
+    monkeypatch.setattr(
+        init_mod, "create_opnsense_client_from_config_entry", lambda **_kwargs: client
+    )
+    monkeypatch.setattr(
+        init_mod,
+        "OPNsenseDataUpdateCoordinator",
+        lambda **_kwargs: next(coordinators),
+    )
+    monkeypatch.setattr(
+        init_mod, "OPNsenseLiveTrafficCoordinator", lambda **_kwargs: live_coordinator
+    )
+
+    entry_data = {
+        CONF_URL: "http://1.2.3.4",
+        CONF_USERNAME: "u",
+        CONF_PASSWORD: "p",
+        CONF_DEVICE_UNIQUE_ID: "dev1",
+        CONF_SYNC_INTERFACES: True,
+        CONF_SYNC_LIVE_TRAFFIC: True,
+    }
+    if entry_type is not None:
+        entry_data[CONF_ENTRY_TYPE] = entry_type
+    entry = make_config_entry(
+        data=entry_data,
+        options={CONF_DEVICE_TRACKER_ENABLED: entry_type is None},
+    )
+    hass = cast("MagicMock", ph_hass)
+    hass.config_entries.async_forward_entry_setups = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    hass.data = {}
+    hass.bus.async_listen_once(
+        EVENT_HOMEASSISTANT_CLOSE,
+        lambda _event: shutdown_order.append("session_close"),
+    )
+
+    assert await init_mod.async_setup_entry(hass, entry) is True
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_CLOSE)
+    await hass.async_block_till_done()
+
+    assert shutdown_order == expected_order
 
 
 @pytest.mark.asyncio
@@ -1035,9 +1140,10 @@ async def test_async_setup_entry_carp_registers_update_listener_after_forwarding
 
     assert await init_mod.async_setup_entry(hass, entry) is True
 
-    assert call_order == ["forward", "add_listener", "async_on_unload"]
+    assert call_order == ["forward", "add_listener", "async_on_unload", "async_on_unload"]
     entry.add_update_listener.assert_called_once_with(init_mod._async_update_listener)
-    entry.async_on_unload.assert_called_once_with(remove_listener)
+    assert entry.async_on_unload.call_count == 2
+    assert entry.async_on_unload.call_args_list[0] == call(remove_listener)
     remove_listener.assert_not_called()
 
 
@@ -6148,7 +6254,8 @@ async def test_async_setup_entry_registers_update_listener_after_forwarding(
     assert res is True
     assert call_order.index("forward") < call_order.index("add_listener")
     entry.add_update_listener.assert_called_once_with(init_mod._async_update_listener)
-    entry.async_on_unload.assert_called_once_with(remove_listener)
+    assert entry.async_on_unload.call_count == 2
+    assert entry.async_on_unload.call_args_list[0] == call(remove_listener)
     remove_listener.assert_not_called()
 
 

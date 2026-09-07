@@ -22,8 +22,8 @@ from aiopnsense.exceptions import (
 )
 import awesomeversion
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_SCAN_INTERVAL, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_SCAN_INTERVAL, EVENT_HOMEASSISTANT_STOP, Platform
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import (
     config_validation as cv,
@@ -31,7 +31,7 @@ from homeassistant.helpers import (
     entity_registry as er,
     issue_registry as ir,
 )
-from homeassistant.helpers.typing import ConfigType
+from homeassistant.helpers.typing import ConfigType, NoEventData
 from homeassistant.util import slugify
 
 from .const import (
@@ -106,6 +106,40 @@ class OPNsenseData:
     live_traffic_coordinator: OPNsenseLiveTrafficCoordinator | None = None
     repair_reconciliation: RepairReconciliation | None = None
     should_reload: bool = True
+
+
+async def _async_shutdown_runtime(entry: ConfigEntry) -> None:
+    """Stop polling and close the OPNsense client for a loaded entry.
+
+    Args:
+        entry (ConfigEntry): Loaded config entry whose runtime resources should stop.
+    """
+    runtime_data: OPNsenseData = entry.runtime_data
+    if runtime_data.device_tracker_coordinator is not None:
+        await runtime_data.device_tracker_coordinator.async_shutdown()
+    if runtime_data.live_traffic_coordinator is not None:
+        await runtime_data.live_traffic_coordinator.async_shutdown()
+    await runtime_data.coordinator.async_shutdown()
+    await runtime_data.opnsense_client.async_close()
+
+
+def _register_stop_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Register config-entry runtime cleanup for full Home Assistant shutdown.
+
+    Args:
+        hass (HomeAssistant): Home Assistant instance that owns the config entry.
+        entry (ConfigEntry): Loaded config entry whose runtime resources should stop.
+    """
+
+    async def _async_stop(_event: Event[NoEventData]) -> None:
+        """Shut down entry resources before Home Assistant closes its HTTP session.
+
+        Args:
+            _event (Event[NoEventData]): Home Assistant stop event.
+        """
+        await _async_shutdown_runtime(entry)
+
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop))
 
 
 def _align_aiopnsense_log_level() -> None:
@@ -503,6 +537,7 @@ async def _async_setup_carp_entry(hass: HomeAssistant, entry: ConfigEntry) -> bo
         )
         await hass.config_entries.async_forward_entry_setups(entry, platforms)
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+        _register_stop_listener(hass, entry)
 
         setup_succeeded = True
         return True
@@ -817,6 +852,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await hass.config_entries.async_forward_entry_setups(entry, platforms)
 
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+        _register_stop_listener(hass, entry)
 
         setup_succeeded = True
         return True
